@@ -10,6 +10,18 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-27
+
+### Added
+- Picture-in-Picture support. Tapping the PiP button on a camera now floats the app into a
+  small always-on-top window (previously the button did nothing on Android — the web
+  `<video>` PiP API isn't supported in the WebView, so it now uses Android's native
+  Activity PiP via a new `Pip` plugin). It also enters PiP automatically when you leave the
+  app while the live view is showing, so a camera keeps floating while you use other apps.
+  Android floats the whole app window rather than a single tile — an OS limitation, so
+  whatever camera view is on screen is what floats. Pairs with the web app's routing added
+  in nightlight 0.4.2.
+
 ## [0.3.0] - 2026-07-23
 
 ### Added
@@ -78,7 +90,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 - Updating from a pre-0.1.0 install shows the setup screen once (the previously
   hardcoded address is not migrated).
 
-[Unreleased]: https://github.com/sauso/nightlight-mobile/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sauso/nightlight-mobile/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sauso/nightlight-mobile/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sauso/nightlight-mobile/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sauso/nightlight-mobile/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/sauso/nightlight-mobile/compare/v0.1.2...v0.1.3

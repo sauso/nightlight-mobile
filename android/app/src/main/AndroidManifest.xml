@@ -14,12 +14,16 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/AppTheme">
 
+        <!-- supportsPictureInPicture + the screen* configChanges are required for
+             Activity Picture-in-Picture (see PipPlugin.kt / MainActivity.enterPipMode).
+             Without the flag, enterPictureInPictureMode throws and PiP silently fails. -->
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:name=".MainActivity"
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
+            android:supportsPictureInPicture="true"
             android:exported="true">
 
             <intent-filter>
