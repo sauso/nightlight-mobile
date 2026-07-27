@@ -10,6 +10,18 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-27
+
+### Added
+- **Pause/Resume** on the background-listening notification, next to Stop. It mutes/unmutes
+  the stream audio (via the web app) rather than dropping the connection, so resuming is
+  instant. The notification's button and text toggle between Pause and Resume.
+
+### Fixed
+- The on-video overlay buttons (mute / settings / fullscreen) are now hidden while a camera
+  is floating in Picture-in-Picture — the app reports PiP enter/leave to the web app so it
+  can clear them from the tiny window. Pairs with nightlight 0.4.6.
+
 ## [0.4.0] - 2026-07-27
 
 ### Added
@@ -90,7 +102,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 - Updating from a pre-0.1.0 install shows the setup screen once (the previously
   hardcoded address is not migrated).
 
-[Unreleased]: https://github.com/sauso/nightlight-mobile/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/sauso/nightlight-mobile/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/sauso/nightlight-mobile/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/sauso/nightlight-mobile/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sauso/nightlight-mobile/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sauso/nightlight-mobile/compare/v0.1.3...v0.2.0

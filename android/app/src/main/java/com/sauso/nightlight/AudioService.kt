@@ -22,6 +22,10 @@ import androidx.core.app.NotificationCompat
  * the WebView. This service's job is to hold a partial wake lock + wifi lock and
  * show the persistent notification Android requires, so the OS doesn't freeze
  * or kill the process to save battery.
+ *
+ * The notification carries Pause/Resume + Stop actions. Pause/Resume doesn't touch
+ * this service's locks - it tells the web side (via BackgroundAudioPlugin) to mute /
+ * unmute the stream audio, so resuming is instant and the connection never drops.
  */
 class AudioService : Service() {
 
@@ -30,11 +34,15 @@ class AudioService : Service() {
         const val NOTIFICATION_ID = 1
         const val ACTION_START = "com.sauso.nightlight.action.START"
         const val ACTION_STOP = "com.sauso.nightlight.action.STOP"
+        const val ACTION_PAUSE = "com.sauso.nightlight.action.PAUSE"
+        const val ACTION_PLAY = "com.sauso.nightlight.action.PLAY"
         const val EXTRA_LABEL = "label"
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var isPaused = false
+    private var currentLabel = "camera"
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -47,9 +55,18 @@ class AudioService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_PAUSE, ACTION_PLAY -> {
+                // Pause/Resume just mutes/unmutes the WebView audio (the service and its
+                // locks stay put, so resume is instant and the stream never disconnects).
+                isPaused = intent?.action == ACTION_PAUSE
+                BackgroundAudioPlugin.notifyPauseChanged(isPaused)
+                startForegroundNotification() // re-post to swap the button + text
+            }
             else -> {
-                val label = intent?.getStringExtra(EXTRA_LABEL) ?: "camera"
-                startInForeground(label)
+                // START (also re-sent when cameras join/leave to refresh the label).
+                // Don't reset isPaused here - a label refresh shouldn't un-pause.
+                currentLabel = intent?.getStringExtra(EXTRA_LABEL) ?: "camera"
+                startForegroundNotification()
                 acquireLocks()
             }
         }
@@ -58,7 +75,7 @@ class AudioService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startInForeground(label: String) {
+    private fun buildNotification(): Notification {
         createChannel()
 
         // Tapping the notification body brings the app back to the front.
@@ -74,20 +91,34 @@ class AudioService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        // One button that toggles: shows "Pause" while playing, "Resume" while paused.
+        val toggleAction = if (isPaused) ACTION_PLAY else ACTION_PAUSE
+        val toggleLabel = if (isPaused) "Resume" else "Pause"
+        val toggleIntent = PendingIntent.getService(
+            this, 2,
+            Intent(this, AudioService::class.java).setAction(toggleAction),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Nightlight")
-            .setContentText("Listening to $label")
+            .setContentText(if (isPaused) "Paused - $currentLabel" else "Listening to $currentLabel")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(openIntent)
             .setOngoing(true)
             .setSilent(true)
+            .addAction(0, toggleLabel, toggleIntent)
             .addAction(0, "Stop", stopIntent)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
+    }
 
-        // Calling startForeground again while already running just updates the
-        // notification - that's how the label refreshes when cameras join/leave.
+    // Calling startForeground again while already running just updates the notification -
+    // that's how the label refreshes when cameras join/leave, and how Pause/Resume swaps
+    // the button.
+    private fun startForegroundNotification() {
+        val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,

@@ -23,6 +23,27 @@ import com.getcapacitor.annotation.CapacitorPlugin
 @CapacitorPlugin(name = "Pip")
 class PipPlugin : Plugin() {
 
+    companion object {
+        // The Activity's onPictureInPictureModeChanged needs a way to reach the live
+        // plugin instance so the web app can hide the on-video overlay buttons (mute,
+        // settings, fullscreen) while floating - they just waste space in the tiny window.
+        @Volatile
+        private var instance: PipPlugin? = null
+
+        fun notifyPipModeChanged(isInPip: Boolean) {
+            instance?.notifyListeners("pipModeChanged", JSObject().put("isInPip", isInPip))
+        }
+    }
+
+    override fun load() {
+        instance = this
+    }
+
+    override fun handleOnDestroy() {
+        if (instance === this) instance = null
+        super.handleOnDestroy()
+    }
+
     @PluginMethod
     fun isSupported(call: PluginCall) {
         val ret = JSObject()

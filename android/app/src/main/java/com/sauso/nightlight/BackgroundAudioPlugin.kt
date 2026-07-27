@@ -45,6 +45,12 @@ class BackgroundAudioPlugin : Plugin() {
         fun notifyStopped() {
             instance?.notifyListeners("stopped", JSObject())
         }
+
+        // Fired when Pause/Resume is tapped on the notification, so the web app can
+        // mute/unmute the stream audio to match.
+        fun notifyPauseChanged(paused: Boolean) {
+            instance?.notifyListeners("pauseChanged", JSObject().put("paused", paused))
+        }
     }
 
     override fun load() {

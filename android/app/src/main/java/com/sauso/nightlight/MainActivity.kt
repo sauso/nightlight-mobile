@@ -2,6 +2,7 @@ package com.sauso.nightlight
 
 import android.app.PictureInPictureParams
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
@@ -69,5 +70,12 @@ class MainActivity : BridgeActivity() {
     override fun onUserLeaveHint() {
         if (autoPipEnabled) enterPipMode()
         super.onUserLeaveHint()
+    }
+
+    // Tell the web app when we enter/leave PiP so it can hide the on-video overlay buttons
+    // (mute/settings/fullscreen) that otherwise clutter the tiny floating window.
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        PipPlugin.notifyPipModeChanged(isInPictureInPictureMode)
     }
 }
