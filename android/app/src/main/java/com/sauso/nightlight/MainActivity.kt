@@ -21,18 +21,33 @@ class MainActivity : BridgeActivity() {
     // window is back to full size, never against the tiny PiP window.
     private var inPip = false
 
-    // Toggling useWideViewPort forces Chromium's WebView to recompute its layout viewport (and
-    // page scale) for the current window size. This is the fix for the whole-app stuck-zoom
-    // after leaving PiP, where the WebView otherwise keeps the tiny PiP window's page scale.
-    // Restoring the original value means this only forces a recompute, never changes the setting.
+    // Set while we're deliberately resizing the WebView to force a scale recompute, so the
+    // layout watcher ignores the resulting layout changes and doesn't reschedule itself forever.
+    private var recomputing = false
+
+    // Force Chromium's WebView to recompute its page scale for the real full-window size, fixing
+    // the whole-app stuck-zoom after leaving PiP. A useWideViewPort toggle alone wasn't enough
+    // once the PiP window had been tapped (the touch commits the tiny-window scale), so we also
+    // apply a genuine 1px width change and restore it - a real onSizeChanged is what reliably
+    // makes the renderer recompute the scale from scratch.
     private val recomputeWebViewScale = Runnable {
-        bridge?.webView?.let { webView ->
-            val settings = webView.settings
-            val wide = settings.useWideViewPort
-            settings.useWideViewPort = !wide
-            settings.useWideViewPort = wide
+        val webView = bridge?.webView ?: return@Runnable
+        recomputing = true
+        val settings = webView.settings
+        val wide = settings.useWideViewPort
+        settings.useWideViewPort = !wide
+        settings.useWideViewPort = wide
+        val params = webView.layoutParams
+        val fullWidth = params.width
+        params.width = webView.width - 1
+        webView.layoutParams = params
+        webView.post {
+            params.width = fullWidth
+            webView.layoutParams = params
             webView.requestLayout()
             webView.invalidate()
+            // Let the restore's layout pass flush before re-arming the watcher.
+            webView.postDelayed({ recomputing = false }, 150)
         }
     }
 
@@ -74,7 +89,7 @@ class MainActivity : BridgeActivity() {
         // scale (see recomputeWebViewScale). A width change while not in PiP is the signal;
         // debounced so any burst of resizes settles into a single recompute at the final size.
         bridge?.webView?.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
-            if (!inPip && (right - left) != (oldRight - oldLeft)) {
+            if (!inPip && !recomputing && (right - left) != (oldRight - oldLeft)) {
                 scheduleWebViewScaleRecompute()
             }
         }
