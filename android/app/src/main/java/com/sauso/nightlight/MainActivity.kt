@@ -6,7 +6,6 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
-import android.view.View
 import com.getcapacitor.BridgeActivity
 import com.getcapacitor.CapConfig
 
@@ -17,6 +16,36 @@ class MainActivity : BridgeActivity() {
     // nativeBridge.js setAutoPictureInPicture), so pressing Home from, say, the Settings
     // page just backgrounds normally instead of floating a settings screen.
     var autoPipEnabled = false
+
+    // Whether we're currently in PiP. The WebView-scale recompute below must only run once the
+    // window is back to full size, never against the tiny PiP window.
+    private var inPip = false
+
+    // Toggling useWideViewPort forces Chromium's WebView to recompute its layout viewport (and
+    // page scale) for the current window size. This is the fix for the whole-app stuck-zoom
+    // after leaving PiP, where the WebView otherwise keeps the tiny PiP window's page scale.
+    // Restoring the original value means this only forces a recompute, never changes the setting.
+    private val recomputeWebViewScale = Runnable {
+        bridge?.webView?.let { webView ->
+            val settings = webView.settings
+            val wide = settings.useWideViewPort
+            settings.useWideViewPort = !wide
+            settings.useWideViewPort = wide
+            webView.requestLayout()
+            webView.invalidate()
+        }
+    }
+
+    // Debounced: run the recompute only once the layout has stopped changing for a beat. This is
+    // what makes rapid PiP enter/exit (several quick button presses) safe - each resize just
+    // resets the timer, so the recompute fires once against the final settled size instead of
+    // against an intermediate size mid-transition (which is when the zoom still slipped through).
+    private fun scheduleWebViewScaleRecompute() {
+        bridge?.webView?.let { webView ->
+            webView.removeCallbacks(recomputeWebViewScale)
+            webView.postDelayed(recomputeWebViewScale, 250)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must be registered before super.onCreate so the bridge picks them up.
@@ -40,6 +69,15 @@ class MainActivity : BridgeActivity() {
         }
 
         super.onCreate(savedInstanceState)
+
+        // Watch for the window resizing back to full after PiP and re-assert the WebView page
+        // scale (see recomputeWebViewScale). A width change while not in PiP is the signal;
+        // debounced so any burst of resizes settles into a single recompute at the final size.
+        bridge?.webView?.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
+            if (!inPip && (right - left) != (oldRight - oldLeft)) {
+                scheduleWebViewScaleRecompute()
+            }
+        }
     }
 
     // PiP needs API 26+ (the params-based enter) and hardware/OS support - some cheap or
@@ -77,43 +115,15 @@ class MainActivity : BridgeActivity() {
     // (mute/settings/fullscreen) that otherwise clutter the tiny floating window.
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        inPip = isInPictureInPictureMode
         PipPlugin.notifyPipModeChanged(isInPictureInPictureMode)
 
-        // Leaving PiP: Chromium's WebView sometimes keeps the page scale it computed for the
-        // tiny PiP window even after the window returns to full size, leaving the whole UI
-        // zoomed in until the app is restarted. Toggling useWideViewPort forces it to recompute
-        // its layout viewport (and page scale) for the current window size - but ONLY if we do
-        // it AFTER the window has actually grown back to full. The window resizes asynchronously
-        // with variable timing, so a fixed delay hit it only sometimes (the "random" zoom). So
-        // instead we recompute in reaction to the real resize: once immediately (covers the case
-        // where it already grew), and again on the next layout where the WebView gets wider
-        // (covers the case where it grows a moment later), then stop listening.
+        // Leaving PiP: also nudge a (debounced) recompute directly, in case the resize back to
+        // full already completed before this callback and so produces no further layout change
+        // for the watcher above to react to. The layout watcher handles the (common) case where
+        // the resize arrives afterwards.
         if (!isInPictureInPictureMode) {
-            bridge?.webView?.let { webView ->
-                fun forceScaleRecompute() {
-                    val settings = webView.settings
-                    val wide = settings.useWideViewPort
-                    settings.useWideViewPort = !wide
-                    settings.useWideViewPort = wide
-                    webView.requestLayout()
-                    webView.invalidate()
-                }
-                webView.post { forceScaleRecompute() }
-                val listener = object : View.OnLayoutChangeListener {
-                    override fun onLayoutChange(
-                        v: View, left: Int, top: Int, right: Int, bottom: Int,
-                        oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int
-                    ) {
-                        if ((right - left) > (oldRight - oldLeft)) {
-                            v.removeOnLayoutChangeListener(this)
-                            forceScaleRecompute()
-                        }
-                    }
-                }
-                webView.addOnLayoutChangeListener(listener)
-                // Safety net: if no growth layout ever arrives, stop listening so we don't leak.
-                webView.postDelayed({ webView.removeOnLayoutChangeListener(listener) }, 3000)
-            }
+            scheduleWebViewScaleRecompute()
         }
     }
 }
