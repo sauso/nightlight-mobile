@@ -10,6 +10,11 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Fixed
+- Returning from Picture-in-Picture no longer sometimes leaves the whole app zoomed in (stuck
+  until an app restart). On leaving PiP the WebView is forced to recompute its page scale for
+  the restored full-window size, instead of keeping the tiny PiP-window scale.
+
 ## [0.4.1] - 2026-07-27
 
 ### Added

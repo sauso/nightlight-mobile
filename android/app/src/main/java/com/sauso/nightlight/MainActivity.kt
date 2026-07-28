@@ -77,5 +77,26 @@ class MainActivity : BridgeActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         PipPlugin.notifyPipModeChanged(isInPictureInPictureMode)
+
+        // Leaving PiP: Chromium's WebView sometimes keeps the page scale it computed for the
+        // tiny PiP window even after the window returns to full size, leaving the whole UI
+        // zoomed in until the app is restarted. A JS-side viewport nudge can't force the
+        // native renderer to recompute, so we do it here: toggling useWideViewPort makes the
+        // WebView recompute its layout viewport (and page scale) for the current window size,
+        // then requestLayout runs a fresh measure/layout pass. Restore the original value so
+        // this only forces a recompute, never changes the effective setting. Delayed a beat so
+        // the window has finished resizing back to full before we recompute against it.
+        if (!isInPictureInPictureMode) {
+            bridge?.webView?.let { webView ->
+                webView.postDelayed({
+                    val settings = webView.settings
+                    val wide = settings.useWideViewPort
+                    settings.useWideViewPort = !wide
+                    settings.useWideViewPort = wide
+                    webView.requestLayout()
+                    webView.invalidate()
+                }, 200)
+            }
+        }
     }
 }
