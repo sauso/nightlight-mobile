@@ -17,51 +17,6 @@ class MainActivity : BridgeActivity() {
     // page just backgrounds normally instead of floating a settings screen.
     var autoPipEnabled = false
 
-    // Whether we're currently in PiP. The WebView-scale recompute below must only run once the
-    // window is back to full size, never against the tiny PiP window.
-    private var inPip = false
-
-    // Set while we're deliberately resizing the WebView to force a scale recompute, so the
-    // layout watcher ignores the resulting layout changes and doesn't reschedule itself forever.
-    private var recomputing = false
-
-    // Force Chromium's WebView to recompute its page scale for the real full-window size, fixing
-    // the whole-app stuck-zoom after leaving PiP. A useWideViewPort toggle alone wasn't enough
-    // once the PiP window had been tapped (the touch commits the tiny-window scale), so we also
-    // apply a genuine 1px width change and restore it - a real onSizeChanged is what reliably
-    // makes the renderer recompute the scale from scratch.
-    private val recomputeWebViewScale = Runnable {
-        val webView = bridge?.webView ?: return@Runnable
-        recomputing = true
-        val settings = webView.settings
-        val wide = settings.useWideViewPort
-        settings.useWideViewPort = !wide
-        settings.useWideViewPort = wide
-        val params = webView.layoutParams
-        val fullWidth = params.width
-        params.width = webView.width - 1
-        webView.layoutParams = params
-        webView.post {
-            params.width = fullWidth
-            webView.layoutParams = params
-            webView.requestLayout()
-            webView.invalidate()
-            // Let the restore's layout pass flush before re-arming the watcher.
-            webView.postDelayed({ recomputing = false }, 150)
-        }
-    }
-
-    // Debounced: run the recompute only once the layout has stopped changing for a beat. This is
-    // what makes rapid PiP enter/exit (several quick button presses) safe - each resize just
-    // resets the timer, so the recompute fires once against the final settled size instead of
-    // against an intermediate size mid-transition (which is when the zoom still slipped through).
-    private fun scheduleWebViewScaleRecompute() {
-        bridge?.webView?.let { webView ->
-            webView.removeCallbacks(recomputeWebViewScale)
-            webView.postDelayed(recomputeWebViewScale, 250)
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must be registered before super.onCreate so the bridge picks them up.
         registerPlugin(BackgroundAudioPlugin::class.java)
@@ -84,15 +39,6 @@ class MainActivity : BridgeActivity() {
         }
 
         super.onCreate(savedInstanceState)
-
-        // Watch for the window resizing back to full after PiP and re-assert the WebView page
-        // scale (see recomputeWebViewScale). A width change while not in PiP is the signal;
-        // debounced so any burst of resizes settles into a single recompute at the final size.
-        bridge?.webView?.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
-            if (!inPip && !recomputing && (right - left) != (oldRight - oldLeft)) {
-                scheduleWebViewScaleRecompute()
-            }
-        }
     }
 
     // PiP needs API 26+ (the params-based enter) and hardware/OS support - some cheap or
@@ -130,15 +76,6 @@ class MainActivity : BridgeActivity() {
     // (mute/settings/fullscreen) that otherwise clutter the tiny floating window.
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        inPip = isInPictureInPictureMode
         PipPlugin.notifyPipModeChanged(isInPictureInPictureMode)
-
-        // Leaving PiP: also nudge a (debounced) recompute directly, in case the resize back to
-        // full already completed before this callback and so produces no further layout change
-        // for the watcher above to react to. The layout watcher handles the (common) case where
-        // the resize arrives afterwards.
-        if (!isInPictureInPictureMode) {
-            scheduleWebViewScaleRecompute()
-        }
     }
 }
