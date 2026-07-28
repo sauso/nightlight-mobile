@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
+import android.view.View
 import com.getcapacitor.BridgeActivity
 import com.getcapacitor.CapConfig
 
@@ -80,22 +81,38 @@ class MainActivity : BridgeActivity() {
 
         // Leaving PiP: Chromium's WebView sometimes keeps the page scale it computed for the
         // tiny PiP window even after the window returns to full size, leaving the whole UI
-        // zoomed in until the app is restarted. A JS-side viewport nudge can't force the
-        // native renderer to recompute, so we do it here: toggling useWideViewPort makes the
-        // WebView recompute its layout viewport (and page scale) for the current window size,
-        // then requestLayout runs a fresh measure/layout pass. Restore the original value so
-        // this only forces a recompute, never changes the effective setting. Delayed a beat so
-        // the window has finished resizing back to full before we recompute against it.
+        // zoomed in until the app is restarted. Toggling useWideViewPort forces it to recompute
+        // its layout viewport (and page scale) for the current window size - but ONLY if we do
+        // it AFTER the window has actually grown back to full. The window resizes asynchronously
+        // with variable timing, so a fixed delay hit it only sometimes (the "random" zoom). So
+        // instead we recompute in reaction to the real resize: once immediately (covers the case
+        // where it already grew), and again on the next layout where the WebView gets wider
+        // (covers the case where it grows a moment later), then stop listening.
         if (!isInPictureInPictureMode) {
             bridge?.webView?.let { webView ->
-                webView.postDelayed({
+                fun forceScaleRecompute() {
                     val settings = webView.settings
                     val wide = settings.useWideViewPort
                     settings.useWideViewPort = !wide
                     settings.useWideViewPort = wide
                     webView.requestLayout()
                     webView.invalidate()
-                }, 200)
+                }
+                webView.post { forceScaleRecompute() }
+                val listener = object : View.OnLayoutChangeListener {
+                    override fun onLayoutChange(
+                        v: View, left: Int, top: Int, right: Int, bottom: Int,
+                        oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int
+                    ) {
+                        if ((right - left) > (oldRight - oldLeft)) {
+                            v.removeOnLayoutChangeListener(this)
+                            forceScaleRecompute()
+                        }
+                    }
+                }
+                webView.addOnLayoutChangeListener(listener)
+                // Safety net: if no growth layout ever arrives, stop listening so we don't leak.
+                webView.postDelayed({ webView.removeOnLayoutChangeListener(listener) }, 3000)
             }
         }
     }
