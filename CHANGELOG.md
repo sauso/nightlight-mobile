@@ -10,6 +10,12 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Fixed
+- The background-listening notification now shows a proper crescent-moon-and-star icon in the
+  status bar instead of a plain white circle. Android renders the status-bar icon as a solid
+  silhouette from its alpha, so the full-colour launcher icon came through as a featureless blob;
+  a dedicated monochrome icon fixes it.
+
 ## [0.4.1] - 2026-07-27
 
 ### Added

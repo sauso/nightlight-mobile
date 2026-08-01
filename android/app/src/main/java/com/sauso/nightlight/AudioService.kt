@@ -103,7 +103,7 @@ class AudioService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Nightlight")
             .setContentText(if (isPaused) "Paused - $currentLabel" else "Listening to $currentLabel")
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_nightlight)
             .setContentIntent(openIntent)
             .setOngoing(true)
             .setSilent(true)
