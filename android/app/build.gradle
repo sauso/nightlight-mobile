@@ -17,8 +17,8 @@ android {
         // Keep in sync with CHANGELOG.md: versionName is the semver release,
         // versionCode increments by 1 on every release (Android requires it to
         // only ever go up for updates to install).
-        versionCode 9
-        versionName "0.4.1"
+        versionCode 10
+        versionName "0.4.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
