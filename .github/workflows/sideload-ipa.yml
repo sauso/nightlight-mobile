@@ -1,12 +1,19 @@
 name: Build sideload IPA (unsigned device build)
 
-# Manual trigger. Produces an UNSIGNED device (arm64) .ipa for sideloading onto a
-# real iPhone with a free Apple ID via Sideloadly/AltStore on Windows - no Apple
-# Developer account and no Mac needed. The sideload tool re-signs it with your Apple
-# ID at install time. Run this whenever you want a fresh build to (re-)sideload; free
-# provisioning expires the installed app after 7 days.
+# Produces an UNSIGNED device (arm64) .ipa for sideloading onto a real iPhone with a free Apple ID
+# via Sideloadly/AltStore on Windows - no Apple Developer account and no Mac needed. The sideload
+# tool re-signs it with your Apple ID at install time. Runs:
+#   - on a release tag (v*): attaches the unsigned IPA to that tag's GitHub Release, alongside the
+#     signed APK from build-apk.yml, so each release offers a sideload-your-own-signature download.
+#   - manually (workflow_dispatch): produces a fresh IPA artifact for testing / re-sideloading (free
+#     provisioning expires the installed app after 7 days).
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch: {}
+
+permissions:
+  contents: write # attach the IPA to the tag's GitHub Release
 
 jobs:
   ipa:
@@ -46,6 +53,7 @@ jobs:
 
       # An .ipa is just a zip with the .app inside a top-level Payload/ folder.
       - name: Package into an .ipa
+        id: ipa
         run: |
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
           if [ -z "$APP" ]; then
@@ -56,11 +64,28 @@ jobs:
           echo "Packaging: $APP"
           mkdir -p Payload
           cp -R "$APP" Payload/
-          zip -qr nightlight-unsigned.ipa Payload
-          ls -la nightlight-unsigned.ipa
+          # On a tag (v0.4.3) name the file after the version; a manual run gets a generic name.
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            NAME="nightlight-${GITHUB_REF_NAME#v}-unsigned.ipa"
+          else
+            NAME="nightlight-unsigned.ipa"
+          fi
+          zip -qr "$NAME" Payload
+          ls -la "$NAME"
+          echo "path=$NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Upload the IPA
+      - name: Upload the IPA as a build artifact
         uses: actions/upload-artifact@v4
         with:
           name: nightlight-unsigned-ipa
-          path: nightlight-unsigned.ipa
+          path: ${{ steps.ipa.outputs.path }}
+
+      # On a release tag, attach the unsigned IPA to that tag's GitHub Release (the APK workflow
+      # creates the Release + notes). Only `files` is set here so this never overwrites the release
+      # name/body the APK workflow provides - it just adds the IPA asset.
+      - name: Attach the IPA to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.ipa.outputs.path }}
+          fail_on_unmatched_files: true
