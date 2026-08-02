@@ -63,5 +63,9 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<!-- Two-way audio (talk-back): the WKWebView's getUserMedia() needs microphone access, which
+	     iOS blocks entirely without this usage description string. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Nightlight uses the microphone for two-way audio — hold to talk through a camera's speaker.</string>
 </dict>
 </plist>

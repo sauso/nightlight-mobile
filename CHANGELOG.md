@@ -11,10 +11,11 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Added
-- **Microphone permission for two-way audio (talk-back).** The app now declares `RECORD_AUDIO`, so
-  the hold-to-talk button can capture the mic; Android prompts for it the first time you press talk.
-  Note: talk-back needs the app pointed at the server over **HTTPS** (browsers/WebViews only allow
-  microphone access in a secure context) — camera *viewing* still works over plain HTTP.
+- **Microphone permission for two-way audio (talk-back).** The app now requests mic access so the
+  hold-to-talk button can capture it — Android via `RECORD_AUDIO`, iOS via `NSMicrophoneUsageDescription`
+  (WKWebView blocks the mic entirely without it). Prompted the first time you press talk. Note:
+  talk-back needs the app pointed at the server over **HTTPS** (WebViews only allow microphone access
+  in a secure context) — camera *viewing* still works over plain HTTP.
 
 ## [0.4.2] - 2026-08-02
 
