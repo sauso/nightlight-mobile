@@ -39,19 +39,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # FCM client config. Kept in a repo secret (not git — the repo is public) and written
-      # here so the google-services Gradle plugin activates (see android/app/build.gradle,
-      # which applies it only if this file exists). Absent secret => build without push.
-      - name: Write google-services.json from secret
-        env:
-          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
-        run: |
-          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            echo "$GOOGLE_SERVICES_JSON" | base64 -d > android/app/google-services.json
-            echo "google-services.json written — FCM push enabled in this build."
-          else
-            echo "GOOGLE_SERVICES_JSON secret not set — building without push."
-          fi
+      # NOTE: no google-services.json is baked in. Nightlight is self-hosted, so the released APK
+      # is generic — each install initializes Firebase at RUNTIME from its own server's config
+      # (see FirebaseInitPlugin.kt + the web app's pushNotifications.js). The firebase-messaging
+      # SDK still ships via @capacitor/push-notifications; only the project config is per-server.
 
       - name: Sync web assets into the Android project
         run: npx cap sync android

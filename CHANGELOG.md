@@ -11,11 +11,13 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Added
-- **Push notifications.** The app now bundles the FCM push plugin (`@capacitor/push-notifications`)
-  and its Firebase client config, so it can receive **motion/detection alerts** from your server
-  while backgrounded or closed. On first sign-in it asks for notification permission and registers
-  the device with the server; tapping an alert opens the app. Requires the server side configured
-  with a Firebase service-account credential (see the main app's docs). Android only for now.
+- **Push notifications.** The app can now receive **motion/detection alerts** from your server while
+  backgrounded or closed (via FCM). Because Nightlight is self-hosted, the app ships with **no
+  Firebase project baked in** — it initializes Firebase at runtime from **your own server's** config,
+  so every install uses its own Firebase project (the released APK is generic). With notifications
+  enabled it asks for permission on sign-in and registers the device; tapping an alert opens the app.
+  Requires the server configured with Firebase credentials (see the app's Notifications docs). Android
+  only for now.
 
 ## [0.4.3] - 2026-08-03
 

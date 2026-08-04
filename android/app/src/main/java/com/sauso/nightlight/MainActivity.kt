@@ -22,6 +22,7 @@ class MainActivity : BridgeActivity() {
         registerPlugin(BackgroundAudioPlugin::class.java)
         registerPlugin(ServerConfigPlugin::class.java)
         registerPlugin(PipPlugin::class.java)
+        registerPlugin(FirebaseInitPlugin::class.java)
 
         // Which server to load is decided here at launch (like the Home Assistant
         // app), not baked into capacitor.config.json. No saved address -> config is
