@@ -39,6 +39,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # FCM client config. Kept in a repo secret (not git — the repo is public) and written
+      # here so the google-services Gradle plugin activates (see android/app/build.gradle,
+      # which applies it only if this file exists). Absent secret => build without push.
+      - name: Write google-services.json from secret
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            echo "$GOOGLE_SERVICES_JSON" | base64 -d > android/app/google-services.json
+            echo "google-services.json written — FCM push enabled in this build."
+          else
+            echo "GOOGLE_SERVICES_JSON secret not set — building without push."
+          fi
+
       - name: Sync web assets into the Android project
         run: npx cap sync android
 

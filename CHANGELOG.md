@@ -10,6 +10,13 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Added
+- **Push notifications.** The app now bundles the FCM push plugin (`@capacitor/push-notifications`)
+  and its Firebase client config, so it can receive **motion/detection alerts** from your server
+  while backgrounded or closed. On first sign-in it asks for notification permission and registers
+  the device with the server; tapping an alert opens the app. Requires the server side configured
+  with a Firebase service-account credential (see the main app's docs). Android only for now.
+
 ## [0.4.3] - 2026-08-03
 
 ### Added
