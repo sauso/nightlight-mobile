@@ -109,6 +109,11 @@ Check the logs — you should see:
 If instead you see *"no Firebase credentials … push notifications disabled,"* the service-account
 file isn't where the server expects it — re-check the path and filename in Step 4.
 
+Finally, **enable push at the server level**: in the web app go to **Settings → Notifications
+(push)** and turn on **"Enable push notifications."** Saving re-checks both files and tells you
+exactly what's missing if anything is — so you can just toggle it here after dropping the files in,
+without the container restart above.
+
 ## Step 5 — Turn it on in the app
 
 1. Install/update the **[Nightlight Android app](https://github.com/sauso/nightlight-mobile/releases/latest)**
@@ -145,6 +150,9 @@ Push notifications fire off **motion detection**, so turn it on for at least one
 - **"Notifications aren't set up on this server."** The app can reach the server but
   `google-services.json` is missing or invalid in the data dir. It must be the file from **your**
   Firebase Android app (package `com.sauso.nightlight`).
+- **"Push notifications are set up but not enabled on this server."** The files are present but an
+  admin hasn't turned push on — enable it under **Settings → Notifications (push)** (the tail of
+  Step 4).
 - **Notifications stopped after a reinstall.** Uninstalling or clearing the app's data invalidates its
   token; just re-enable in Account → Notifications. The server automatically prunes tokens that
   Firebase reports as unregistered.
