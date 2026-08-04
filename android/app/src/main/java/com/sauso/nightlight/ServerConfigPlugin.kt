@@ -41,6 +41,23 @@ class ServerConfigPlugin : Plugin() {
             val url = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_URL, null)
             return if (url.isNullOrBlank()) null else url
         }
+
+        // Quick liveness check used at launch (see MainActivity) to decide whether to point the
+        // app at the saved server or drop to the bundled setup screen. Must be called OFF the main
+        // thread — HttpURLConnection can sit the full timeout on an unreachable host.
+        fun isReachable(url: String, timeoutMs: Int): Boolean {
+            return try {
+                val conn = URL("$url/api/health").openConnection() as HttpURLConnection
+                conn.connectTimeout = timeoutMs
+                conn.readTimeout = timeoutMs
+                conn.requestMethod = "GET"
+                val ok = conn.responseCode == 200
+                conn.disconnect()
+                ok
+            } catch (e: Exception) {
+                false
+            }
+        }
     }
 
     private fun prefs() = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

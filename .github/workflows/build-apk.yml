@@ -39,6 +39,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # NOTE: no google-services.json is baked in. Nightlight is self-hosted, so the released APK
+      # is generic — each install initializes Firebase at RUNTIME from its own server's config
+      # (see FirebaseInitPlugin.kt + the web app's pushNotifications.js). The firebase-messaging
+      # SDK still ships via @capacitor/push-notifications; only the project config is per-server.
+
       - name: Sync web assets into the Android project
         run: npx cap sync android
 

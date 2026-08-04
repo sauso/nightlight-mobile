@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- usesCleartextTraffic: self-hosted servers are commonly exposed plain-http on
          the LAN (e.g. http://192.168.1.50:4000) with no reverse proxy in front - the
@@ -48,6 +49,16 @@
     		android:exported="false"
     		android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Nightlight is self-hosted: the app has NO google-services.json baked in and
+             initializes Firebase at runtime (FirebaseInitPlugin, from config fetched from the
+             user's own server). Remove firebase-messaging's auto-init provider, which otherwise
+             runs at app startup and fails without a baked-in config — which strands the app on a
+             blank screen instead of showing the "can't reach server" recovery page. -->
+        <provider
+            android:name="com.google.firebase.provider.FirebaseInitProvider"
+            android:authorities="${applicationId}.firebaseinitprovider"
+            android:exported="false"
+            tools:node="remove" />
 
     </application>
 

@@ -3,3 +3,5 @@ node_modules/
 android/key.properties
 android/.idea/
 android/local.properties
+# FCM client config — supplied to CI via the GOOGLE_SERVICES_JSON secret, not committed.
+android/app/google-services.json
