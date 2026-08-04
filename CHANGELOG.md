@@ -10,6 +10,13 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Fixed
+- **The "can't reach your server" recovery page works again with push installed.** Firebase's
+  auto-init provider ran at app startup and, with no baked-in config (the app now configures Firebase
+  at runtime), left the app on a blank screen when the server was unreachable instead of the recovery
+  page. The provider is now removed (we init Firebase ourselves). The page's logo is also inlined so
+  it renders even though the page's base URL is the unreachable server.
+
 ### Added
 - **Push notifications.** The app can now receive **motion/detection alerts** from your server while
   backgrounded or closed (via FCM). Because Nightlight is self-hosted, the app ships with **no

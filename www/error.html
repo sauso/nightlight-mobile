@@ -60,7 +60,13 @@
 </head>
 <body>
   <div class="card">
-    <img src="icon-192.png" alt="" class="app-icon" />
+    <!-- Inline SVG (not <img src>): the error page's base URL is the unreachable server, so a
+         relative image would 404. This always renders. -->
+    <svg class="app-icon" viewBox="0 0 84 84" role="img" aria-label="Nightlight" xmlns="http://www.w3.org/2000/svg">
+      <rect width="84" height="84" rx="22" fill="#171d38" />
+      <path d="M52 24a18 18 0 1 0 8 22 14 14 0 1 1-8-22z" fill="#f5d9a8" />
+      <circle cx="55" cy="30" r="2.4" fill="#f5d9a8" />
+    </svg>
     <h1>Can't reach your server</h1>
     <p>Nightlight couldn't connect to your server. It may be offline, or this device may
        not have a connection to it right now.</p>
