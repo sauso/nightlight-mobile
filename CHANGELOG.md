@@ -11,11 +11,13 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Fixed
-- **The "can't reach your server" recovery page works again with push installed.** Firebase's
-  auto-init provider ran at app startup and, with no baked-in config (the app now configures Firebase
-  at runtime), left the app on a blank screen when the server was unreachable instead of the recovery
-  page. The provider is now removed (we init Firebase ourselves). The page's logo is also inlined so
-  it renders even though the page's base URL is the unreachable server.
+- **An offline/stopped server no longer strands the app on a blank screen.** At launch the app now
+  checks that the saved server is actually reachable (a quick health check with a short timeout); if
+  it isn't, it drops straight to the **setup screen** — where you can retry or switch servers — rather
+  than hanging the WebView on a long connection timeout (a blank screen) or the error page (whose
+  native bridge wasn't reliably available, which is why "Use a different server" there did nothing).
+  Also removed Firebase's auto-init provider (Firebase is configured at runtime now) and inlined the
+  error page's logo so it can't 404 against the unreachable server.
 
 ### Added
 - **Push notifications.** The app can now receive **motion/detection alerts** from your server while

@@ -31,12 +31,26 @@ class MainActivity : BridgeActivity() {
         // asset server regardless of the remote URL (see Bridge.getErrorUrl), so an
         // unreachable server lands on a bundled page with retry/change-server
         // options instead of stranding the app on a WebView error.
+        // Only point the bridge at the saved server if it's actually reachable right now. A quick
+        // health check (off the main thread, joined with a short timeout — the splash screen is
+        // showing) means an offline/stopped server drops us straight to the bundled setup page —
+        // a local Capacitor page where the bridge works, so the user can retry or switch servers —
+        // instead of stranding the WebView on a long connection timeout (a blank screen), or on the
+        // errorPath page where the native bridge isn't reliably injected. If reachable, load it and
+        // keep errorPath as a fallback for a server that dies mid-session.
         val savedUrl = ServerConfigPlugin.getSavedUrl(this)
         if (savedUrl != null) {
-            config = CapConfig.Builder(this)
-                .setServerUrl(savedUrl)
-                .setErrorPath("error.html")
-                .create()
+            val reachable = booleanArrayOf(false)
+            Thread { reachable[0] = ServerConfigPlugin.isReachable(savedUrl, 2500) }.apply {
+                start()
+                join(3000)
+            }
+            if (reachable[0]) {
+                config = CapConfig.Builder(this)
+                    .setServerUrl(savedUrl)
+                    .setErrorPath("error.html")
+                    .create()
+            }
         }
 
         super.onCreate(savedInstanceState)
