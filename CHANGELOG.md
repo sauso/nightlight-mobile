@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-04
+
 ### Fixed
 - **An offline/stopped server now drops you to the setup screen — not a blank screen or a dead error
   page.** At launch the app checks the saved server is reachable (a quick health check, short
@@ -137,7 +139,10 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 - Updating from a pre-0.1.0 install shows the setup screen once (the previously
   hardcoded address is not migrated).
 
-[Unreleased]: https://github.com/sauso/nightlight-mobile/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/sauso/nightlight-mobile/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/sauso/nightlight-mobile/compare/v0.4.3...v0.5.0
+[0.4.3]: https://github.com/sauso/nightlight-mobile/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/sauso/nightlight-mobile/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/sauso/nightlight-mobile/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/sauso/nightlight-mobile/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sauso/nightlight-mobile/compare/v0.2.0...v0.3.0
