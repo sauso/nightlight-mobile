@@ -17,5 +17,11 @@ Both platforms share the same web UI (from `nightlight/frontend`) and the same
 JS↔native bridge, with the native plugins implemented per platform (Kotlin for
 Android, Swift for iOS).
 
+## Push notifications
+
+The app can show a phone notification when a camera sees motion, even while closed. It's optional and
+uses **your own Firebase project** (nothing is baked into the APK). Full walkthrough:
+**[docs/push-notifications.md](docs/push-notifications.md)**.
+
 For issues, feature requests, and support, please use the main project repo:
 **https://github.com/sauso/nightlight**
