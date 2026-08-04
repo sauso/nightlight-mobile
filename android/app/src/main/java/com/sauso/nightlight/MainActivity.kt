@@ -48,9 +48,12 @@ class MainActivity : BridgeActivity() {
             if (reachable[0]) {
                 config = CapConfig.Builder(this)
                     .setServerUrl(savedUrl)
-                    .setErrorPath("error.html")
                     .create()
             }
+            // else: leave config untouched so the bundled setup page (www/index.html) loads —
+            // a local Capacitor page with a working native bridge, so Connect / saved-server taps
+            // actually work. (The old error.html fallback is gone: Capacitor doesn't inject the
+            // bridge into an errorPath page, so its buttons could never work.)
         }
 
         super.onCreate(savedInstanceState)

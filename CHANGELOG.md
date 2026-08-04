@@ -11,13 +11,13 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Fixed
-- **An offline/stopped server no longer strands the app on a blank screen.** At launch the app now
-  checks that the saved server is actually reachable (a quick health check with a short timeout); if
-  it isn't, it drops straight to the **setup screen** — where you can retry or switch servers — rather
-  than hanging the WebView on a long connection timeout (a blank screen) or the error page (whose
-  native bridge wasn't reliably available, which is why "Use a different server" there did nothing).
-  Also removed Firebase's auto-init provider (Firebase is configured at runtime now) and inlined the
-  error page's logo so it can't 404 against the unreachable server.
+- **An offline/stopped server now drops you to the setup screen — not a blank screen or a dead error
+  page.** At launch the app checks the saved server is reachable (a quick health check, short
+  timeout); if it isn't, it loads the bundled **setup screen** — a local page where the native bridge
+  works, so **Connect** and your **saved servers** actually respond — instead of hanging the WebView
+  on a long connection timeout, or Capacitor's error page (into which the bridge isn't injected, so
+  its "Try again" / "Use a different server" buttons could never work). That broken error page is
+  removed. Also removed Firebase's auto-init provider (Firebase is configured at runtime now).
 
 ### Added
 - **Push notifications.** The app can now receive **motion/detection alerts** from your server while
