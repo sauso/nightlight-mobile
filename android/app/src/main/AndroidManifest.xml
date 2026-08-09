@@ -32,6 +32,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Deep link: nightlight:// URLs open the app (used by Pushover motion-alert
+                 notifications so tapping one brings Nightlight to the front). singleTask +
+                 the scheme filter route the URL to this existing activity. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="nightlight" />
+            </intent-filter>
+
         </activity>
 
         <provider
