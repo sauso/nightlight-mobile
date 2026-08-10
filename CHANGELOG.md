@@ -10,6 +10,14 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Fixed
+- **Switching servers now works after opening from a *Firebase* notification too.** 0.7.1 fixed this
+  for Pushover deep links but not Firebase: an FCM notification tap was re-delivered by the push
+  plugin on every internal restart (it keys off the notification's message id, which the launch
+  intent kept carrying), so after tapping an alert and then changing servers the app looped back to
+  the alert's server. Both kinds of launch intent are now consumed once, so changing servers behaves
+  normally regardless of how the app was opened.
+
 ## [0.7.1] - 2026-08-11
 
 ### Fixed
