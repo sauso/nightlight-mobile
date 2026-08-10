@@ -11,6 +11,9 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Fixed
+- **Firebase notifications show the crescent-moon icon, not a white circle.** The status-bar small
+  icon for background FCM alerts wasn't registered, so Android fell back to the app icon and rendered
+  its opaque shape as a plain white blob. It now uses the proper monochrome crescent-moon silhouette.
 - **Switching servers now works after opening from a *Firebase* notification too.** 0.7.1 fixed this
   for Pushover deep links but not Firebase: an FCM notification tap was re-delivered by the push
   plugin on every internal restart (it keys off the notification's message id, which the launch
