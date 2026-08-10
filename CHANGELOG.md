@@ -10,6 +10,15 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Added
+- **Alerts open the correct server (multi-server deep links).** If you point the app at more than one
+  Nightlight server, tapping an alert now switches the app to **the server that sent it** before
+  showing the nursery — a production alert tapped while the app was last on staging now opens
+  production, not staging. Works for both a tapped Pushover notification (native `nightlight://…`
+  deep link carrying `?server=`) and a Firebase alert (server in the payload); if the tapped server
+  matches the one already loaded, nothing switches. Requires the matching server change (nightlight
+  server app) that stamps each alert with its own address.
+
 ## [0.6.0] - 2026-08-09
 
 ### Added
