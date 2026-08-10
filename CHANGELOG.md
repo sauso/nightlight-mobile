@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-11
+
 ### Fixed
 - **Switching servers works after opening from a deep link.** When the app was cold-started by
   tapping an alert's deep link, trying to change servers afterwards just reloaded the same server
