@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-11
+
 ### Fixed
 - **Firebase notifications show the crescent-moon icon, not a white circle.** The status-bar small
   icon for background FCM alerts wasn't registered, so Android fell back to the app icon and rendered
