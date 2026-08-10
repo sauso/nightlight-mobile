@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-10
+
 ### Added
 - **Alerts open the correct server (multi-server deep links).** If you point the app at more than one
   Nightlight server, tapping an alert now switches the app to **the server that sent it** before
