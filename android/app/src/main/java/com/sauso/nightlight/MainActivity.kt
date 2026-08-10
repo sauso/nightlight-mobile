@@ -1,6 +1,7 @@
 package com.sauso.nightlight
 
 import android.app.PictureInPictureParams
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
@@ -31,6 +32,13 @@ class MainActivity : BridgeActivity() {
         // asset server regardless of the remote URL (see Bridge.getErrorUrl), so an
         // unreachable server lands on a bundled page with retry/change-server
         // options instead of stranding the app on a WebView error.
+        // A launch via a nightlight:// deep link (a tapped Pushover alert) may name the server the
+        // alert came from (?server=…). If that's a different, reachable server than the saved one,
+        // persist it now — before we read the saved URL below — so a prod alert tapped while the app
+        // was last on dev cold-starts straight into prod. (The FCM path does the same switch from
+        // JS; see pushNotifications.js. The warm-app case is handled in onNewIntent.)
+        handleDeepLinkServer(intent)
+
         // Only point the bridge at the saved server if it's actually reachable right now. A quick
         // health check (off the main thread, joined with a short timeout — the splash screen is
         // showing) means an offline/stopped server drops us straight to the bundled setup page —
@@ -57,6 +65,43 @@ class MainActivity : BridgeActivity() {
         }
 
         super.onCreate(savedInstanceState)
+    }
+
+    // The app is singleTask, so a deep link tapped while it's already running is delivered here
+    // rather than starting a fresh activity. If the link names a different, reachable server than
+    // the one currently loaded, switch to it (persist + recreate, which re-runs onCreate and
+    // rebuilds the bridge against the new server). A same-server link needs nothing — singleTask has
+    // already brought the app to the front on the nursery it was showing.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (handleDeepLinkServer(intent)) {
+            recreate()
+        }
+    }
+
+    // If the intent is a nightlight:// deep link carrying a ?server=<url> that differs from the
+    // saved server and is reachable right now, persist it as the active server and return true.
+    // Returns false (changing nothing) for a non-deep-link intent, no server param, the same server
+    // we're already on, or an unreachable address — in which case the app just loads/keeps the
+    // current server. The reachability check runs off the main thread but is joined with a short
+    // timeout: the splash screen is up, and we must decide before onCreate builds the bridge config.
+    private fun handleDeepLinkServer(intent: Intent?): Boolean {
+        if (intent?.action != Intent.ACTION_VIEW) return false
+        val data = intent.data ?: return false
+        if (data.scheme != "nightlight") return false
+        val server = data.getQueryParameter("server")?.trim()?.trimEnd('/')
+        if (server.isNullOrEmpty()) return false
+        if (!server.startsWith("http://") && !server.startsWith("https://")) return false
+        if (server == ServerConfigPlugin.getSavedUrl(this)) return false
+        val reachable = booleanArrayOf(false)
+        Thread { reachable[0] = ServerConfigPlugin.isReachable(server, 2500) }.apply {
+            start()
+            join(3000)
+        }
+        if (!reachable[0]) return false
+        ServerConfigPlugin.saveUrl(this, server)
+        return true
     }
 
     // PiP needs API 26+ (the params-based enter) and hardware/OS support - some cheap or

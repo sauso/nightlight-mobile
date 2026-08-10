@@ -1,6 +1,7 @@
 package com.sauso.nightlight
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -42,6 +43,29 @@ class ServerConfigPlugin : Plugin() {
             return if (url.isNullOrBlank()) null else url
         }
 
+        private fun knownServersOf(prefs: SharedPreferences): MutableList<String> {
+            val list = mutableListOf<String>()
+            try {
+                val arr = JSONArray(prefs.getString(KEY_KNOWN, "[]"))
+                for (i in 0 until arr.length()) list.add(arr.getString(i))
+            } catch (e: Exception) {
+                // Corrupt prefs entry - treat as empty.
+            }
+            return list
+        }
+
+        // Persist a server as the active one (and remember it), from native code that already knows
+        // the address is good — e.g. MainActivity switching to the server carried in a tapped
+        // deep link. Mirrors what the instance save() writes, minus the network validation the
+        // caller has already done.
+        fun saveUrl(context: Context, url: String) {
+            val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val list = knownServersOf(p)
+            list.remove(url)
+            list.add(0, url)
+            p.edit().putString(KEY_URL, url).putString(KEY_KNOWN, JSONArray(list).toString()).apply()
+        }
+
         // Quick liveness check used at launch (see MainActivity) to decide whether to point the
         // app at the saved server or drop to the bundled setup screen. Must be called OFF the main
         // thread — HttpURLConnection can sit the full timeout on an unreachable host.
@@ -62,16 +86,7 @@ class ServerConfigPlugin : Plugin() {
 
     private fun prefs() = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    private fun knownServers(): MutableList<String> {
-        val list = mutableListOf<String>()
-        try {
-            val arr = JSONArray(prefs().getString(KEY_KNOWN, "[]"))
-            for (i in 0 until arr.length()) list.add(arr.getString(i))
-        } catch (e: Exception) {
-            // Corrupt prefs entry - treat as empty rather than crash.
-        }
-        return list
-    }
+    private fun knownServers(): MutableList<String> = knownServersOf(prefs())
 
     private fun rememberServer(url: String) {
         val list = knownServers()
