@@ -65,6 +65,17 @@ class MainActivity : BridgeActivity() {
         }
 
         super.onCreate(savedInstanceState)
+
+        // A cold-start deep link is one-shot, but the activity keeps returning this VIEW intent from
+        // getIntent() across recreate(). Without consuming it, switching servers — which clears the
+        // saved URL and recreate()s the activity — would re-run onCreate, re-read ?server= from the
+        // stale intent, and bounce straight back to the deep link's server (never reaching the setup
+        // page). So once we've handled it, replace the launch intent with a neutral one; a later
+        // recreate() then starts clean. (Done after super.onCreate so Capacitor still sees the
+        // original intent on this first launch.)
+        if (intent?.action == Intent.ACTION_VIEW && intent.scheme == "nightlight") {
+            setIntent(Intent(Intent.ACTION_MAIN))
+        }
     }
 
     // The app is singleTask, so a deep link tapped while it's already running is delivered here
