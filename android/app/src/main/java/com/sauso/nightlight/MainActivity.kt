@@ -65,30 +65,37 @@ class MainActivity : BridgeActivity() {
         }
 
         super.onCreate(savedInstanceState)
-
-        // A cold-start deep link is one-shot, but the activity keeps returning this VIEW intent from
-        // getIntent() across recreate(). Without consuming it, switching servers — which clears the
-        // saved URL and recreate()s the activity — would re-run onCreate, re-read ?server= from the
-        // stale intent, and bounce straight back to the deep link's server (never reaching the setup
-        // page). So once we've handled it, replace the launch intent with a neutral one; a later
-        // recreate() then starts clean. (Done after super.onCreate so Capacitor still sees the
-        // original intent on this first launch.)
-        if (intent?.action == Intent.ACTION_VIEW && intent.scheme == "nightlight") {
-            setIntent(Intent(Intent.ACTION_MAIN))
-        }
     }
 
-    // The app is singleTask, so a deep link tapped while it's already running is delivered here
-    // rather than starting a fresh activity. If the link names a different, reachable server than
-    // the one currently loaded, switch to it (persist + recreate, which re-runs onCreate and
-    // rebuilds the bridge against the new server). A same-server link needs nothing — singleTask has
-    // already brought the app to the front on the nursery it was showing.
+    // The single delivery point for launch intents. Capacitor's BridgeActivity.load() (invoked from
+    // super.onCreate above) calls this with getIntent(), and it's also called by the OS for a deep
+    // link/notification tapped while the app is already running (singleTask). super.onNewIntent hands
+    // the intent to the Capacitor bridge, which is where the push plugin fires
+    // pushNotificationActionPerformed for an FCM tap.
+    //
+    // The catch: getIntent() keeps returning the *original* launch intent across every recreate(). So
+    // a one-shot intent — a Pushover nightlight:// deep link (?server=) or an FCM notification tap
+    // (google.message_id) — would be re-delivered on each recreate(), re-applying its server. That's
+    // exactly what fights a manual "change server": clearing the saved URL and recreate()ing re-runs
+    // load() -> onNewIntent(getIntent()), which re-fires the original server and loops the app back.
+    // So once the bridge has delivered a consumable intent, we replace the stored launch intent with
+    // a neutral one; later recreate()s then start clean. (Neutralising happens AFTER super.onNewIntent,
+    // so the genuine first delivery is unaffected.)
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (handleDeepLinkServer(intent)) {
-            recreate()
+        val switched = handleDeepLinkServer(intent)
+        if (isConsumableLaunchIntent(intent)) {
+            setIntent(Intent(Intent.ACTION_MAIN))
         }
+        if (switched) recreate()
+    }
+
+    // A launch intent that should fire once and then be forgotten: a Pushover nightlight:// deep link,
+    // or an FCM notification tap (Capacitor keys these off the google.message_id extra).
+    private fun isConsumableLaunchIntent(intent: Intent): Boolean {
+        if (intent.action == Intent.ACTION_VIEW && intent.scheme == "nightlight") return true
+        return intent.extras?.containsKey("google.message_id") == true
     }
 
     // If the intent is a nightlight:// deep link carrying a ?server=<url> that differs from the

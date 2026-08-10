@@ -59,6 +59,14 @@
     		android:exported="false"
     		android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Small icon for FCM system-tray notifications (shown when the app is backgrounded/closed).
+             Without this, FCM falls back to the app launcher icon — an opaque disc that Android
+             renders as a plain white circle. ic_stat_nightlight is the required monochrome
+             crescent-moon-and-star silhouette (Android tints the small icon from its alpha channel). -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_nightlight" />
+
         <!-- Nightlight is self-hosted: the app has NO google-services.json baked in and
              initializes Firebase at runtime (FirebaseInitPlugin, from config fetched from the
              user's own server). Remove firebase-messaging's auto-init provider, which otherwise
