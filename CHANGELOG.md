@@ -10,6 +10,11 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Fixed
+- **The hardware back button now goes back a screen instead of exiting the app.** Without a back
+  handler the OS default finished the activity on the first press; back now walks the in-app history
+  (Settings → Camera → Live) and only leaves the app once you're already on the first screen.
+
 ## [0.7.2] - 2026-08-11
 
 ### Fixed
