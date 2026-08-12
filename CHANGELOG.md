@@ -11,10 +11,11 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Added
-- **File export via the share sheet.** Added the `@capacitor/filesystem` + `@capacitor/share`
-  plugins so the app can save/share files — the diagnostics bundle (Settings → Logs) now works in
-  the app by opening the Android share sheet (Save to Files, email, etc.), instead of a browser-style
-  download the WebView can't perform.
+- **File download to the Downloads folder.** A native `Download` plugin saves exported files (e.g.
+  the diagnostics bundle from Settings → Logs) straight into the phone's public Downloads folder via
+  MediaStore — no permission needed on Android 10+ — so they're easy to then attach to a GitHub
+  issue. Falls back to the share sheet (`@capacitor/filesystem` + `@capacitor/share`) on older
+  devices where a direct download isn't allowed. The WebView can't do a browser-style download at all.
 
 ### Fixed
 - **The hardware back button and the OS edge back-gesture now go back a screen instead of exiting
