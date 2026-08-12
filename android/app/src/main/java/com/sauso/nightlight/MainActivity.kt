@@ -67,20 +67,11 @@ class MainActivity : BridgeActivity() {
         super.onCreate(savedInstanceState)
     }
 
-    // Hardware back should walk back through the in-app history (Settings -> Camera -> Live) rather
-    // than exiting on the first press. We don't bundle the @capacitor/app plugin, so Capacitor
-    // registers no back handler and the OnBackPressedDispatcher's default just finishes the Activity
-    // (the "back exits the app" bug). Route the press into the WebView's own history — which the web
-    // app's hash-router populates on every navigation — and only leave the app once there's nowhere
-    // left to go back to.
-    override fun onBackPressed() {
-        val webView = this.bridge?.webView
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
-        }
-    }
+    // Hardware back / the OS edge back-gesture is handled by the @capacitor/app plugin, which
+    // dispatches a `backButton` event to the web app (see useHardwareBack in the frontend). That's
+    // the reliable path: Android's WebView doesn't track the single-page hash-router's history, so a
+    // native webView.canGoBack()/goBack() can't walk our in-app screens — but react-router's own
+    // history can, in JS. No onBackPressed override here on purpose.
 
     // The single delivery point for launch intents. Capacitor's BridgeActivity.load() (invoked from
     // super.onCreate above) calls this with getIntent(), and it's also called by the OS for a deep

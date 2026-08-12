@@ -11,9 +11,11 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Fixed
-- **The hardware back button now goes back a screen instead of exiting the app.** Without a back
-  handler the OS default finished the activity on the first press; back now walks the in-app history
-  (Settings → Camera → Live) and only leaves the app once you're already on the first screen.
+- **The hardware back button and the OS edge back-gesture now go back a screen instead of exiting
+  the app.** Added the `@capacitor/app` plugin so the back event is dispatched to the web app, which
+  steps back through the in-app history (Settings → Camera → Live) via react-router and only leaves
+  the app from the first screen. (An earlier native-only attempt couldn't work: Android's WebView
+  doesn't track the single-page hash-router's history, so it always fell through to exit.)
 
 ## [0.7.2] - 2026-08-11
 
