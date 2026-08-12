@@ -10,6 +10,12 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Added
+- **File export via the share sheet.** Added the `@capacitor/filesystem` + `@capacitor/share`
+  plugins so the app can save/share files — the diagnostics bundle (Settings → Logs) now works in
+  the app by opening the Android share sheet (Save to Files, email, etc.), instead of a browser-style
+  download the WebView can't perform.
+
 ### Fixed
 - **The hardware back button and the OS edge back-gesture now go back a screen instead of exiting
   the app.** Added the `@capacitor/app` plugin so the back event is dispatched to the web app, which
