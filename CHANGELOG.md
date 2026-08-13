@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-14
+
 ### Added
 - **File download to the Downloads folder.** A native `Download` plugin saves exported files (e.g.
   the diagnostics bundle from Settings → Logs) straight into the phone's public Downloads folder via
