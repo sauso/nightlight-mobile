@@ -24,6 +24,7 @@ class MainActivity : BridgeActivity() {
         registerPlugin(ServerConfigPlugin::class.java)
         registerPlugin(PipPlugin::class.java)
         registerPlugin(FirebaseInitPlugin::class.java)
+        registerPlugin(DownloadPlugin::class.java)
 
         // Which server to load is decided here at launch (like the Home Assistant
         // app), not baked into capacitor.config.json. No saved address -> config is
@@ -66,6 +67,12 @@ class MainActivity : BridgeActivity() {
 
         super.onCreate(savedInstanceState)
     }
+
+    // Hardware back / the OS edge back-gesture is handled by the @capacitor/app plugin, which
+    // dispatches a `backButton` event to the web app (see useHardwareBack in the frontend). That's
+    // the reliable path: Android's WebView doesn't track the single-page hash-router's history, so a
+    // native webView.canGoBack()/goBack() can't walk our in-app screens — but react-router's own
+    // history can, in JS. No onBackPressed override here on purpose.
 
     // The single delivery point for launch intents. Capacitor's BridgeActivity.load() (invoked from
     // super.onCreate above) calls this with getIntent(), and it's also called by the OS for a deep

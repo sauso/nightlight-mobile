@@ -10,6 +10,22 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-14
+
+### Added
+- **File download to the Downloads folder.** A native `Download` plugin saves exported files (e.g.
+  the diagnostics bundle from Settings → Logs) straight into the phone's public Downloads folder via
+  MediaStore — no permission needed on Android 10+ — so they're easy to then attach to a GitHub
+  issue. Falls back to the share sheet (`@capacitor/filesystem` + `@capacitor/share`) on older
+  devices where a direct download isn't allowed. The WebView can't do a browser-style download at all.
+
+### Fixed
+- **The hardware back button and the OS edge back-gesture now go back a screen instead of exiting
+  the app.** Added the `@capacitor/app` plugin so the back event is dispatched to the web app, which
+  steps back through the in-app history (Settings → Camera → Live) via react-router and only leaves
+  the app from the first screen. (An earlier native-only attempt couldn't work: Android's WebView
+  doesn't track the single-page hash-router's history, so it always fell through to exit.)
+
 ## [0.7.2] - 2026-08-11
 
 ### Fixed
