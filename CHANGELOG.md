@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-17
+
 ### Fixed
 - **iOS: the committed Swift Package manifest now lists the plugins.** `ios/App/CapApp-SPM/Package.swift`
   had been stale since the platform was scaffolded (zero plugins), so a local `xcodebuild` without a
