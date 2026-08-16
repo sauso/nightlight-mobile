@@ -10,6 +10,13 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Fixed
+- **iOS: the committed Swift Package manifest now lists the plugins.** `ios/App/CapApp-SPM/Package.swift`
+  had been stale since the platform was scaffolded (zero plugins), so a local `xcodebuild` without a
+  preceding `npx cap sync ios` would produce an app missing Filesystem/Share/App/PushNotifications. CI
+  regenerates it on every build (so released IPAs were always correct), but the tracked file now matches
+  what `cap sync` generates.
+
 ## [0.8.0] - 2026-08-14
 
 ### Added
