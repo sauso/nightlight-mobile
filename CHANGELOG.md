@@ -10,7 +10,20 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
-## [0.8.1] - 2026-08-17
+## [0.8.2] - 2026-08-24
+
+### Fixed
+- **An unreachable server no longer strands the app on the browser's raw "webpage not available" error.**
+  Previously, if the server became unreachable while the app was already open (Wi-Fi/data dropped, or the
+  WebView reloaded on resume with no connection), the WebView fell through to the system error page and the
+  only way out was to force-quit. The app now drops back to the connect screen, where your saved server is
+  one tap away to retry — or you can switch to a different one.
+
+### Changed
+- **The server-setup screen now uses the same gold accent as the rest of the app** (it was a slightly
+  paler shade).
+
+## [0.8.1] - 2026-08-16
 
 ### Fixed
 - **iOS: the committed Swift Package manifest now lists the plugins.** `ios/App/CapApp-SPM/Package.swift`

@@ -19,9 +19,11 @@ Android, Swift for iOS).
 
 ## Push notifications
 
-The app can show a phone notification when a camera sees motion, even while closed. It's optional and
-uses **your own Firebase project** (nothing is baked into the APK). Full walkthrough:
-**[docs/push-notifications.md](docs/push-notifications.md)**.
+The app can show a phone notification when a camera sees motion, even while closed. Delivery into the
+Nightlight app itself uses **your own Firebase project** (nothing is baked into the APK) — see the
+**[Firebase walkthrough](docs/push-notifications.md)**. Alternatively the server can send the same alerts
+through **Pushover, ntfy, or Gotify**, which arrive in those providers' own apps (handy on iOS); see the
+server-side **[notifications guide](https://github.com/sauso/nightlight/blob/main/docs/notifications.md)**.
 
 For issues, feature requests, and support, please use the main project repo:
 **https://github.com/sauso/nightlight**
