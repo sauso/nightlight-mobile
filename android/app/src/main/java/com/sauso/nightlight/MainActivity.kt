@@ -44,9 +44,8 @@ class MainActivity : BridgeActivity() {
         // health check (off the main thread, joined with a short timeout — the splash screen is
         // showing) means an offline/stopped server drops us straight to the bundled setup page —
         // a local Capacitor page where the bridge works, so the user can retry or switch servers —
-        // instead of stranding the WebView on a long connection timeout (a blank screen), or on the
-        // errorPath page where the native bridge isn't reliably injected. If reachable, load it and
-        // keep errorPath as a fallback for a server that dies mid-session.
+        // instead of stranding the WebView on a long connection timeout (a blank screen). If reachable,
+        // load it; a server that then dies MID-session is caught by the errorPath page (see below).
         val savedUrl = ServerConfigPlugin.getSavedUrl(this)
         if (savedUrl != null) {
             val reachable = booleanArrayOf(false)
@@ -59,10 +58,10 @@ class MainActivity : BridgeActivity() {
                     .setServerUrl(savedUrl)
                     .create()
             }
-            // else: leave config untouched so the bundled setup page (www/index.html) loads —
-            // a local Capacitor page with a working native bridge, so Connect / saved-server taps
-            // actually work. (The old error.html fallback is gone: Capacitor doesn't inject the
-            // bridge into an errorPath page, so its buttons could never work.)
+            // else: leave config untouched so the bundled setup page (www/index.html) loads — a local
+            // Capacitor page with a working native bridge, so Connect / saved-server taps actually work.
+            // (We prefer this over the errorPath page at COLD START because the setup page also lists
+            // saved servers.)
         }
 
         super.onCreate(savedInstanceState)

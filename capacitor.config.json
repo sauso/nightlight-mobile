@@ -3,7 +3,8 @@
   "appName": "Nightlight",
   "webDir": "www",
   "server": {
-    "cleartext": true
+    "cleartext": true,
+    "errorPath": "error.html"
   },
   "android": {
     "allowMixedContent": false
