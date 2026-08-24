@@ -7,7 +7,11 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
 import com.getcapacitor.BridgeActivity
+import com.getcapacitor.BridgeWebViewClient
 import com.getcapacitor.CapConfig
 
 class MainActivity : BridgeActivity() {
@@ -17,6 +21,14 @@ class MainActivity : BridgeActivity() {
     // nativeBridge.js setAutoPictureInPicture), so pressing Home from, say, the Settings
     // page just backgrounds normally instead of floating a settings screen.
     var autoPipEnabled = false
+
+    companion object {
+        // When the WebView hits a main-frame load error we recreate() the activity to fall back to the
+        // setup page. This timestamp is static so it SURVIVES the recreate(), letting us debounce and
+        // never spin in a recreate loop if a server is reachable enough to retry but keeps failing to load.
+        private var lastErrorRecreateAt = 0L
+        private const val ERROR_RECREATE_DEBOUNCE_MS = 8000L
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must be registered before super.onCreate so the bridge picks them up.
@@ -65,6 +77,29 @@ class MainActivity : BridgeActivity() {
         }
 
         super.onCreate(savedInstanceState)
+
+        // Capacitor's server.errorPath only catches load failures for the BUNDLED local app — NOT for a
+        // remote server.url (like an HTTPS domain). So a saved remote server that goes unreachable while
+        // the app is open (network dropped, or the WebView reloads on resume with no connection) would
+        // strand the WebView on the system "webpage not available" page, recoverable only by force-quitting.
+        // Wrap the bridge's WebView client: on a main-frame load error, re-run onCreate via recreate(),
+        // whose reachability gate (above) drops an unreachable server to the bundled setup page — a LOCAL
+        // page where the native bridge works and the saved server is one tap away to retry. Debounced via a
+        // process-lived timestamp so a reachable-but-flaky load can't recreate-loop; the setup page is a
+        // local load, so it never re-triggers this itself.
+        bridge.webView.webViewClient = object : BridgeWebViewClient(bridge) {
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                if (request.isForMainFrame) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastErrorRecreateAt > ERROR_RECREATE_DEBOUNCE_MS) {
+                        lastErrorRecreateAt = now
+                        view.post { recreate() }
+                        return
+                    }
+                }
+                super.onReceivedError(view, request, error)
+            }
+        }
     }
 
     // Hardware back / the OS edge back-gesture is handled by the @capacitor/app plugin, which
