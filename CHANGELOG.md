@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-24
+
 ### Fixed
 - **An unreachable server no longer strands the app on the browser's raw "webpage not available" error.**
   Previously, if the server became unreachable while the app was already open (Wi-Fi/data dropped, or the
@@ -20,6 +22,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ### Changed
 - **The server-setup screen now uses the same gold accent as the rest of the app** (it was a slightly
   paler shade).
+
+## [0.8.1] - 2026-08-16
 
 ### Fixed
 - **iOS: the committed Swift Package manifest now lists the plugins.** `ios/App/CapApp-SPM/Package.swift`
