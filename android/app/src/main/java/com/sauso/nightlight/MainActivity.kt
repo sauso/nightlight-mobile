@@ -28,6 +28,10 @@ class MainActivity : BridgeActivity() {
         // never spin in a recreate loop if a server is reachable enough to retry but keeps failing to load.
         private var lastErrorRecreateAt = 0L
         private const val ERROR_RECREATE_DEBOUNCE_MS = 8000L
+
+        // The one shape a server request from a link may have (#559): http(s), a host or bracketed IPv6
+        // literal, an optional port. Mirrors REQUEST_ORIGIN_SHAPE in the web app's nativeBridge.js.
+        private val REQUEST_ORIGIN = Regex("^https?://(?:[A-Za-z0-9._-]+|\\[[0-9A-Fa-f:.]+\\])(?::\\d{1,5})?$")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,12 +49,12 @@ class MainActivity : BridgeActivity() {
         // asset server regardless of the remote URL (see Bridge.getErrorUrl), so an
         // unreachable server lands on a bundled page with retry/change-server
         // options instead of stranding the app on a WebView error.
-        // A launch via a nightlight:// deep link (a tapped Pushover alert) may name the server the
-        // alert came from (?server=…). If that's a different, reachable server than the saved one,
-        // persist it now — before we read the saved URL below — so a prod alert tapped while the app
-        // was last on dev cold-starts straight into prod. (The FCM path does the same switch from
-        // JS; see pushNotifications.js. The warm-app case is handled in onNewIntent.)
-        handleDeepLinkServer(intent)
+        // A launch via a nightlight:// deep link (a tapped Pushover alert) may name the server the alert
+        // came from (?server=…). That is only ever a REQUEST (#559): it is held for the web app, which asks
+        // the person and only offers servers already saved on this phone. Nothing is saved or switched
+        // here, and nothing contacts the named address. (The FCM path goes through the same web-side
+        // check; see pushNotifications.js. The warm-app case is handled in onNewIntent.)
+        recordDeepLinkServer(intent)
 
         // Only point the bridge at the saved server if it's actually reachable right now. A quick
         // health check (off the main thread, joined with a short timeout — the splash screen is
@@ -122,14 +126,18 @@ class MainActivity : BridgeActivity() {
     // So once the bridge has delivered a consumable intent, we replace the stored launch intent with
     // a neutral one; later recreate()s then start clean. (Neutralising happens AFTER super.onNewIntent,
     // so the genuine first delivery is unaffected.)
+    //
+    // A deep link naming a server no longer switches or recreates anything (#559): it is held as a
+    // request, and the web app is told with a window event so it can ask while it is already open. A
+    // cold start fires the event before the page exists, so the page also asks once when it loads.
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val switched = handleDeepLinkServer(intent)
+        val recorded = recordDeepLinkServer(intent)
         if (isConsumableLaunchIntent(intent)) {
             setIntent(Intent(Intent.ACTION_MAIN))
         }
-        if (switched) recreate()
+        if (recorded) bridge?.triggerWindowJSEvent("nightlightServerRequest")
     }
 
     // A launch intent that should fire once and then be forgotten: a Pushover nightlight:// deep link,
@@ -139,27 +147,25 @@ class MainActivity : BridgeActivity() {
         return intent.extras?.containsKey("google.message_id") == true
     }
 
-    // If the intent is a nightlight:// deep link carrying a ?server=<url> that differs from the
-    // saved server and is reachable right now, persist it as the active server and return true.
-    // Returns false (changing nothing) for a non-deep-link intent, no server param, the same server
-    // we're already on, or an unreachable address — in which case the app just loads/keeps the
-    // current server. The reachability check runs off the main thread but is joined with a short
-    // timeout: the splash screen is up, and we must decide before onCreate builds the bridge config.
-    private fun handleDeepLinkServer(intent: Intent?): Boolean {
+    // If the intent is a nightlight:// deep link carrying a ?server=<origin>, hold it as a pending request
+    // for the web app (ServerConfig.takePending) and return true. Returns false for anything else.
+    //
+    // This used to save the named server as the active one if it answered a health check, with no question
+    // asked (#559). Now it only HOLDS the request: it never saves, never switches, never recreates, and
+    // contacts nothing (the old health probe made this phone fetch an address that came from outside the
+    // app, on the main thread). The web app asks, and switches only to a server already saved on the phone.
+    //
+    // Only a plain origin is held: http(s), a host or bracketed IPv6 literal, an optional port, nothing
+    // else (no credentials, path, query or fragment), at most 255 characters. The web side checks it
+    // again with the same pattern; this keeps junk out of the slot.
+    private fun recordDeepLinkServer(intent: Intent?): Boolean {
         if (intent?.action != Intent.ACTION_VIEW) return false
         val data = intent.data ?: return false
         if (data.scheme != "nightlight") return false
         val server = data.getQueryParameter("server")?.trim()?.trimEnd('/')
-        if (server.isNullOrEmpty()) return false
-        if (!server.startsWith("http://") && !server.startsWith("https://")) return false
-        if (server == ServerConfigPlugin.getSavedUrl(this)) return false
-        val reachable = booleanArrayOf(false)
-        Thread { reachable[0] = ServerConfigPlugin.isReachable(server, 2500) }.apply {
-            start()
-            join(3000)
-        }
-        if (!reachable[0]) return false
-        ServerConfigPlugin.saveUrl(this, server)
+        if (server.isNullOrEmpty() || server.length > 255) return false
+        if (!REQUEST_ORIGIN.matches(server)) return false
+        ServerConfigPlugin.setPending(server)
         return true
     }
 

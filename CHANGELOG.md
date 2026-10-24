@@ -10,6 +10,15 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Changed
+- **A tapped alert or link that names another server now asks before switching.** A Pushover, ntfy or
+  Gotify alert that comes from a different Nightlight server than the one the app is showing no longer
+  changes the app's server on its own. The app now hands the request to the Nightlight web app, which
+  asks **Switch to this server?** and only offers servers you have already saved in the app; an address
+  the app doesn't know is refused. This pairs with the first Nightlight server release after 0.43.0 (the
+  question is asked by the web app the server delivers): on an older server a link that names another
+  server is simply ignored. Nothing contacts the named address until you tap Switch.
+
 ## [0.8.2] - 2026-08-24
 
 ### Fixed
