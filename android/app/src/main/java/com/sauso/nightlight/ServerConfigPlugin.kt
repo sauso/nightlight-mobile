@@ -2,6 +2,7 @@ package com.sauso.nightlight
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.SystemClock
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -54,16 +55,35 @@ class ServerConfigPlugin : Plugin() {
             return list
         }
 
-        // Persist a server as the active one (and remember it), from native code that already knows
-        // the address is good — e.g. MainActivity switching to the server carried in a tapped
-        // deep link. Mirrors what the instance save() writes, minus the network validation the
-        // caller has already done.
-        fun saveUrl(context: Context, url: String) {
-            val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            val list = knownServersOf(p)
-            list.remove(url)
-            list.add(0, url)
-            p.edit().putString(KEY_URL, url).putString(KEY_KNOWN, JSONArray(list).toString()).apply()
+        // A server named by a tapped nightlight:// link, waiting for the web app to ask the person (#559).
+        // This replaces the old saveUrl, which saved a link's server as the ACTIVE one (and added it to the
+        // known list) with no question; nothing in native code switches server on its own any more. ONE slot,
+        // replaced by a newer link, and it expires after two minutes so a request nobody answered cannot
+        // turn up in a later session. In memory only: a request does not survive the app being killed.
+        private const val PENDING_TTL_MS = 2 * 60 * 1000L
+        private var pendingServer: String? = null
+        private var pendingAtMs = 0L
+
+        fun setPending(origin: String) {
+            synchronized(this) {
+                pendingServer = origin
+                pendingAtMs = SystemClock.elapsedRealtime()
+            }
+        }
+
+        // A newer link that names no usable server cancels whatever an earlier link left waiting.
+        fun clearPending() {
+            synchronized(this) { pendingServer = null }
+        }
+
+        // Hand the held request over exactly once: it is cleared whether or not it was still fresh.
+        fun takePendingServer(): String? {
+            synchronized(this) {
+                val server = pendingServer
+                val fresh = server != null && SystemClock.elapsedRealtime() - pendingAtMs <= PENDING_TTL_MS
+                pendingServer = null
+                return if (fresh) server else null
+            }
         }
 
         // Quick liveness check used at launch (see MainActivity) to decide whether to point the
@@ -99,6 +119,15 @@ class ServerConfigPlugin : Plugin() {
     fun get(call: PluginCall) {
         val ret = JSObject()
         ret.put("url", getSavedUrl(context))
+        call.resolve(ret)
+    }
+
+    // The server a tapped link asked for, if any (#559): { server: "<origin>" | null }. Returns it once and
+    // clears it. The web app asks the person before anything changes; this method only reports.
+    @PluginMethod
+    fun takePending(call: PluginCall) {
+        val ret = JSObject()
+        ret.put("server", takePendingServer())
         call.resolve(ret)
     }
 

@@ -35,6 +35,12 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default is 'tools platform-tools'. The obsolete `tools` package is no longer in the SDK
+          # repository, so `sdkmanager tools` fails ("Failed to find package 'tools'") and the build stops before
+          # Gradle even starts (seen 2026-10-24). Nothing here needs it: Gradle fetches the platform and build tools
+          # it uses itself, with the licences this action has already accepted.
+          packages: 'platform-tools'
 
       - name: Install dependencies
         run: npm ci
