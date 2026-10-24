@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-24
+
 ### Changed
 - **Android: a tapped link that names another server now asks before switching.** A Pushover, ntfy or
   Gotify alert that comes from a different Nightlight server than the one the app is showing no longer
