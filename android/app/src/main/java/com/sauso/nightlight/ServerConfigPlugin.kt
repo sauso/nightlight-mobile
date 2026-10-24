@@ -71,6 +71,11 @@ class ServerConfigPlugin : Plugin() {
             }
         }
 
+        // A newer link that names no usable server cancels whatever an earlier link left waiting.
+        fun clearPending() {
+            synchronized(this) { pendingServer = null }
+        }
+
         // Hand the held request over exactly once: it is cleared whether or not it was still fresh.
         fun takePendingServer(): String? {
             synchronized(this) {

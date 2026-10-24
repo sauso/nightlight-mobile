@@ -158,13 +158,24 @@ class MainActivity : BridgeActivity() {
     // Only a plain origin is held: http(s), a host or bracketed IPv6 literal, an optional port, nothing
     // else (no credentials, path, query or fragment), at most 255 characters. The web side checks it
     // again with the same pattern; this keeps junk out of the slot.
+    //
+    // Newest link wins (review of #559): a nightlight:// link that carries no usable server clears what an
+    // earlier link left waiting, so the page never asks about a request the person has already moved past.
+    // A launch from the Recents screen is NOT a new link: after the process was killed, Android hands the
+    // original launch intent back with FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY, and recording it again would ask
+    // about a request from an earlier session.
     private fun recordDeepLinkServer(intent: Intent?): Boolean {
         if (intent?.action != Intent.ACTION_VIEW) return false
         val data = intent.data ?: return false
         if (data.scheme != "nightlight") return false
-        val server = data.getQueryParameter("server")?.trim()?.trimEnd('/')
-        if (server.isNullOrEmpty() || server.length > 255) return false
-        if (!REQUEST_ORIGIN.matches(server)) return false
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return false
+        // An opaque URI (`nightlight:foo?server=…`, no `//`) makes getQueryParameter THROW, which used to kill
+        // the app from a single tapped link, background listening included. It carries no request.
+        val server = if (data.isOpaque) null else data.getQueryParameter("server")?.trim()?.trimEnd('/')
+        if (server.isNullOrEmpty() || server.length > 255 || !REQUEST_ORIGIN.matches(server)) {
+            ServerConfigPlugin.clearPending()
+            return false
+        }
         ServerConfigPlugin.setPending(server)
         return true
     }
