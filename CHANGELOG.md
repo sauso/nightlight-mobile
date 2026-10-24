@@ -20,6 +20,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   simply ignored, and the app's own (Firebase) alerts only ask once the server is updated too. Nothing
   contacts the named address until you tap Switch. If your saved server can't be reached when you tap a
   link, the request is dropped after two minutes rather than asked about later.
+
+### Fixed
 - **Android: a malformed `nightlight:` link no longer closes the app.** A link without the `//` after the
   colon made the app stop, background listening included. It is now ignored.
 
