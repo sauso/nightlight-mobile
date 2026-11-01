@@ -10,8 +10,6 @@ import android.util.Rational
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import com.getcapacitor.BridgeActivity
 import com.getcapacitor.BridgeWebViewClient
 import com.getcapacitor.CapConfig
@@ -218,10 +216,7 @@ class MainActivity : BridgeActivity() {
     // (mute/settings/fullscreen) that otherwise clutter the tiny floating window.
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        if (isInPictureInPictureMode) {
-            // PiP shrinks the fullscreen WebView before its JS exit handler can restore the bars.
-            WindowInsetsControllerCompat(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
-        }
+        ImmersivePlugin.onPipModeChanged(this, isInPictureInPictureMode)
         PipPlugin.notifyPipModeChanged(isInPictureInPictureMode)
     }
 }
