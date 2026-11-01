@@ -10,6 +10,11 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Fixed
+- Fullscreen camera views now hide the Android status and navigation bars so the on-screen buttons
+  can be pressed. Swipe from an edge to show the bars temporarily. This needs the matching server/web
+  update to call the native plugin; there is no iOS change.
+
 ## [0.8.3] - 2026-10-24
 
 ### Changed
