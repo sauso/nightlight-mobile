@@ -39,6 +39,7 @@ class MainActivity : BridgeActivity() {
         registerPlugin(BackgroundAudioPlugin::class.java)
         registerPlugin(ServerConfigPlugin::class.java)
         registerPlugin(PipPlugin::class.java)
+        registerPlugin(ImmersivePlugin::class.java)
         registerPlugin(FirebaseInitPlugin::class.java)
         registerPlugin(DownloadPlugin::class.java)
 
@@ -215,6 +216,7 @@ class MainActivity : BridgeActivity() {
     // (mute/settings/fullscreen) that otherwise clutter the tiny floating window.
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        ImmersivePlugin.onPipModeChanged(this, isInPictureInPictureMode)
         PipPlugin.notifyPipModeChanged(isInPictureInPictureMode)
     }
 }
