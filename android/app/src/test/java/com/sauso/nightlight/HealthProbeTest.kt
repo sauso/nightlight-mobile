@@ -14,6 +14,7 @@ import java.net.InetAddress
 import java.net.Proxy
 import java.net.ProxySelector
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.SocketAddress
 import java.net.URI
 import java.util.concurrent.atomic.AtomicInteger
@@ -368,6 +369,107 @@ class HealthProbeTest {
         LocalHttpServer { _, _ -> }.use { server ->
             assertEquals(Outcome.BAD_RESPONSE, localProbe().check(loopback, server.port, id).outcome)
         }
+    }
+
+    // ---- From the code review of #20 ----
+
+    @Test
+    fun `headers that never end are refused at 8 KB, well inside the deadline`() {
+        // Kills removing the header cap (review mutants M19/M20/M21): without it the probe read for the whole 2 s
+        // and buffered about 61 MB.
+        LocalHttpServer { out, _ ->
+            out.write(ascii("HTTP/1.1 200 OK\r\n"))
+            val line = ascii("X-Flood: " + "a".repeat(1000) + "\r\n")
+            val stopAt = System.nanoTime() + 5_000_000_000L
+            while (System.nanoTime() < stopAt) out.write(line) // until the probe hangs up
+        }.use { server ->
+            val (result, ms) = timed { localProbe().check(loopback, server.port, id) }
+            assertEquals(Outcome.TOO_LARGE, result.outcome)
+            assertTrue("took $ms ms", ms < 1_000)
+        }
+    }
+
+    @Test
+    fun `a single header line longer than the header cap is refused even when the head then ends`() {
+        LocalHttpServer { out, _ ->
+            out.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: ${validBody.length}\r\nX-Long: " + "a".repeat(9_000) + "\r\n\r\n$validBody"))
+            out.flush()
+        }.use { server ->
+            assertEquals(Outcome.TOO_LARGE, localProbe().check(loopback, server.port, id).outcome)
+        }
+    }
+
+    // A head (everything before the blank line) of exactly [length] bytes, then a valid body.
+    private fun headOfLength(length: Int): String {
+        val start = "HTTP/1.1 200 OK\r\nContent-Length: ${validBody.length}\r\nX-Pad: "
+        return start + "a".repeat(length - start.length)
+    }
+
+    @Test
+    fun `a head of exactly 8 KB is read and one byte more is refused`() {
+        assertEquals(8192, HealthProbe.MAX_HEADER_BYTES)
+        LocalHttpServer { out, _ ->
+            out.write(ascii(headOfLength(8192) + "\r\n\r\n" + validBody))
+            out.flush()
+        }.use { server ->
+            assertEquals(Outcome.VERIFIED, localProbe().check(loopback, server.port, id).outcome)
+        }
+        LocalHttpServer { out, _ ->
+            out.write(ascii(headOfLength(8193) + "\r\n\r\n" + validBody))
+            out.flush()
+        }.use { server ->
+            assertEquals(Outcome.TOO_LARGE, localProbe().check(loopback, server.port, id).outcome)
+        }
+    }
+
+    @Test
+    fun `one byte just before the deadline cannot stretch the probe past it`() {
+        // Kills "per-read timeout = the whole deadline" (review mutant M23): the byte at 1.9 s resets a full-length
+        // read timeout, which then waits about 2 s more; the real probe waits only for the time left.
+        LocalHttpServer { out, _ ->
+            Thread.sleep(1_900)
+            out.write('H'.code)
+            out.flush()
+            Thread.sleep(5_000)
+        }.use { server ->
+            val (result, ms) = timed { localProbe().check(loopback, server.port, id) }
+            assertEquals(Outcome.TIMED_OUT, result.outcome)
+            assertTrue("took $ms ms", ms <= HealthProbe.TOTAL_DEADLINE_MS + 300)
+        }
+    }
+
+    /** Records the timeout the probe passes to connect, then connects normally. */
+    private class RecordingSocket : Socket(Proxy.NO_PROXY) {
+        @Volatile
+        var seenTimeout = -1
+
+        override fun connect(endpoint: SocketAddress?, timeout: Int) {
+            seenTimeout = timeout
+            super.connect(endpoint, timeout)
+        }
+    }
+
+    @Test
+    fun `the connect timeout is the connect limit, never 0, and never more than the time left`() {
+        // Kills `connect(…, 0)` (review mutant M26): 0 means "wait for ever" to Socket.connect.
+        assertEquals(1_500L, HealthProbe.CONNECT_TIMEOUT_MS)
+        LocalHttpServer { out, _ -> reply(out, "200 OK", validBody) }.use { server ->
+            val socket = RecordingSocket()
+            val probe = HealthProbe(addressPolicy = { it == loopback }, newSocket = { socket })
+            assertEquals(Outcome.VERIFIED, probe.check(loopback, server.port, id).outcome)
+            assertEquals(1_500, socket.seenTimeout)
+
+            val short = RecordingSocket()
+            val shortProbe = HealthProbe(addressPolicy = { it == loopback }, totalDeadlineMs = 300, newSocket = { short })
+            assertEquals(Outcome.VERIFIED, shortProbe.check(loopback, server.port, id).outcome)
+            assertTrue("passed ${short.seenTimeout}", short.seenTimeout in 1..300)
+        }
+    }
+
+    @Test
+    fun `a socket that cannot be made is a connect failure, not a crash`() {
+        val probe = HealthProbe(addressPolicy = { it == loopback }, newSocket = { throw java.io.IOException("no sockets") })
+        assertEquals(Outcome.CONNECT_FAILED, probe.check(loopback, 4000, id).outcome)
     }
 
     @Test

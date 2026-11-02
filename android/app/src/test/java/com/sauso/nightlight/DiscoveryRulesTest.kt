@@ -199,6 +199,20 @@ class DiscoveryRulesTest {
     }
 
     @Test
+    fun `characters that render blank are dropped, and a name of only them means no name`() {
+        // U+3164 Hangul filler, U+2800 blank Braille, U+FFA0 halfwidth Hangul filler (code review of #20).
+        assertEquals("Home", DiscoveryRules.parseHealth(healthJson(name = "\"Ho\\u3164me\\u2800\\uFFA0\""))!!.name)
+        assertNull(DiscoveryRules.parseHealth(healthJson(name = "\"\\u3164\\u2800\\uFFA0\\u115F\\u1160\""))!!.name)
+    }
+
+    @Test
+    fun `a run of combining marks is cut to 3`() {
+        // "e" with five combining acute accents keeps three; separate letters keep their own marks.
+        val name = DiscoveryRules.parseHealth(healthJson(name = "\"e\\u0301\\u0301\\u0301\\u0301\\u0301x\\u0301\""))!!.name!!
+        assertEquals("é́́x́", name)
+    }
+
+    @Test
     fun `a 10 000-character name is cut to 64 characters`() {
         val long = "N".repeat(10_000)
         val name = DiscoveryRules.parseHealth(healthJson(name = "\"$long\""))!!.name!!

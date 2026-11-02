@@ -43,12 +43,21 @@ class HealthProbe(
     private val addressPolicy: (String) -> Boolean = DiscoveryRules::isPrivateIpv4,
     private val totalDeadlineMs: Long = TOTAL_DEADLINE_MS,
     private val maxBodyBytes: Int = MAX_BODY_BYTES,
+    private val connectTimeoutMs: Long = CONNECT_TIMEOUT_MS,
+    // A seam for the test that checks the connect timeout actually passed (code review of #20: `connect(…, 0)`, which
+    // means "wait for ever", survived every other test). Production always uses a socket with Proxy.NO_PROXY.
+    private val newSocket: () -> Socket = { Socket(Proxy.NO_PROXY) },
 ) {
     companion object {
         // Design 7.5: "a ~2 s total deadline". The spike (design 15.1) measured the phone finding a server on the
         // same network almost at once, and a LAN health reply takes milliseconds, so 2 s is generous for a real
         // server and still short enough that probing every announced address in parallel never holds the page.
         const val TOTAL_DEADLINE_MS = 2_000L
+
+        // The connect step alone, and never more than the time left of the total deadline. A LAN connect takes
+        // milliseconds; an address the phone cannot reach (a Docker bridge gateway, say) is given up after this.
+        // Never 0: Socket.connect reads 0 as "no timeout". A judgement, not a measurement.
+        const val CONNECT_TIMEOUT_MS = 1_500L
 
         // Design 7.5: "a small maximum body size (e.g. 4 KB)". The real reply is `{ ok, app, id, name }`.
         const val MAX_BODY_BYTES = 4 * 1024
@@ -79,6 +88,19 @@ class HealthProbe(
     /** The verified health reply, or null for any failure. */
     fun probe(host: String, port: Int, expectedId: String): DiscoveryRules.Health? = check(host, port, expectedId).health
 
+    /**
+     * The same check for a found server's URL, `http://<ip>:<port>` exactly as discovery reported it
+     * (DiscoveryRules.parseFoundUrl). Used by `ServerConfig.save({ url, expectId })` when a card is tapped (code
+     * review of #20): HttpURLConnection, which `save` uses for a typed address, follows redirects by default, so a
+     * redirect to the real server could pass the id check while the ORIGINAL address was saved; and it would store a
+     * Set-Cookie from whatever answers there (see the class comment). This check has neither problem. Anything that
+     * is not that exact URL form is refused without a request.
+     */
+    fun checkUrl(url: String?, expectedId: String): Result {
+        val target = DiscoveryRules.parseFoundUrl(url) ?: return Result(Outcome.REFUSED_ADDRESS, null)
+        return check(target.first, target.second, expectedId)
+    }
+
     /** Probe and say why it ended. Never throws. */
     fun check(host: String, port: Int, expectedId: String): Result {
         if (!addressPolicy(host)) return Result(Outcome.REFUSED_ADDRESS, null)
@@ -90,9 +112,13 @@ class HealthProbe(
             return Result(Outcome.REFUSED_ADDRESS, null)
         }
         val deadline = System.nanoTime() + totalDeadlineMs * 1_000_000L
-        val socket = Socket(Proxy.NO_PROXY)
+        val socket = try {
+            newSocket()
+        } catch (e: Exception) {
+            return Result(Outcome.CONNECT_FAILED, null)
+        }
         try {
-            val connectMs = remainingMs(deadline)
+            val connectMs = minOf(connectTimeoutMs, remainingMs(deadline))
             if (connectMs <= 0) return Result(Outcome.TIMED_OUT, null)
             try {
                 socket.connect(InetSocketAddress(address, port), connectMs.toInt())
@@ -145,11 +171,14 @@ class HealthProbe(
             if (bodyStart < 0) {
                 val bytes = received.toByteArray()
                 val end = indexOf(bytes, HEADER_END)
-                if (end < 0) {
-                    if (bytes.size > MAX_HEADER_BYTES) return Result(Outcome.TOO_LARGE, null)
-                    continue
-                }
-                if (end > MAX_HEADER_BYTES) return Result(Outcome.TOO_LARGE, null)
+                // One exact check for both cases (code review of #20: with the cap removed, a server that sends
+                // headers and never the blank line held each probe for the whole deadline while its buffer grew to
+                // about 61 MB). Without the blank line yet, the head is at least as long as what arrived minus the
+                // three bytes that could be the start of it, so a head of exactly MAX_HEADER_BYTES still passes
+                // however the bytes are split across reads.
+                val headLength = if (end >= 0) end else bytes.size - (HEADER_END.size - 1)
+                if (headLength > MAX_HEADER_BYTES) return Result(Outcome.TOO_LARGE, null)
+                if (end < 0) continue
                 val head = parseHead(String(bytes, 0, end, StandardCharsets.ISO_8859_1))
                     ?: return Result(Outcome.BAD_RESPONSE, null)
                 // Decided on the status line alone: a redirect is a failure, never a new address to try.

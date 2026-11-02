@@ -237,18 +237,70 @@ class DiscoveryStateTest {
     }
 
     @Test
-    fun `a service is probed again at most once per 10 seconds`() {
+    fun `a service that comes back inside 10 seconds is probed once when the window ends, not dropped`() {
+        // Code review of #20: a server that restarts quickly used to lose its card until Search again.
         val s = DiscoveryState<String>()
         val gen = s.start()
         s.announce(gen, "svc", realId, now = 1_000L)
         s.drain { false }
-        // It goes and comes back within 10 s: not probed again.
         s.onLost(gen, "svc")
-        assertTrue(s.announce(gen, "svc", realId, now = 10_999L).isEmpty())
-        // After 10 s it is.
+        // Back at 5 s: nothing yet, but a probe is waiting for 11 s (the first probe plus the interval).
+        assertTrue(s.announce(gen, "svc", realId, now = 5_000L).isEmpty())
+        assertEquals(11_000L, s.deferredDueAt("svc"))
+        assertFalse("a repeat announcement while it waits is not queued again", s.onFound(gen, "svc", "svc"))
+        assertTrue("not before the window ends", s.runDeferred("svc", 10_999L).isEmpty())
+        val tasks = s.runDeferred("svc", 11_000L)
+        assertEquals(listOf("192.168.1.50"), tasks.map { it.host })
+        assertNull("exactly one probe", s.deferredDueAt("svc"))
+        assertTrue(s.runDeferred("svc", 20_000L).isEmpty())
+        assertEquals(listOf(realId), s.drain { true }.map { it.id })
+        assertEquals(10_000L, DiscoveryState.REPROBE_INTERVAL_MS)
+    }
+
+    @Test
+    fun `after the window a returning service is probed at once`() {
+        val s = DiscoveryState<String>()
+        val gen = s.start()
+        s.announce(gen, "svc", realId, now = 1_000L)
+        s.drain { false }
         s.onLost(gen, "svc")
         assertEquals(1, s.announce(gen, "svc", realId, now = 11_000L).size)
-        assertEquals(10_000L, DiscoveryState.REPROBE_INTERVAL_MS)
+        assertNull(s.deferredDueAt("svc"))
+    }
+
+    @Test
+    fun `a deferred probe is dropped by stop, by a new search and by losing the service`() {
+        val s = DiscoveryState<String>()
+        var gen = s.start()
+        s.announce(gen, "svc", realId, now = 1_000L)
+        s.drain { false }
+        s.onLost(gen, "svc")
+        s.announce(gen, "svc", realId, now = 2_000L)
+        s.onLost(gen, "svc")
+        assertNull("lost", s.deferredDueAt("svc"))
+        assertTrue(s.runDeferred("svc", 99_000L).isEmpty())
+
+        s.announce(gen, "svc", realId, now = 3_000L)
+        assertNotNull(s.deferredDueAt("svc"))
+        s.stop()
+        gen = s.start()
+        assertNull("stopped", s.deferredDueAt("svc"))
+        assertTrue(s.runDeferred("svc", 99_000L).isEmpty())
+        assertEquals(0, s.queuedProbeCount())
+    }
+
+    @Test
+    fun `a deferred probe that loses to a listed id or a full list probes nothing`() {
+        val s = DiscoveryState<String>(maxVerified = 1)
+        val gen = s.start()
+        s.announce(gen, "svc", realId, now = 1_000L)
+        s.drain { false }
+        s.onLost(gen, "svc")
+        s.announce(gen, "svc", realId, now = 2_000L)
+        s.announce(gen, "other", fakeId(9), now = 2_000L)
+        s.drain { true } // "other" fills the one slot
+        assertTrue(s.runDeferred("svc", 11_000L).isEmpty())
+        assertEquals(0, s.queuedProbeCount())
     }
 
     @Test
@@ -349,9 +401,57 @@ class DiscoveryStateTest {
             val job = s.nextResolve(1)!!
             assertEquals(attempt, job.attempt)
             assertTrue(s.resolveFailed(job, retry = true))
+            s.requeueResolve("svc")
         }
+        assertFalse(s.isWaitingRetry("svc"))
         assertNull("no fourth attempt", s.nextResolve(1))
         assertEquals(3, DiscoveryState.MAX_RESOLVE_ATTEMPTS)
+    }
+
+    @Test
+    fun `a retry waits outside the queue until it is put back`() {
+        // Code review of #20: straight back in the queue, a busy refusal burned all three attempts in milliseconds.
+        val s = DiscoveryState<String>()
+        val gen = s.start()
+        s.onFound(gen, "svc", "svc")
+        s.resolveFailed(s.nextResolve(1)!!, retry = true)
+        assertTrue(s.isWaitingRetry("svc"))
+        assertNull("not resolvable until put back", s.nextResolve(1))
+        assertFalse("still busy while it waits", s.onFound(gen, "svc", "svc"))
+        assertTrue(s.requeueResolve("svc"))
+        assertEquals(2, s.nextResolve(1)!!.attempt)
+    }
+
+    @Test
+    fun `a waiting retry is dropped by losing the service or stopping`() {
+        val s = DiscoveryState<String>()
+        val gen = s.start()
+        s.onFound(gen, "svc", "svc")
+        s.resolveFailed(s.nextResolve(1)!!, retry = true)
+        s.onLost(gen, "svc")
+        assertFalse(s.requeueResolve("svc"))
+        assertNull(s.nextResolve(1))
+
+        s.onFound(gen, "svc", "svc")
+        s.resolveFailed(s.nextResolve(1)!!, retry = true)
+        s.stop()
+        s.start()
+        assertFalse(s.requeueResolve("svc"))
+        assertNull(s.nextResolve(1))
+    }
+
+    @Test
+    fun `a retry put back into a full resolve queue drops the oldest queued service`() {
+        val s = DiscoveryState<String>(maxQueuedResolves = 2)
+        val gen = s.start()
+        s.onFound(gen, "a", "a")
+        val a = s.nextResolve(1)!!
+        s.onFound(gen, "b", "b")
+        s.onFound(gen, "c", "c")
+        s.resolveFailed(a, retry = true)
+        assertTrue(s.requeueResolve("a")) // queue was [b, c]; now [c, a]
+        assertEquals("c", s.nextResolve(1)!!.name)
+        assertNull(s.nextResolve(1)) // one slot, held by c
     }
 
     @Test
@@ -371,6 +471,7 @@ class DiscoveryStateTest {
         s.onFound(gen, "svc", "svc")
         val first = s.nextResolve(1)!!
         assertTrue(s.resolveFailed(first, retry = true)) // timeout, retried
+        s.requeueResolve("svc")
         val second = s.nextResolve(1)!!
         assertFalse(s.resolveFailed(first, retry = true)) // late failure of attempt 1
         assertTrue(s.onResolved(first, realId, listOf("192.168.1.50"), 4000, 0L).isEmpty()) // late answer of attempt 1
@@ -393,5 +494,118 @@ class DiscoveryStateTest {
         val gen = s.start()
         assertFalse(s.onFound(gen, null, "x"))
         assertFalse(s.onFound(gen, "", "x"))
+    }
+
+    // ---- From the code review of #20 ----
+
+    @Test
+    fun `a service lost while its resolve is in flight frees its slot, even with one legacy slot`() {
+        // Kills "onLost no longer frees the resolve slot" (review mutant M39).
+        val s = DiscoveryState<String>()
+        val gen = s.start()
+        s.onFound(gen, "gone", "gone")
+        s.onFound(gen, "waiting", "waiting")
+        val inFlight = s.nextResolve(1)!!
+        assertEquals("gone", inFlight.name)
+        assertNull("the one slot is taken", s.nextResolve(1))
+        s.onLost(gen, "gone")
+        assertEquals("waiting", s.nextResolve(1)!!.name)
+        // The lost service's own late answer changes nothing.
+        assertTrue(s.onResolved(inFlight, realId, listOf("192.168.1.50"), 4000, 0L).isEmpty())
+    }
+
+    @Test
+    fun `a service lost while its probe runs is not left busy and can be probed again`() {
+        // Kills "onLost keeps the pending-probe count" (review mutant Z5): the service comes back while the old
+        // probe is still running, and must be accepted at once rather than counted as busy.
+        val s = DiscoveryState<String>(reprobeIntervalMs = 0)
+        val gen = s.start()
+        s.announce(gen, "svc", realId)
+        val running = s.nextProbe()!!
+        s.onLost(gen, "svc")
+        assertEquals(1, s.announce(gen, "svc", realId).size)
+        assertNull("the old probe's result is discarded", s.onProbeDone(running, health(realId)))
+        assertEquals(listOf(realId), s.drain { true }.map { it.id })
+    }
+
+    @Test
+    fun `a probe of a lost service that finishes late does not count down the service's new batch`() {
+        val s = DiscoveryState<String>(reprobeIntervalMs = 0)
+        val gen = s.start()
+        s.announce(gen, "svc", realId, hosts = listOf("192.168.1.50"))
+        val old = s.nextProbe()!!
+        s.onLost(gen, "svc")
+        // One address in the new batch, so a wrong count-down would empty it.
+        assertEquals(1, s.announce(gen, "svc", realId, hosts = listOf("192.168.1.60")).size)
+        s.onProbeDone(old, null)
+        assertFalse("the new batch is still outstanding", s.onFound(gen, "svc", "svc"))
+        assertEquals(1, s.queuedProbeCount())
+        assertEquals(listOf("http://192.168.1.60:4000"), s.drain { true }.map { it.url })
+    }
+
+    @Test
+    fun `a queued probe of a service forgotten by the name cap is skipped, not run`() {
+        val s = DiscoveryState<String>(maxTrackedNames = 1)
+        val gen = s.start()
+        s.announce(gen, "a", fakeId(1), hosts = listOf("192.168.1.10"))
+        s.announce(gen, "b", fakeId(2), hosts = listOf("192.168.1.20")) // forgets a
+        assertEquals("b", s.nextProbe()!!.name)
+        assertNull(s.nextProbe())
+        assertTrue("a is not left busy", s.onFound(gen, "a", "a"))
+    }
+
+    @Test
+    fun `a running probe of a service forgotten by the name cap still counts down, so it is not left busy`() {
+        val s = DiscoveryState<String>(maxTrackedNames = 1)
+        val gen = s.start()
+        s.announce(gen, "a", fakeId(1), hosts = listOf("192.168.1.10"))
+        val running = s.nextProbe()!!
+        s.announce(gen, "b", fakeId(2), hosts = listOf("192.168.1.20")) // forgets a while its probe runs
+        assertNull(s.onProbeDone(running, health(fakeId(1))))
+        assertTrue("a can be announced again", s.onFound(gen, "a", "a"))
+    }
+
+    @Test
+    fun `private addresses are picked before the cap of 8, so public ones listed first cannot push the real one out`() {
+        // Kills "cap, then filter" (review mutant M41).
+        val s = DiscoveryState<String>()
+        val gen = s.start()
+        val hosts = (1..8).map { "8.8.8.$it" } + "192.168.1.50"
+        assertEquals(listOf("192.168.1.50"), s.announce(gen, "svc", realId, hosts = hosts).map { it.host })
+    }
+
+    @Test
+    fun `a flood of losses for names never announced records nothing`() {
+        val s = DiscoveryState<String>()
+        val gen = s.start()
+        for (i in 1..10_000) assertNull(s.onLost(gen, "invented-$i"))
+        assertEquals(0, s.trackedNameCount())
+    }
+
+    @Test
+    fun `per-name bookkeeping stays within 256 names however many are announced`() {
+        val s = DiscoveryState<String>()
+        val gen = s.start()
+        for (i in 1..2_000) {
+            s.onFound(gen, "svc-$i", "svc-$i")
+            val job = s.nextResolve(1) ?: continue
+            s.onResolved(job, fakeId(i), listOf("10.0.${i / 250}.${i % 250 + 1}"), 4000, i.toLong())
+            s.drain { false }
+        }
+        assertTrue("tracked ${s.trackedNameCount()}", s.trackedNameCount() <= 256)
+        assertEquals(256, DiscoveryState.MAX_TRACKED_NAMES)
+    }
+
+    @Test
+    fun `a service forgotten by the name cap gives its resolve slot back and is not left busy`() {
+        val s = DiscoveryState<String>(maxTrackedNames = 2)
+        val gen = s.start()
+        s.onFound(gen, "a", "a")
+        val a = s.nextResolve(1)!!
+        s.onFound(gen, "b", "b")
+        s.onFound(gen, "c", "c") // forgets a, the oldest name
+        assertTrue("its answer no longer counts", s.onResolved(a, realId, listOf("192.168.1.50"), 4000, 0L).isEmpty())
+        assertEquals("b", s.nextResolve(1)!!.name)
+        assertTrue("a can be announced again", s.onFound(gen, "a", "a"))
     }
 }

@@ -197,6 +197,9 @@
           <li>Is your phone on the same Wi-Fi as your Nightlight server?</li>
           <li>Is the server switched on and running?</li>
           <li>Guest Wi-Fi often keeps devices apart. Try your main Wi-Fi.</li>
+          <li>Is your server running in Docker on the default bridge network? Then it can't be found this way;
+            type its address below.</li>
+          <li>If your phone uses a VPN, turn it off while searching, or allow access to your local network.</li>
           <li>You can always enter the address below.</li>
         </ul>
       </div>
@@ -321,8 +324,11 @@
   // Native sends exactly http://<IPv4>:<port>. Anything else is not shown (belt and braces: the text is set with
   // textContent, never as HTML).
   const FOUND_URL_SHAPE = /^http:\/\/\d{1,3}(\.\d{1,3}){3}:\d{1,5}$/;
-  const NOTE_HTTP = 'Connects over your home network using http (unencrypted). Some features, like talking ' +
-    'through the microphone, may need an https address.';
+  // One calm sentence (code review of #20): what http means here, and that this is a different web address from
+  // any https one the person already uses, so the server will ask them to sign in again (with their second step,
+  // if they use one).
+  const NOTE_HTTP = 'Connects over your home network without encryption, at a different address from any https ' +
+    'one you use, so you will be asked to sign in again.';
 
   let savedUrls = new Set();
   const found = new Map(); // id -> { card, button, savedTag, url }
@@ -437,6 +443,15 @@
     searchAgain.hidden = false;
   }
 
+  // Native could not start looking (it can say so after startDiscovery has already answered { started: true }).
+  // Code review of #20: say it at once instead of "Looking…" for two minutes. Stopping first leaves things as after
+  // any other stop, so Search again simply starts over.
+  async function failLooking() {
+    await stopLooking();
+    findHelp.hidden = false;
+    showStopped("Couldn't start looking on this phone. Type your server's address below.");
+  }
+
   async function startLooking() {
     if (starting) return;
     starting = true;
@@ -461,6 +476,7 @@
       // within moments of starting.
       handles.push(await p.addListener('serverFound', (e) => { if (thisRun === run) addFound(e); }));
       handles.push(await p.addListener('serverLost', (e) => { if (thisRun === run) removeFound(e && e.id); }));
+      handles.push(await p.addListener('discoveryFailed', () => { if (thisRun === run) failLooking(); }));
       if (await stale()) return;
       const result = await p.startDiscovery();
       if (await stale()) return;

@@ -40,6 +40,7 @@ import java.util.concurrent.TimeUnit
  *   Capacitor.Plugins.ServerConfig.stopDiscovery()
  *   event serverFound { id, name, url, fingerprint } -> a server that answered its health check
  *   event serverLost  { id }                         -> its announcement went away
+ *   event discoveryFailed { }                        -> looking could not start on this phone
  *
  * MainActivity reads the saved value in onCreate and points the Capacitor bridge at
  * it; no saved value means the bundled first-run setup page (www/) loads instead.
@@ -158,9 +159,13 @@ class ServerConfigPlugin : Plugin() {
             deliver(generation, "serverLost", JSObject().put("id", id))
         }
 
-        override fun onDiscoveryError(generation: Int, message: String) {
-            // Logged only: the page shows its "nothing found" help after 15 s either way.
+        // Looking could not start (NsdManager refused, or failed asynchronously after startDiscovery had already
+        // resolved { started: true }). Code review of #20: logging alone left the page saying "Looking…" for two
+        // minutes. The page shows its help at once and offers Search again. No details are sent: the message is
+        // for the log, not the person.
+        override fun onDiscoveryFailed(generation: Int, message: String) {
             Log.w(TAG, message)
+            deliver(generation, "discoveryFailed", JSObject())
         }
     }
 
@@ -250,12 +255,17 @@ class ServerConfigPlugin : Plugin() {
     // fast (TLS handshake against a plaintext port doesn't sit out the timeout).
     //
     // expectId (optional, #20): set when the setup page connects to a server that "Look for my Nightlight" found.
-    // The reply must then be a Nightlight health reply whose id is exactly that one (DiscoveryRules
-    // .healthMatchesExpected), or nothing is saved. Why (plan review, High): the check below accepts any 200 reply
-    // containing "ok", and the address a card shows may have changed hands since it was verified (a DHCP lease
-    // moving to another device). Design 7.5 step 6: re-check at the moment of use. Without expectId (a typed address,
-    // a saved-server tap) this behaves exactly as before. Present but not a string is refused, not ignored, so a
-    // caller that meant to ask for the check cannot silently skip it.
+    // The server at that address must then answer as a Nightlight whose id is exactly that one, or nothing is saved.
+    // Why (plan review, High): the check below accepts any 200 reply containing "ok", and the address a card shows
+    // may have changed hands since it was verified (a DHCP lease moving to another device). Design 7.5 step 6:
+    // re-check at the moment of use. That check is HealthProbe.checkUrl, the same one discovery used, NOT the
+    // HttpURLConnection below (code review of #20): HttpURLConnection follows redirects by default, so a redirect to
+    // the real server could pass the id check while the ORIGINAL address was saved, and it would store any
+    // Set-Cookie the answer carried through Capacitor's process-wide cookie handler. HealthProbe follows no redirect
+    // (the 200 must come from that address itself), sends and stores no cookies, uses no proxy, and accepts only the
+    // exact `http://<private IPv4>:<port>` form discovery produces. Without expectId (a typed address, a saved-server
+    // tap) this behaves exactly as before. Present but not a string is refused, not ignored, so a caller that meant
+    // to ask for the check cannot silently skip it.
     @PluginMethod
     fun save(call: PluginCall) {
         val raw = call.getString("url")?.trim().orEmpty()
@@ -269,6 +279,10 @@ class ServerConfigPlugin : Plugin() {
             return
         }
         val expectId = rawExpectId as String?
+        if (expectId != null) {
+            saveFoundServer(call, raw, expectId)
+            return
+        }
         val bare = raw.trimEnd('/')
         val candidates = if (bare.contains("://")) {
             if (!bare.startsWith("https://") && !bare.startsWith("http://")) {
@@ -293,10 +307,6 @@ class ServerConfigPlugin : Plugin() {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
                     conn.disconnect()
                     if (code == 200 && body.contains("\"ok\"")) {
-                        if (expectId != null && !DiscoveryRules.healthMatchesExpected(body, expectId)) {
-                            call.reject(NOT_THE_FOUND_SERVER)
-                            return@Thread
-                        }
                         prefs().edit().putString(KEY_URL, url).apply()
                         rememberServer(url)
                         val ret = JSObject()
@@ -309,6 +319,27 @@ class ServerConfigPlugin : Plugin() {
                 }
             }
             call.reject("Couldn't reach a Nightlight server at that address")
+        }.start()
+    }
+
+    // save({ url, expectId }): see the comment on save. Saved under the URL exactly as discovery reported it.
+    // Unreachable gets the same words as a typed address that does not answer; any other failure (another server,
+    // a redirect, not a Nightlight, not a found-server address at all) gets "not the server we found".
+    private fun saveFoundServer(call: PluginCall, url: String, expectId: String) {
+        Thread {
+            val result = HealthProbe().checkUrl(url, expectId)
+            when (result.outcome) {
+                HealthProbe.Outcome.VERIFIED -> {
+                    prefs().edit().putString(KEY_URL, url).apply()
+                    rememberServer(url)
+                    val ret = JSObject()
+                    ret.put("url", url)
+                    call.resolve(ret)
+                }
+                HealthProbe.Outcome.CONNECT_FAILED, HealthProbe.Outcome.TIMED_OUT ->
+                    call.reject("Couldn't reach a Nightlight server at that address")
+                else -> call.reject(NOT_THE_FOUND_SERVER)
+            }
         }.start()
     }
 

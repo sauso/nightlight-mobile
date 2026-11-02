@@ -95,6 +95,15 @@ object DiscoveryRules {
      *
      * An older server answers `{ "ok": true }` only, with no app or id, and is therefore not offered: discovery
      * needs the server release that announces itself (#938), and the typed address still works for an older one.
+     *
+     * The parser is LENIENT on the phone, and that is accepted on purpose (code review of #20). Android's own
+     * org.json (what runs in the app) accepts single quotes, unquoted keys and values, comments, `=` or `=>` and `;`
+     * as separators, a leading byte-order mark, trailing junk after the object, and duplicate keys (the last one
+     * wins). The `org.json:json` library the JVM unit tests run against is stricter in several of these (it refuses
+     * duplicate keys, for one). That difference is safe because the reply is attacker-controlled anyway: a leniently
+     * parsed reply is still only accepted with `ok` the boolean true, `app` exactly "nightlight" and an id that equals
+     * the announced one ([matches]), which is everything a well-formed reply could prove. So no test may RELY on the
+     * strict parser refusing something; each test here holds for both parsers. (Behaviour unchanged by this note.)
      */
     fun parseHealth(body: String?): Health? {
         if (body.isNullOrEmpty()) return null
@@ -129,14 +138,6 @@ object DiscoveryRules {
         if (health == null || !isPlausibleId(txtId)) return false
         return health.id == txtId
     }
-
-    /**
-     * The check `ServerConfig.save` makes when it is given `expectId` (a card tapped on the setup page): the body
-     * must be a Nightlight health reply and its id must be the one the card was verified with. Without this, `save`
-     * accepts any 200 reply containing "ok" (plan review, High), so an address that changed hands between the
-     * search and the tap (a DHCP lease moving to another device, say) could be saved. Design 7.5 step 6.
-     */
-    fun healthMatchesExpected(body: String?, expectId: String?): Boolean = matches(parseHealth(body), expectId)
 
     /**
      * A short, human-comparable form of an id: lower-cased, ASCII letters and digits only, the first
@@ -228,18 +229,57 @@ object DiscoveryRules {
     fun serverUrl(host: String, port: Int): String = "http://$host:$port"
 
     /**
+     * The host and port of a found server's URL, or null unless [url] is EXACTLY what [serverUrl] makes: `http://`,
+     * a canonical IPv4 literal ([parseIpv4]), a port from 1 to 65535 written without a leading zero, and nothing
+     * else (no path, user info, query, fragment or trailing slash). Whether the address may be contacted is still
+     * the probe's address policy; this only reads the shape.
+     */
+    fun parseFoundUrl(url: String?): Pair<String, Int>? {
+        if (url == null || !url.startsWith("http://")) return null
+        val rest = url.substring("http://".length)
+        val colon = rest.lastIndexOf(':')
+        if (colon <= 0) return null
+        val host = rest.substring(0, colon)
+        val portText = rest.substring(colon + 1)
+        if (parseIpv4(host) == null) return null
+        if (portText.isEmpty() || portText.length > 5 || !portText.all { it in '0'..'9' }) return null
+        val port = portText.toInt()
+        if (port !in 1..65535) return null
+        return if (serverUrl(host, port) == url) Pair(host, port) else null
+    }
+
+    // Characters that are letters or symbols to Unicode but render as blank space, so a name made of them looks
+    // empty or pads itself out (code review of #20): Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), the blank
+    // Braille pattern (U+2800), the Khmer inherent vowels (U+17B4, U+17B5) and the Mongolian free variation selectors
+    // and vowel separator (U+180B to U+180F).
+    private val BLANK_LOOKING = setOf(0x115F, 0x1160, 0x17B4, 0x17B5, 0x180B, 0x180C, 0x180D, 0x180E, 0x180F, 0x2800, 0x3164, 0xFFA0)
+
+    // Combining marks stacked on one letter ("Zalgo" text) can draw far above and below the line and over the rest
+    // of the card. Three is enough for any real script's accents; extra marks in a run are dropped.
+    private const val MAX_COMBINING_RUN = 3
+
+    /**
      * A display name made safe to show: control characters, invisible format characters (including the
-     * right-to-left override, which can make a name read backwards) and line or paragraph separators removed,
-     * whitespace trimmed, then cut to [MAX_NAME_CHARS] code points (never half a surrogate pair). Empty after
-     * cleaning means no name. The page also sets it with textContent, never as HTML.
+     * right-to-left override, which can make a name read backwards), line or paragraph separators and characters
+     * that render blank ([BLANK_LOOKING]) removed, runs of combining marks cut to [MAX_COMBINING_RUN], whitespace
+     * trimmed, then cut to [MAX_NAME_CHARS] code points (never half a surrogate pair). Empty after cleaning means no
+     * name, and the card shows [DEFAULT_NAME]. Display only: the page also sets it with textContent, never as HTML.
      */
     private fun cleanName(raw: String): String? {
         val kept = StringBuilder()
+        var combiningRun = 0
         var i = 0
         while (i < raw.length) {
             val cp = raw.codePointAt(i)
             i += Character.charCount(cp)
-            if (!isHiddenCodePoint(cp)) kept.appendCodePoint(cp)
+            if (isHiddenCodePoint(cp) || cp in BLANK_LOOKING) continue
+            if (isCombiningMark(cp)) {
+                combiningRun++
+                if (combiningRun > MAX_COMBINING_RUN) continue
+            } else {
+                combiningRun = 0
+            }
+            kept.appendCodePoint(cp)
         }
         val trimmed = kept.toString().trim()
         val capped = if (trimmed.codePointCount(0, trimmed.length) > MAX_NAME_CHARS) {
@@ -257,5 +297,12 @@ object DiscoveryRules {
             type == Character.LINE_SEPARATOR.toInt() ||
             type == Character.PARAGRAPH_SEPARATOR.toInt() ||
             type == Character.SURROGATE.toInt()
+    }
+
+    private fun isCombiningMark(cp: Int): Boolean {
+        val type = Character.getType(cp)
+        return type == Character.NON_SPACING_MARK.toInt() ||
+            type == Character.ENCLOSING_MARK.toInt() ||
+            type == Character.COMBINING_SPACING_MARK.toInt()
     }
 }
