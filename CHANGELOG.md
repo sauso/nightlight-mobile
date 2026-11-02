@@ -10,6 +10,22 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Added
+- **Android: Look for my Nightlight.** The first-run screen can now find your Nightlight server on your Wi-Fi,
+  so you usually don't need to type its address. Tap **Look for my Nightlight**: each server that answers is
+  shown with its name, its address and the start of its ID. Nothing is saved or switched until you tap
+  **Connect**, and Connect checks again that the address still belongs to the server you picked. It works
+  when your phone and the server are on the same network. It does not work across separate networks or VLANs
+  unless your router passes these announcements along, on a guest Wi-Fi that keeps devices apart, or for a
+  server on Docker's default bridge network. It only finds servers on private IPv4 addresses (10.x,
+  172.16–31.x, 192.168.x): a network that uses another range, or IPv6 only, needs the typed address. It needs
+  a Nightlight server that announces itself (the first server release after 0.45.0); an older server is
+  simply not found. A found server connects at `http://<its address>` over your home network, without
+  encryption. That is a different web address from any https address you may already use, so you will be
+  asked to sign in again (with your second step, if you use one), and some features, like talking through the
+  microphone, may need the https address. Typing an address and the saved-servers list work as before. iOS
+  does not have this yet.
+
 ### Fixed
 - Fullscreen camera views now hide the Android status and navigation bars so the on-screen buttons
   can be pressed. Swipe from an edge to show the bars temporarily. This needs the matching server/web
