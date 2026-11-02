@@ -93,4 +93,12 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- "Look for my Nightlight" (#20) asks ConnectivityManager whether the phone is on Wi-Fi or Ethernet, so the
+         setup screen can say "not on Wi-Fi" instead of searching where no server can be heard. A normal
+         permission: granted at install, no prompt. Service discovery itself (NsdManager) needs no permission at
+         target SDK 36. Android enforces a local-network permission (ACCESS_LOCAL_NETWORK) for apps targeting SDK
+         37 and above: REVISIT this the day targetSdkVersion (variables.gradle) is raised, or discovery will
+         silently find nothing (Connect & Discovery design 7.4). No MulticastLock / CHANGE_WIFI_MULTICAST_STATE:
+         see ServerDiscovery.kt for why. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 </manifest>

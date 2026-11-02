@@ -6,6 +6,9 @@ server, whose address you enter in-app on first launch — nothing is baked in) 
 adds the native pieces the web app can't do on its own: keeping audio playing while
 the screen is off / the app is backgrounded, and runtime server selection.
 
+On Android the first-run screen can also find your server on your home Wi-Fi (**Look for my Nightlight**), so
+you usually don't need to type the address. Nothing is saved until you tap Connect.
+
 ## Platforms
 
 - **Android** — signed APK, built in CI and attached to each GitHub release.

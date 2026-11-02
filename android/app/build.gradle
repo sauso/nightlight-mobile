@@ -58,6 +58,13 @@ dependencies {
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
+    // The real org.json for the JVM unit tests (DiscoveryRules.parseHealth uses Android's org.json API). Local
+    // tests run against an android.jar whose org.json classes are stubs ("Method ... not mocked"), so without this
+    // the parser could not run at all; returnDefaultValues is deliberately NOT used, because it would make every
+    // org.json call quietly return null/false and the parser would refuse everything, valid replies included,
+    // with every "refused" test still passing. Pinned, not a range, so a new release cannot change test results
+    // on its own.
+    testImplementation "org.json:json:20250517"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')

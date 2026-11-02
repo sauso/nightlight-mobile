@@ -2,7 +2,10 @@ package com.sauso.nightlight
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -12,6 +15,9 @@ import com.getcapacitor.annotation.CapacitorPlugin
 import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.Callable
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
 
 /**
  * Which Nightlight server this app talks to, chosen at runtime rather than baked
@@ -21,9 +27,19 @@ import java.net.URL
  *
  *   Capacitor.Plugins.ServerConfig.get()            -> { url: string | null }
  *   Capacitor.Plugins.ServerConfig.save({ url })    -> validates + persists, rejects if unreachable
+ *   Capacitor.Plugins.ServerConfig.save({ url, expectId })
+ *                                                   -> the same, and refuses unless the server there
+ *                                                      reports exactly that id (a found server, #20)
  *   Capacitor.Plugins.ServerConfig.clear()
  *   Capacitor.Plugins.ServerConfig.restart()        -> rebuilds the activity/bridge so the
  *                                                      current saved choice takes effect
+ *
+ * From the bundled setup page ONLY (www/index.html; any other page is refused, see callerIsBundledPage):
+ *
+ *   Capacitor.Plugins.ServerConfig.startDiscovery() -> { started, onWifi }; looks for servers on the LAN
+ *   Capacitor.Plugins.ServerConfig.stopDiscovery()
+ *   event serverFound { id, name, url, fingerprint } -> a server that answered its health check
+ *   event serverLost  { id }                         -> its announcement went away
  *
  * MainActivity reads the saved value in onCreate and points the Capacitor bridge at
  * it; no saved value means the bundled first-run setup page (www/) loads instead.
@@ -86,6 +102,17 @@ class ServerConfigPlugin : Plugin() {
             }
         }
 
+        private const val TAG = "ServerConfig"
+
+        // The plan's wording (#20, decision 3): plain, and it says what to do next.
+        private const val NOT_THE_FOUND_SERVER = "That address is not the server we found. Search again."
+        private const val NOT_ON_THIS_PAGE = "Looking for servers is only available on the setup screen."
+
+        // How long the plugin thread waits for the main thread to read the WebView's URL (callerIsBundledPage).
+        // The main thread answers in microseconds unless it is busy; if it is busy for a whole second the call is
+        // refused (fails closed) and the page simply hides the search.
+        private const val PAGE_CHECK_TIMEOUT_MS = 1_000L
+
         // Quick liveness check used at launch (see MainActivity) to decide whether to point the
         // app at the saved server or drop to the bundled setup screen. Must be called OFF the main
         // thread — HttpURLConnection can sit the full timeout on an unreachable host.
@@ -105,6 +132,64 @@ class ServerConfigPlugin : Plugin() {
     }
 
     private fun prefs() = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    // "Look for my Nightlight" (#20). Made on the first startDiscovery, so a phone that never searches never touches
+    // NsdManager. Volatile: plugin methods run on Capacitor's plugin thread, the lifecycle hooks below on the main one.
+    @Volatile
+    private var discovery: ServerDiscovery? = null
+
+    // Events reach the page through notifyListeners, which must run on Capacitor's plugin thread: the listener lists
+    // it walks are plain collections that addListener and removeListener (plugin methods) change on that thread.
+    // The generation is checked again THERE, after any stop or start the page asked for has run, so a result from a
+    // search the page has already ended is never delivered (plan review: the stop state machine). notifyListeners
+    // is called without retainUntilConsumed: an event nobody is listening for is dropped, never replayed to a later
+    // listener (that would be a card from an old search), which is why the page adds its listeners first.
+    private val discoveryEvents = object : ServerDiscovery.Listener {
+        override fun onServerFound(generation: Int, found: DiscoveryState.Found) {
+            val data = JSObject()
+            data.put("id", found.id)
+            data.put("name", found.name)
+            data.put("url", found.url)
+            data.put("fingerprint", found.fingerprint)
+            deliver(generation, "serverFound", data)
+        }
+
+        override fun onServerLost(generation: Int, id: String) {
+            deliver(generation, "serverLost", JSObject().put("id", id))
+        }
+
+        override fun onDiscoveryError(generation: Int, message: String) {
+            // Logged only: the page shows its "nothing found" help after 15 s either way.
+            Log.w(TAG, message)
+        }
+    }
+
+    private fun deliver(generation: Int, event: String, data: JSObject) {
+        val b = bridge ?: return
+        b.execute {
+            if (discovery?.isCurrent(generation) == true) notifyListeners(event, data)
+        }
+    }
+
+    /**
+     * Whether the page calling us is the bundled setup page (plan decision 3a). See DiscoveryRules.isBundledPage
+     * for the rule. WebView.getUrl must be called on the main thread, and plugin methods run on Capacitor's plugin
+     * thread, so the check is handed to the main thread and awaited here; that keeps start and stop in the order
+     * the page sent them (both run on this one thread). Fails closed: no bridge, no answer in time, or any error
+     * means "not the bundled page".
+     */
+    private fun callerIsBundledPage(): Boolean {
+        val b = bridge ?: return false
+        val check = FutureTask(Callable {
+            DiscoveryRules.isBundledPage(b.webView?.url, b.serverUrl, b.scheme, b.host)
+        })
+        return try {
+            if (Looper.myLooper() == Looper.getMainLooper()) check.run() else Handler(Looper.getMainLooper()).post(check)
+            check.get(PAGE_CHECK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     private fun knownServers(): MutableList<String> = knownServersOf(prefs())
 
@@ -163,6 +248,14 @@ class ServerConfigPlugin : Plugin() {
     // self-hosted servers are commonly exposed plain-http on the LAN with no reverse
     // proxy in front (e.g. 192.168.1.50:4000), and the wrong-scheme attempt fails
     // fast (TLS handshake against a plaintext port doesn't sit out the timeout).
+    //
+    // expectId (optional, #20): set when the setup page connects to a server that "Look for my Nightlight" found.
+    // The reply must then be a Nightlight health reply whose id is exactly that one (DiscoveryRules
+    // .healthMatchesExpected), or nothing is saved. Why (plan review, High): the check below accepts any 200 reply
+    // containing "ok", and the address a card shows may have changed hands since it was verified (a DHCP lease
+    // moving to another device). Design 7.5 step 6: re-check at the moment of use. Without expectId (a typed address,
+    // a saved-server tap) this behaves exactly as before. Present but not a string is refused, not ignored, so a
+    // caller that meant to ask for the check cannot silently skip it.
     @PluginMethod
     fun save(call: PluginCall) {
         val raw = call.getString("url")?.trim().orEmpty()
@@ -170,6 +263,12 @@ class ServerConfigPlugin : Plugin() {
             call.reject("Enter your server address")
             return
         }
+        val rawExpectId = call.data.opt("expectId")
+        if (rawExpectId != null && rawExpectId !is String) {
+            call.reject(NOT_THE_FOUND_SERVER)
+            return
+        }
+        val expectId = rawExpectId as String?
         val bare = raw.trimEnd('/')
         val candidates = if (bare.contains("://")) {
             if (!bare.startsWith("https://") && !bare.startsWith("http://")) {
@@ -194,6 +293,10 @@ class ServerConfigPlugin : Plugin() {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
                     conn.disconnect()
                     if (code == 200 && body.contains("\"ok\"")) {
+                        if (expectId != null && !DiscoveryRules.healthMatchesExpected(body, expectId)) {
+                            call.reject(NOT_THE_FOUND_SERVER)
+                            return@Thread
+                        }
                         prefs().edit().putString(KEY_URL, url).apply()
                         rememberServer(url)
                         val ret = JSObject()
@@ -225,5 +328,77 @@ class ServerConfigPlugin : Plugin() {
     fun restart(call: PluginCall) {
         call.resolve()
         activity?.runOnUiThread { activity.recreate() }
+    }
+
+    // "Look for my Nightlight" (#20). Starts a search and resolves { started, onWifi } at once; found servers
+    // arrive later as serverFound events, and only after they answered the health check (ServerDiscovery). It only
+    // SUGGESTS: nothing is saved or switched until the person taps a card, which goes through save({ url, expectId })
+    // and restart() like any other connect (the #559 principle).
+    //
+    // With no Wi-Fi or Ethernet (mobile data only) nothing is started and it resolves { started: false,
+    // onWifi: false }, so the page can say so (design section 10): the server cannot be heard from there.
+    //
+    // Refused on any page but the bundled setup page (plan decision 3a, callerIsBundledPage), and when this phone
+    // has no service discovery. The page hides the whole section when the call is refused, which is also what
+    // happens on iOS, where the method does not exist yet.
+    @PluginMethod
+    fun startDiscovery(call: PluginCall) {
+        if (!callerIsBundledPage()) {
+            call.reject(NOT_ON_THIS_PAGE)
+            return
+        }
+        val d = discovery ?: ServerDiscovery(context).also { discovery = it }
+        if (!d.isAvailable) {
+            call.reject("Looking for servers isn't available on this phone.")
+            return
+        }
+        val ret = JSObject()
+        val onWifi = d.isOnLocalNetwork()
+        ret.put("onWifi", onWifi)
+        if (!onWifi) {
+            d.stop()
+            ret.put("started", false)
+            call.resolve(ret)
+            return
+        }
+        if (d.start(discoveryEvents) == null) {
+            call.reject("Couldn't start looking for servers.")
+            return
+        }
+        ret.put("started", true)
+        call.resolve(ret)
+    }
+
+    // Gated like startDiscovery: a search is the bundled page's alone, start to finish.
+    @PluginMethod
+    fun stopDiscovery(call: PluginCall) {
+        if (!callerIsBundledPage()) {
+            call.reject(NOT_ON_THIS_PAGE)
+            return
+        }
+        discovery?.stop()
+        call.resolve()
+    }
+
+    // Capacitor calls this when the WebView starts loading ANY page (BridgeWebViewClient.onPageStarted ->
+    // Bridge.reset), dropping every listener. With nobody left to tell, a search has no reason to go on: this makes
+    // "leaving the page stops discovery" hold even if the page never got to call stopDiscovery (a reload, a crash
+    // in its script). The page's own pagehide handler is the first line; this is the second.
+    override fun removeAllListeners() {
+        super.removeAllListeners()
+        discovery?.stop()
+    }
+
+    // The app went to the background: stop looking, so nothing keeps probing the network while nobody can see the
+    // results. The page shows "Search again" when it is visible again.
+    override fun handleOnStop() {
+        discovery?.stop()
+        super.handleOnStop()
+    }
+
+    override fun handleOnDestroy() {
+        discovery?.release()
+        discovery = null
+        super.handleOnDestroy()
     }
 }
