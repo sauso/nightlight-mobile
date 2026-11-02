@@ -417,19 +417,39 @@ class ServerConfigPlugin : Plugin() {
     // in its script). The page's own pagehide handler is the first line; this is the second.
     override fun removeAllListeners() {
         super.removeAllListeners()
-        discovery?.stop()
+        onPluginThread { it.stop() }
     }
 
     // The app went to the background: stop looking, so nothing keeps probing the network while nobody can see the
     // results. The page shows "Search again" when it is visible again.
     override fun handleOnStop() {
-        discovery?.stop()
+        onPluginThread { it.stop() }
         super.handleOnStop()
     }
 
+    // Released on the plugin thread too, after anything already queued there. Bridge.onDestroy calls this and then
+    // quitSafely() on that thread, which still runs every message already due, so the release does run.
     override fun handleOnDestroy() {
-        discovery?.release()
+        val d = discovery
         discovery = null
+        if (d != null) onPluginThread(d) { it.release() }
         super.handleOnDestroy()
+    }
+
+    // The three lifecycle callers above run on the MAIN thread, and stop()/release() take ServerDiscovery's lock,
+    // which the plugin thread holds across NsdManager binder calls inside start() (second review of #20: a slow
+    // binder call there would stall the main thread, an ANR risk). So the work is handed to Capacitor's plugin
+    // thread: Bridge.execute posts to the same single "CapacitorPlugins" HandlerThread that runs every plugin call
+    // (Bridge.java: callPluginMethod and execute both post to taskHandler), which never blocks the main thread and
+    // keeps these stops in order with the page's own startDiscovery/stopDiscovery calls. Without a bridge (never
+    // expected) a short-lived thread does it. Glue: no JVM test reaches this.
+    private fun onPluginThread(target: ServerDiscovery? = discovery, action: (ServerDiscovery) -> Unit) {
+        val d = target ?: return
+        val b = bridge
+        if (b != null) {
+            b.execute { action(d) }
+        } else {
+            Thread({ action(d) }, "nightlight-discovery-lifecycle").start()
+        }
     }
 }

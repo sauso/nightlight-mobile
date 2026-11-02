@@ -247,7 +247,6 @@ class DiscoveryStateTest {
         // Back at 5 s: nothing yet, but a probe is waiting for 11 s (the first probe plus the interval).
         assertTrue(s.announce(gen, "svc", realId, now = 5_000L).isEmpty())
         assertEquals(11_000L, s.deferredDueAt("svc"))
-        assertFalse("a repeat announcement while it waits is not queued again", s.onFound(gen, "svc", "svc"))
         assertTrue("not before the window ends", s.runDeferred("svc", 10_999L).isEmpty())
         val tasks = s.runDeferred("svc", 11_000L)
         assertEquals(listOf("192.168.1.50"), tasks.map { it.host })
@@ -255,6 +254,60 @@ class DiscoveryStateTest {
         assertTrue(s.runDeferred("svc", 20_000L).isEmpty())
         assertEquals(listOf(realId), s.drain { true }.map { it.id })
         assertEquals(10_000L, DiscoveryState.REPROBE_INTERVAL_MS)
+    }
+
+    @Test
+    fun `a newer answer replaces the deferred one, and the probe that runs uses the newest address`() {
+        // Second review of #20: a deferred name used to count as busy, so a later announcement with a new address
+        // was refused and the stale first address was probed when the window ended. Kills "keep the first answer".
+        val s = DiscoveryState<String>()
+        val gen = s.start()
+        s.announce(gen, "svc", realId, hosts = listOf("192.168.1.50"), now = 1_000L)
+        s.drain { false }
+        s.onLost(gen, "svc")
+        assertTrue(s.announce(gen, "svc", realId, hosts = listOf("192.168.1.60"), now = 3_000L).isEmpty())
+        // Announced again, no loss in between, at a new address: accepted, resolved, and it replaces the first.
+        assertTrue(s.announce(gen, "svc", realId, hosts = listOf("192.168.1.70"), now = 6_000L).isEmpty())
+        assertEquals("still one deferral, same due time", 11_000L, s.deferredDueAt("svc"))
+        assertEquals(listOf("192.168.1.70"), s.runDeferred("svc", 11_000L).map { it.host })
+        assertNull(s.deferredDueAt("svc"))
+        assertEquals("exactly one probe, at the newest address", 1, s.queuedProbeCount())
+    }
+
+    @Test
+    fun `a newer answer with no usable address drops the deferred probe instead of probing the old address`() {
+        val s = DiscoveryState<String>()
+        val gen = s.start()
+        s.announce(gen, "svc", realId, hosts = listOf("192.168.1.50"), now = 1_000L)
+        s.drain { false }
+        s.onLost(gen, "svc")
+        s.announce(gen, "svc", realId, hosts = listOf("192.168.1.60"), now = 3_000L)
+        assertTrue(s.announce(gen, "svc", realId, hosts = listOf("8.8.8.8"), now = 6_000L).isEmpty())
+        assertNull(s.deferredDueAt("svc"))
+        assertTrue(s.runDeferred("svc", 11_000L).isEmpty())
+    }
+
+    @Test
+    fun `a replaced deferral still runs nothing after a stop, a new search or a loss`() {
+        val s = DiscoveryState<String>()
+        val gen = s.start()
+        s.announce(gen, "svc", realId, hosts = listOf("192.168.1.50"), now = 1_000L)
+        s.drain { false }
+        s.onLost(gen, "svc")
+        s.announce(gen, "svc", realId, hosts = listOf("192.168.1.60"), now = 3_000L)
+        s.announce(gen, "svc", realId, hosts = listOf("192.168.1.70"), now = 4_000L)
+        s.onLost(gen, "svc")
+        assertTrue("lost", s.runDeferred("svc", 11_000L).isEmpty())
+
+        s.announce(gen, "svc", realId, hosts = listOf("192.168.1.60"), now = 5_000L)
+        s.announce(gen, "svc", realId, hosts = listOf("192.168.1.70"), now = 6_000L)
+        s.stop()
+        assertTrue("stopped", s.runDeferred("svc", 11_000L).isEmpty())
+        val gen2 = s.start()
+        assertTrue("new search", s.runDeferred("svc", 11_000L).isEmpty())
+        assertFalse(s.isCurrent(gen))
+        assertTrue(s.isCurrent(gen2))
+        assertEquals(0, s.queuedProbeCount())
     }
 
     @Test
@@ -400,8 +453,8 @@ class DiscoveryStateTest {
         for (attempt in 1..3) {
             val job = s.nextResolve(1)!!
             assertEquals(attempt, job.attempt)
-            assertTrue(s.resolveFailed(job, retry = true))
-            s.requeueResolve("svc")
+            assertTrue(s.resolveFailed(job, retry = true, nowMs = attempt * 1_000L))
+            s.requeueDueRetries(attempt * 1_000L + 500L)
         }
         assertFalse(s.isWaitingRetry("svc"))
         assertNull("no fourth attempt", s.nextResolve(1))
@@ -409,17 +462,22 @@ class DiscoveryStateTest {
     }
 
     @Test
-    fun `a retry waits outside the queue until it is put back`() {
+    fun `a retry waits 500 ms outside the queue before it goes back`() {
         // Code review of #20: straight back in the queue, a busy refusal burned all three attempts in milliseconds.
         val s = DiscoveryState<String>()
         val gen = s.start()
         s.onFound(gen, "svc", "svc")
-        s.resolveFailed(s.nextResolve(1)!!, retry = true)
+        s.resolveFailed(s.nextResolve(1)!!, retry = true, nowMs = 1_000L)
         assertTrue(s.isWaitingRetry("svc"))
-        assertNull("not resolvable until put back", s.nextResolve(1))
+        assertEquals(1_500L, s.nextRetryDueAt())
+        assertNull("not resolvable while it waits", s.nextResolve(1))
         assertFalse("still busy while it waits", s.onFound(gen, "svc", "svc"))
-        assertTrue(s.requeueResolve("svc"))
+        assertEquals("not before its time", 0, s.requeueDueRetries(1_499L))
+        assertNull(s.nextResolve(1))
+        assertEquals(1, s.requeueDueRetries(1_500L))
+        assertNull("nothing left waiting", s.nextRetryDueAt())
         assertEquals(2, s.nextResolve(1)!!.attempt)
+        assertEquals(500L, DiscoveryState.RETRY_DELAY_MS)
     }
 
     @Test
@@ -429,14 +487,16 @@ class DiscoveryStateTest {
         s.onFound(gen, "svc", "svc")
         s.resolveFailed(s.nextResolve(1)!!, retry = true)
         s.onLost(gen, "svc")
-        assertFalse(s.requeueResolve("svc"))
+        assertNull(s.nextRetryDueAt())
+        assertEquals(0, s.requeueDueRetries(99_000L))
         assertNull(s.nextResolve(1))
 
         s.onFound(gen, "svc", "svc")
         s.resolveFailed(s.nextResolve(1)!!, retry = true)
         s.stop()
         s.start()
-        assertFalse(s.requeueResolve("svc"))
+        assertNull(s.nextRetryDueAt())
+        assertEquals(0, s.requeueDueRetries(99_000L))
         assertNull(s.nextResolve(1))
     }
 
@@ -448,10 +508,53 @@ class DiscoveryStateTest {
         val a = s.nextResolve(1)!!
         s.onFound(gen, "b", "b")
         s.onFound(gen, "c", "c")
-        s.resolveFailed(a, retry = true)
-        assertTrue(s.requeueResolve("a")) // queue was [b, c]; now [c, a]
+        s.resolveFailed(a, retry = true, nowMs = 0L)
+        assertEquals(1, s.requeueDueRetries(500L)) // queue was [b, c]; now [c, a]
         assertEquals("c", s.nextResolve(1)!!.name)
         assertNull(s.nextResolve(1)) // one slot, held by c
+    }
+
+    @Test
+    fun `when more services wait to retry than the cap, the oldest is dropped and never retried`() {
+        // Second review of #20: a per-service retry timer outlived the waiting entry the cap dropped. Now each waiting
+        // retry carries its due time, the dropped one has none, and nothing is left pending for it.
+        val s = DiscoveryState<String>(maxQueuedResolves = 2)
+        val gen = s.start()
+        for ((i, name) in listOf("a", "b", "c").withIndex()) {
+            s.onFound(gen, name, name)
+            s.resolveFailed(s.nextResolve(1)!!, retry = true, nowMs = i * 100L)
+        }
+        assertFalse("a, the oldest, was dropped", s.isWaitingRetry("a"))
+        assertEquals(2, s.waitingRetryCount())
+        assertEquals("the earliest due is b's", 600L, s.nextRetryDueAt())
+        assertEquals(2, s.requeueDueRetries(10_000L))
+        assertEquals(listOf("b", "c"), listOfNotNull(s.nextResolve(9)?.name, s.nextResolve(9)?.name))
+        assertNull(s.nextResolve(9))
+        assertNull("nothing left pending", s.nextRetryDueAt())
+        assertTrue("a is free to be announced again", s.onFound(gen, "a", "a"))
+    }
+
+    @Test
+    fun `a waiting retry for a service forgotten by the name cap does not push a live one out of the queue`() {
+        val s = DiscoveryState<String>(maxTrackedNames = 1, maxQueuedResolves = 1)
+        val gen = s.start()
+        s.onFound(gen, "a", "a")
+        s.resolveFailed(s.nextResolve(1)!!, retry = true, nowMs = 0L)
+        s.onFound(gen, "b", "b") // forgets a; b waits in the (full) queue
+        assertEquals("a is dropped, not requeued", 0, s.requeueDueRetries(500L))
+        assertEquals("b", s.nextResolve(1)!!.name)
+    }
+
+    @Test
+    fun `the waiting-retry list never holds more than the cap, however many fail`() {
+        val s = DiscoveryState<String>()
+        val gen = s.start()
+        for (i in 1..1_000) {
+            s.onFound(gen, "svc-$i", "svc-$i")
+            s.resolveFailed(s.nextResolve(1)!!, retry = true, nowMs = i.toLong())
+        }
+        assertEquals(DiscoveryState.MAX_QUEUED_RESOLVES, s.waitingRetryCount())
+        assertEquals("the oldest still waiting is svc-937", 937L + 500L, s.nextRetryDueAt())
     }
 
     @Test
@@ -470,8 +573,8 @@ class DiscoveryStateTest {
         val gen = s.start()
         s.onFound(gen, "svc", "svc")
         val first = s.nextResolve(1)!!
-        assertTrue(s.resolveFailed(first, retry = true)) // timeout, retried
-        s.requeueResolve("svc")
+        assertTrue(s.resolveFailed(first, retry = true, nowMs = 0L)) // timeout, retried
+        s.requeueDueRetries(500L)
         val second = s.nextResolve(1)!!
         assertFalse(s.resolveFailed(first, retry = true)) // late failure of attempt 1
         assertTrue(s.onResolved(first, realId, listOf("192.168.1.50"), 4000, 0L).isEmpty()) // late answer of attempt 1

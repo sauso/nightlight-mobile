@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *    stop.
  *  - API 24 to 33: resolveService, which reports ONE address, and only one resolve may run at a time (an
  *    overlapping one fails with FAILURE_ALREADY_ACTIVE), so resolves are queued one by one, and a refused one is
- *    retried after [RETRY_DELAY_MS]. Known risk (plan decision 2): a host-network server with several interfaces may
+ *    retried after DiscoveryState.RETRY_DELAY_MS. Known risk (plan decision 2): a host-network server with several interfaces may
  *    resolve to an address this phone cannot reach (a Docker bridge gateway). Its probe then fails and it is not
  *    listed; the typed address still works. If an older phone shows this, a small mDNS library is the fallback (not
  *    built unless needed). This path cannot be tried on the owner's phone (API 37).
@@ -102,12 +102,6 @@ class ServerDiscovery(context: Context, private val probe: HealthProbe = HealthP
         // later server from being resolved. 5 s is a judgement (a LAN answer takes milliseconds), not a measurement.
         private const val RESOLVE_TIMEOUT_MS = 5_000L
 
-        // A resolve refused as busy (FAILURE_ALREADY_ACTIVE / FAILURE_MAX_LIMIT) waits this long before it goes back
-        // in the queue (code review of #20: straight back in, a queued service burned its three attempts in
-        // milliseconds while the one active resolve was still running). A judgement; unverified on a real pre-API-34
-        // phone.
-        private const val RETRY_DELAY_MS = 500L
-
         // Stopping a discovery completes asynchronously (onDiscoveryStopped). A new search waits for that, so two
         // discoveries never overlap (plan review, Medium); if the confirmation never comes, it waits this long.
         private const val STOP_CONFIRM_TIMEOUT_MS = 3_000L
@@ -152,10 +146,15 @@ class ServerDiscovery(context: Context, private val probe: HealthProbe = HealthP
     private val infoCallbacks = HashMap<Int, Pair<String, Any>>()
 
     // Every timer is kept so it can be cancelled when its work ends (code review of #20: resolve timeouts were never
-    // cancelled). Each map is bounded by what it serves: resolve slots, the waiting-retry list, MAX_DEFER_TIMERS.
+    // cancelled). Resolve timeouts are bounded by the resolve slots, deferred re-probes by MAX_DEFER_TIMERS.
     private val resolveTimeouts = HashMap<Int, Pair<String, ScheduledFuture<*>>>() // by resolve token: (name, timer)
-    private val retryTimers = HashMap<String, ScheduledFuture<*>>() // by service name
     private val deferTimers = HashMap<String, ScheduledFuture<*>>() // by service name
+    // ONE timer for every waiting retry, set for the earliest due time DiscoveryState reports (second review of #20:
+    // a timer per service outlived the waiting entry the cap had dropped, so the bound did not hold). [retryTimerSeq]
+    // tells the current timer from one it replaced that was already running.
+    private var retryTimer: ScheduledFuture<*>? = null
+    private var retryTimerDueAt = Long.MAX_VALUE
+    private var retryTimerSeq = 0
 
     private var activeWorkers = 0
 
@@ -261,8 +260,7 @@ class ServerDiscovery(context: Context, private val probe: HealthProbe = HealthP
             }
             for (token in infoCallbacks.keys.toList()) endResolveLocked(token)
             for (token in resolveTimeouts.keys.toList()) endResolveLocked(token)
-            retryTimers.values.forEach { it.cancel(false) }
-            retryTimers.clear()
+            scheduleRetryLocked() // nothing is waiting any more, so this cancels the retry timer
             deferTimers.values.forEach { it.cancel(false) }
             deferTimers.clear()
         }
@@ -276,6 +274,8 @@ class ServerDiscovery(context: Context, private val probe: HealthProbe = HealthP
             pendingStart = null
             stopConfirmTimer?.cancel(false)
             stopConfirmTimer = null
+            retryTimer?.cancel(false)
+            retryTimer = null
         }
         probePool.shutdownNow()
         timers.shutdownNow()
@@ -356,10 +356,8 @@ class ServerDiscovery(context: Context, private val probe: HealthProbe = HealthP
             if (id != null) listener?.onServerLost(gen, id)
             val tokens = infoCallbacks.filterValues { it.first == name }.keys + resolveTimeouts.filterValues { it.first == name }.keys
             for (token in tokens) endResolveLocked(token)
-            if (name != null) {
-                retryTimers.remove(name)?.cancel(false)
-                deferTimers.remove(name)?.cancel(false)
-            }
+            if (name != null) deferTimers.remove(name)?.cancel(false)
+            scheduleRetryLocked() // its waiting retry, if any, is gone
             pumpResolvesLocked() // its resolve slot may have been freed
         }
     }
@@ -470,19 +468,38 @@ class ServerDiscovery(context: Context, private val probe: HealthProbe = HealthP
         val retry = errorCode == NsdManager.FAILURE_ALREADY_ACTIVE || errorCode == NsdManager.FAILURE_MAX_LIMIT
         synchronized(lock) {
             endResolveLocked(job.token)
-            if (state.resolveFailed(job, retry) && state.isWaitingRetry(job.name)) {
-                retryTimers.remove(job.name)?.cancel(false)
-                val timer = scheduleTimer(RETRY_DELAY_MS) { requeue(job.name) }
-                if (timer != null) retryTimers[job.name] = timer
-            }
+            state.resolveFailed(job, retry, SystemClock.elapsedRealtime())
+            scheduleRetryLocked()
             pumpResolvesLocked()
         }
     }
 
-    private fun requeue(name: String) {
+    // Lock held. Keep the ONE retry timer set for the earliest waiting retry, or cancel it when none waits. A retry
+    // the bounded waiting list dropped simply has no due time any more, so nothing fires for it.
+    private fun scheduleRetryLocked() {
+        val due = state.nextRetryDueAt()
+        if (due == null) {
+            retryTimer?.cancel(false)
+            retryTimer = null
+            retryTimerDueAt = Long.MAX_VALUE
+            return
+        }
+        if (retryTimer != null && retryTimerDueAt <= due) return
+        retryTimer?.cancel(false)
+        val seq = ++retryTimerSeq
+        retryTimerDueAt = due
+        retryTimer = scheduleTimer(maxOf(0L, due - SystemClock.elapsedRealtime())) { runRetries(seq) }
+        if (retryTimer == null) retryTimerDueAt = Long.MAX_VALUE
+    }
+
+    private fun runRetries(seq: Int) {
         synchronized(lock) {
-            retryTimers.remove(name)
-            if (state.requeueResolve(name)) pumpResolvesLocked()
+            if (seq == retryTimerSeq) {
+                retryTimer = null
+                retryTimerDueAt = Long.MAX_VALUE
+            }
+            if (state.requeueDueRetries(SystemClock.elapsedRealtime()) > 0) pumpResolvesLocked()
+            scheduleRetryLocked()
         }
     }
 

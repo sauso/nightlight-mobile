@@ -17,7 +17,13 @@ package com.sauso.nightlight
  *  - one batch of probes per service name at a time (a repeat announcement is ignored, not queued again), and a
  *    name is probed again at most once per [reprobeIntervalMs]. An answer that arrives inside that window is
  *    DEFERRED to the end of it, not dropped (code review of #20: a server that restarts quickly would otherwise lose
- *    its card until Search again); one deferred probe per name, the newest answer replacing an older one;
+ *    its card until Search again). One deferred probe per name, and the NEWEST answer replaces an older one (second
+ *    review: a server whose address changed again inside the window was probed at its first, stale address), so a
+ *    name with only a deferred probe still accepts a new announcement;
+ *  - a resolve refused as busy waits [retryDelayMs] before it is tried again, and at most [maxQueuedResolves]
+ *    services wait at once, the oldest dropped (not retried) first. Each waiting retry carries its due time, so
+ *    ServerDiscovery needs one timer for all of them ([nextRetryDueAt]), never one per service (second review: a
+ *    per-service timer outlived the entry the cap dropped);
  *  - the private addresses of one announcement are picked FIRST and then at most [maxAddressesPerService] of them
  *    are probed, so public addresses announced first cannot push the real one out (code review of #20);
  *  - one entry per id: the first address that verifies wins, and a later announcement of a listed id does not
@@ -44,6 +50,7 @@ class DiscoveryState<R>(
     private val reprobeIntervalMs: Long = REPROBE_INTERVAL_MS,
     private val maxResolveAttempts: Int = MAX_RESOLVE_ATTEMPTS,
     private val maxTrackedNames: Int = MAX_TRACKED_NAMES,
+    private val retryDelayMs: Long = RETRY_DELAY_MS,
     private val addressPolicy: (String) -> Boolean = DiscoveryRules::isPrivateIpv4,
 ) {
     companion object {
@@ -60,8 +67,11 @@ class DiscoveryState<R>(
         const val MAX_ADDRESSES_PER_SERVICE = 8
         const val REPROBE_INTERVAL_MS = 10_000L
         // A resolve refused because another is still active (FAILURE_ALREADY_ACTIVE, the API < 34 one-at-a-time
-        // rule) is tried again, at most this many times in all; ServerDiscovery waits a moment before each retry.
+        // rule) is tried again, at most this many times in all, each after RETRY_DELAY_MS.
         const val MAX_RESOLVE_ATTEMPTS = 3
+        // Code review of #20: straight back in the queue, a queued service burned its three attempts in milliseconds
+        // while the one active resolve was still running. A judgement; unverified on a real pre-API-34 phone.
+        const val RETRY_DELAY_MS = 500L
         // Code review of #20 (suggested 256). Far more names than any real network announces for this one service
         // type; small enough that a flood costs a few kilobytes.
         const val MAX_TRACKED_NAMES = 256
@@ -114,7 +124,9 @@ class DiscoveryState<R>(
     private val epochs = LinkedHashMap<String, Int>() // service name -> epoch, oldest first; bounded
     private val resolveQueue = ArrayDeque<ResolveJob<R>>()
     private val resolving = HashMap<String, Int>() // service name -> token of the attempt in progress
-    private val waitingRetry = LinkedHashMap<String, ResolveJob<R>>() // refused as busy, waiting to go back in the queue
+    // Refused as busy, waiting to go back in the queue at dueAtMs; bounded, oldest dropped (and so never retried).
+    private class WaitingRetry<R>(val job: ResolveJob<R>, val dueAtMs: Long)
+    private val waitingRetry = LinkedHashMap<String, WaitingRetry<R>>()
     private val probeQueue = ArrayDeque<ProbeTask>()
     // Probes queued or running, per service name, for ONE epoch: a probe of a lost service that finishes after the
     // service came back must not count down the new batch.
@@ -176,33 +188,46 @@ class DiscoveryState<R>(
     }
 
     /**
-     * A resolve ended without an answer (failed or timed out). With [retry], the service waits for another attempt
-     * (see [isWaitingRetry] and [requeueResolve]) unless it has had [maxResolveAttempts]; it is NOT put straight back
-     * in the queue, because an immediate retry of a "busy" refusal would burn all its attempts in milliseconds (code
-     * review of #20). Returns true if [job] was the attempt in progress (a late report from an attempt that already
-     * ended changes nothing).
+     * A resolve ended without an answer (failed or timed out) at [nowMs]. With [retry], the service waits until
+     * [nowMs] + [retryDelayMs] for another attempt ([nextRetryDueAt], [requeueDueRetries]) unless it has had
+     * [maxResolveAttempts]; it is NOT put straight back in the queue, because an immediate retry of a "busy" refusal
+     * would burn all its attempts in milliseconds (code review of #20). At most [maxQueuedResolves] services wait;
+     * when one more arrives the OLDEST waiting one is dropped and is not retried. A waiting retry holds no resolve
+     * slot and no probe count, so dropping it frees nothing else and leaves the service free to be announced again.
+     * Returns true if [job] was the attempt in progress (a late report from an attempt that already ended changes
+     * nothing).
      */
-    fun resolveFailed(job: ResolveJob<R>, retry: Boolean): Boolean {
+    fun resolveFailed(job: ResolveJob<R>, retry: Boolean, nowMs: Long = 0L): Boolean {
         if (!endResolve(job)) return false
         if (retry && job.attempt < maxResolveAttempts) {
-            putBounded(waitingRetry, job.name, job.copy(attempt = job.attempt + 1, token = 0), maxQueuedResolves)
+            putBounded(waitingRetry, job.name, WaitingRetry(job.copy(attempt = job.attempt + 1, token = 0), nowMs + retryDelayMs), maxQueuedResolves)
         }
         return true
     }
 
     fun isWaitingRetry(name: String): Boolean = waitingRetry.containsKey(name)
 
+    fun waitingRetryCount(): Int = waitingRetry.size
+
+    /** When the earliest waiting retry is due, or null if none is waiting: ServerDiscovery's one retry timer. */
+    fun nextRetryDueAt(): Long? = waitingRetry.values.minOfOrNull { it.dueAtMs }
+
     /**
-     * Put a service that is waiting to retry back at the end of the resolve queue (the oldest queued service is
-     * dropped if that makes the queue too long). Returns true if it went back; false if it was lost, forgotten, or
-     * belongs to an earlier search.
+     * Put every waiting retry that is due at [nowMs] back at the end of the resolve queue (the oldest queued service
+     * is dropped if that makes the queue too long). One that was lost, forgotten, or belongs to an earlier search is
+     * dropped instead. Returns how many went back.
      */
-    fun requeueResolve(name: String): Boolean {
-        val job = waitingRetry.remove(name) ?: return false
-        if (!isLive(job.generation, job.name, job.epoch)) return false
-        resolveQueue.addLast(job)
+    fun requeueDueRetries(nowMs: Long): Int {
+        var requeued = 0
+        val due = waitingRetry.filterValues { it.dueAtMs <= nowMs }.keys.toList()
+        for (name in due) {
+            val job = waitingRetry.remove(name)?.job ?: continue
+            if (!isLive(job.generation, job.name, job.epoch)) continue
+            resolveQueue.addLast(job)
+            requeued++
+        }
         while (resolveQueue.size > maxQueuedResolves) resolveQueue.removeFirst()
-        return true
+        return requeued
     }
 
     /**
@@ -213,6 +238,10 @@ class DiscoveryState<R>(
      */
     fun onResolved(job: ResolveJob<R>, txtId: String?, hosts: List<String>, port: Int, nowMs: Long): List<ProbeTask> {
         if (!endResolve(job)) return emptyList()
+        // The newest answer for a service replaces any deferred one, whatever it says (second review of #20): if it
+        // is deferred too, it is stored below with ITS addresses; if it is probed now, or has nothing usable, the old
+        // addresses must not be probed later.
+        deferred.remove(job.name)
         if (txtId == null || !DiscoveryRules.isPlausibleId(txtId)) return emptyList()
         if (port !in 1..65535) return emptyList()
         if (listed.containsKey(txtId) || listed.size >= maxVerified) return emptyList()
@@ -338,13 +367,14 @@ class DiscoveryState<R>(
     private fun isLive(gen: Int, name: String, epoch: Int): Boolean = isCurrent(gen) && epochs[name] == epoch
 
     // A service is already being handled if it waits to be resolved or retried, is being resolved, has probes
-    // outstanding or deferred, or is listed: a repeat announcement of it is deduplicated, not queued again.
+    // outstanding, or is listed: a repeat announcement of it is deduplicated, not queued again. A DEFERRED probe does
+    // not make it busy (second review of #20): a new announcement is resolved, and its answer replaces the deferred
+    // one, so a changed address is the one probed when the window ends. Still one deferral (one timer) per name.
     private fun isBusy(name: String): Boolean =
         resolving.containsKey(name) ||
             resolveQueue.any { it.name == name } ||
             waitingRetry.containsKey(name) ||
             probesPending.containsKey(name) ||
-            deferred.containsKey(name) ||
             listedIdByName.containsKey(name)
 
     private fun releasePending(name: String, epoch: Int) {
