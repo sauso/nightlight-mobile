@@ -18,7 +18,8 @@ The address you set the app up with stays the **saved** address. If the server h
 web app asks the server for that address after sign-in and hands it to the app (`ServerConfig.addEndpoint`), which keeps it
 beside the saved one (SharedPreferences key `tailscale_for:<saved address>`). The app checks it first: it must be exactly
 `https://<name>.ts.net`, the page asking must be the saved server (or its Tailscale address), and `/api/health` at the new
-address must report the same server id as the page's server. At launch `MainActivity` probes both addresses at once and
+address must report the same server id as the page's server (the id is saved with the address, and the address is opened at
+launch only if the server there still reports it). **Change server** and forgetting a server remove its Tailscale address. At launch `MainActivity` probes both addresses at once and
 opens the saved one if it answers within 3 seconds, else the Tailscale one (`EndpointChooser`); a quick Tailscale answer
 never beats a slower home answer. The rules are unit-tested on the JVM (`EndpointRulesTest`, `EndpointChooserTest`,
 `EndpointProbeTest`); the plugin glue and the launch gate need a phone (see the PR's checklist). iOS has no launch gate and

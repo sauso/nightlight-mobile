@@ -43,7 +43,10 @@ object EndpointProbe {
                 }
             }
             if (total > MAX_BODY_BYTES) return null
+            // The id must also be UUID-shaped (a server's id is crypto.randomUUID(), db.js), as in discovery: an id that is
+            // not is not a Nightlight server's, so it is never compared, let alone saved.
             DiscoveryRules.parseHealth(String(buffer, 0, total, StandardCharsets.UTF_8))
+                ?.takeIf { DiscoveryRules.isPlausibleId(it.id) }
         } catch (e: Exception) {
             null
         } finally {

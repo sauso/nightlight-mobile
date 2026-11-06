@@ -71,7 +71,17 @@ class MainActivity : BridgeActivity() {
         val savedUrl = ServerConfigPlugin.getSavedUrl(this)
         if (savedUrl != null) {
             val tailscaleUrl = ServerConfigPlugin.getTailscaleUrl(this, savedUrl)
-            val chosen = EndpointChooser({ ServerConfigPlugin.isReachable(it, 2500) }).choose(savedUrl, tailscaleUrl)
+            // The Tailscale address only counts if the server answering there still has the id it was saved for, so an address
+            // saved for one server can never open another (a saved address handed to a different machine, say).
+            val wantedId = ServerConfigPlugin.getTailscaleId(this, savedUrl)
+            val probe = { url: String ->
+                if (url == tailscaleUrl) {
+                    wantedId != null && EndpointProbe.fetchHealth(url, 2500)?.id == wantedId
+                } else {
+                    ServerConfigPlugin.isReachable(url, 2500)
+                }
+            }
+            val chosen = EndpointChooser(probe).choose(savedUrl, tailscaleUrl)
             if (chosen != null) {
                 config = CapConfig.Builder(this)
                     .setServerUrl(chosen)
