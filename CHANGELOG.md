@@ -11,6 +11,15 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Added
+- **Android: the app moves to your server's other address when you change network.** Leave home with the app open and,
+  when Wi-Fi turns to mobile data, the app now switches to your server's Tailscale address by itself within a few
+  seconds, instead of staying on a home address that cannot answer until you restart the app. Coming home, it does not
+  switch back while you are using it (the Tailscale address keeps working on Wi-Fi): it moves back to the home address
+  the next time you open the app or turn the screen back on, and never while it is in Picture-in-Picture. Each switch
+  reloads the app onto its home screen, so a video you were watching starts again. If the network keeps dropping in and
+  out, the app switches at most 3 times in 5 minutes. It works while the app is on screen: listening with the screen off
+  on a network that has stopped working is not rescued until you next open the app. Needs the Tailscale address
+  described below. iOS does not have this yet.
 - **Android: one sign-in for both of your server's addresses.** The home address and the Tailscale address used to ask
   for a sign-in each. The app now keeps your sign-in, encrypted with a key that never leaves the phone's secure
   keystore, and hands it to the Tailscale address (only that address) the first time you open it there, so signing
@@ -25,8 +34,9 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   opens the address you set it up with if that answers within about 3 seconds, and the Tailscale address if it does
   not, so at home nothing depends on Tailscale and away from home it opens through Tailscale. You need the Tailscale
   app on the phone, signed in to the same Tailscale network as the server. The two addresses are different web
-  addresses; see the entry above for signing in once. A session that started on the Tailscale address stays on it until the app
-  is next started. Turning Tailscale or the secure address off on the server removes the saved address the next
+  addresses; see the entry above for signing in once. A session that started on the Tailscale address stays on it while you use
+  the app, and moves back to the home address the next time the app comes to the front where the home address answers
+  (see the first entry above). Turning Tailscale or the secure address off on the server removes the saved address the next
   time you open the app. **Change server** keeps it, so when you are away from home you can tap your saved server on
   the setup screen and the app reconnects through the Tailscale address (the saved home address cannot answer on mobile
   data); the **✕** on a saved server forgets the Tailscale address too. If a different server later answers at your home

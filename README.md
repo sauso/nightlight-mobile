@@ -25,6 +25,35 @@ never beats a slower home answer. The rules are unit-tested on the JVM (`Endpoin
 `EndpointProbeTest`); the plugin glue and the launch gate need a phone (see the PR's checklist). iOS has no launch gate and
 no `addEndpoint`, so it is unchanged.
 
+### When you change network (Android)
+
+Leave home with the app open and, when Wi-Fi turns to mobile data, the app moves to the Tailscale address by itself within a few
+seconds, with no restart (when a Tailscale address is saved, as above, and the Tailscale app on the phone is connected).
+Coming home, it does not move back while you are using it (the Tailscale address keeps working on Wi-Fi). It moves back to the
+home address the next time the app comes to the front (opened again, or the screen turned back on), and never while it is in
+Picture-in-Picture. Either move reloads the app onto its home screen, so a video you were watching
+starts again. Sign-in carries across as described in the next section: moving back home asks you to sign in only if you never
+signed in on the home address.
+
+How it works: while the app is in the foreground, `NetworkRoamWatcher` listens for changes to the phone's default network (a new
+network, a lost one, or a change between Wi-Fi, mobile data, Ethernet and VPN). It waits about 2 seconds for the network to
+settle, then makes the same choice the launch makes (`MainActivity.chooseAddress`). If that picks the other address from the page
+on screen, the activity is recreated, which re-runs the launch. Coming to the front runs the same check once. The saved address
+is never rewritten. Only a page on one of the two addresses is moved: the setup page and the "Can't reach your server" page are
+left alone, since they already offer a retry and your saved servers.
+
+- **Nothing answering yet** (Tailscale still reconnecting, say): it checks again at about 3, 6, 12 and 25 seconds, then waits for
+  the next network change or the next time the app comes to the front.
+- **No reload loops**: a move needs at least 20 seconds since the app last reloaded itself (after a page failed to load, or a
+  move), and at most 3 moves happen in any 5 minutes. That limit lifts by itself as the 5 minutes roll on; a move it holds back
+  waits for the next network change or the next time the app comes to the front. The existing reload after a page fails to load
+  keeps its 8-second gap, now counted from either kind of reload (`RecreateLog`).
+- **Not covered**: the watcher runs only while the app is in the foreground. Listening with the screen off on a network that has
+  stopped working is not rescued; the app chooses again when you next bring it to the front. All the numbers above are
+  judgements, not measurements.
+- **Tested**: the rules are unit-tested on the JVM (`RoamRulesTest`). The watcher and the `MainActivity` glue need a phone (see
+  the PR's checklist). iOS is unchanged.
+
 ## One sign-in across the two addresses (Android)
 
 The web app keeps its sign-in token in `localStorage`, which is per web origin, so the saved address and the Tailscale address would
