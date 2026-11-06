@@ -97,17 +97,56 @@ class SessionRulesTest {
         assertEquals("an unreadable health reply is a refusal, not a pass", Delivery.ID_MISMATCH, delivery(liveId = null))
     }
 
-    // ---- who may save ----
+    // ---- who may act: the bridge's server AND the page really shown ----
+
+    private val savedOnly = Bindings(saved, null, null)
 
     @Test
-    fun `a session may be saved from the saved address and from its Tailscale address only`() {
-        assertTrue(SessionRules.maySave(saved, null, saved, token))
-        assertTrue(SessionRules.maySave(saved, ts, saved, token))
-        assertTrue(SessionRules.maySave(saved, ts, ts, token))
-        assertFalse("the Tailscale address is only a page once it is saved", SessionRules.maySave(saved, null, ts, token))
-        assertFalse(SessionRules.maySave(saved, ts, "https://evil.example", token))
-        assertFalse(SessionRules.maySave(saved, ts, null, token))
-        assertFalse(SessionRules.maySave(null, null, saved, token))
+    fun `a session may be saved or asked for from the saved address and from its Tailscale address, shown as built`() {
+        assertTrue(SessionRules.mayAct(savedOnly, saved, "http://192.168.1.50:4000/#/live"))
+        assertTrue(SessionRules.mayAct(current, saved, "http://192.168.1.50:4000/"))
+        assertTrue(SessionRules.mayAct(current, ts, "https://nightlight.example.ts.net/#/settings"))
+    }
+
+    @Test
+    fun `the Tailscale address is only a page once it is saved, and any other bridge server is refused`() {
+        assertFalse(SessionRules.mayAct(savedOnly, ts, "https://nightlight.example.ts.net/"))
+        assertFalse(SessionRules.mayAct(current, "https://evil.example", "https://evil.example/"))
+        assertFalse(SessionRules.mayAct(current, null, "http://192.168.1.50:4000/"))
+        assertFalse("nothing saved", SessionRules.mayAct(null, saved, "http://192.168.1.50:4000/"))
+    }
+
+    @Test
+    fun `the page really shown must have the origin the bridge was built for (a frame or another port is refused)`() {
+        assertFalse("another port of the same host", SessionRules.mayAct(current, ts, "https://nightlight.example.ts.net:8443/"))
+        assertFalse("another host", SessionRules.mayAct(current, ts, "https://evil.example/"))
+        assertFalse("http for https", SessionRules.mayAct(current, ts, "http://nightlight.example.ts.net/"))
+        assertFalse("the page could not be read", SessionRules.mayAct(current, ts, null))
+        assertFalse("about:blank", SessionRules.mayAct(current, ts, "about:blank"))
+        assertFalse(SessionRules.isTailscalePage(current, ts, "https://evil.example/"))
+        assertFalse(SessionRules.mayClear(current, ts, "https://evil.example/"))
+        assertFalse(SessionRules.mayClear(current, saved, null))
+    }
+
+    @Test
+    fun `only the page that IS the saved Tailscale address, really shown, is asked about a session`() {
+        assertTrue(SessionRules.isTailscalePage(current, ts, "https://nightlight.example.ts.net/#/live"))
+        assertFalse("the saved address, http", SessionRules.isTailscalePage(current, saved, "http://192.168.1.50:4000/"))
+        assertFalse("no Tailscale address saved", SessionRules.isTailscalePage(savedOnly, ts, "https://nightlight.example.ts.net/"))
+        assertFalse("a different Tailscale name", SessionRules.isTailscalePage(current, "https://other.example.ts.net", "https://other.example.ts.net/"))
+        assertFalse(SessionRules.isTailscalePage(null, ts, "https://nightlight.example.ts.net/"))
+        assertFalse(SessionRules.isTailscalePage(current, null, "https://nightlight.example.ts.net/"))
+        val odd = Bindings(saved, "http://nightlight.example.ts.net", id)
+        assertFalse("not the accepted shape", SessionRules.isTailscalePage(odd, "http://nightlight.example.ts.net", "http://nightlight.example.ts.net/"))
+    }
+
+    @Test
+    fun `a clear works from any real server page, even after the Tailscale address was removed or replaced under it`() {
+        assertTrue(SessionRules.mayClear(current, saved, "http://192.168.1.50:4000/"))
+        assertTrue(SessionRules.mayClear(current, ts, "https://nightlight.example.ts.net/"))
+        assertTrue("the Tailscale address was removed while its page is open", SessionRules.mayClear(savedOnly, ts, "https://nightlight.example.ts.net/"))
+        assertFalse("the bundled setup page has no server", SessionRules.mayClear(current, null, "file:///android_asset/public/index.html"))
+        assertFalse("nothing saved", SessionRules.mayClear(null, ts, "https://nightlight.example.ts.net/"))
     }
 
     @Test

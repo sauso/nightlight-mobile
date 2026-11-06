@@ -35,9 +35,31 @@ object SessionRules {
     /** What is stored (encrypted): the token and the bindings it was saved under. */
     data class Entry(val token: String, val bindings: Bindings)
 
-    /** Whether a page may save a session: it must be an active page (the saved address or its Tailscale address). */
-    fun maySave(primary: String?, savedTailscale: String?, page: String?, token: String?): Boolean =
-        isPlausibleToken(token) && EndpointRules.isActivePage(primary, savedTailscale, page)
+    /**
+     * Whether a call from the page the WebView is really showing ([webViewUrl]) may SAVE a session or ASK for one: there is a
+     * saved server, the bridge's server is the saved address or the Tailscale address saved for it ([bridgeUrl], exact string,
+     * as EndpointRules.isActivePage), AND the page shown has that same origin (an old WebView's fallback bridge can be called
+     * by any frame, and a redirect to another port is another origin). Review of the plan and of the code.
+     */
+    fun mayAct(current: Bindings?, bridgeUrl: String?, webViewUrl: String?): Boolean =
+        current != null && EndpointRules.isActivePage(current.savedUrl, current.tailscaleUrl, bridgeUrl) && sameOrigin(webViewUrl, bridgeUrl)
+
+    /**
+     * Whether a call may CLEAR the saved session. Looser than [mayAct] on purpose: a clear only deletes (and needs the stored
+     * token when one is given), and it must still work after the Tailscale address was removed or replaced while a page on it is
+     * open, or a sign-out there would leave the entry behind (agy's review of the code). So: a saved server, a real server page
+     * (the bridge was built for one, so the bundled setup page is refused) and a page with that same origin.
+     */
+    fun mayClear(current: Bindings?, bridgeUrl: String?, webViewUrl: String?): Boolean =
+        current != null && bridgeUrl != null && sameOrigin(webViewUrl, bridgeUrl)
+
+    /**
+     * Whether a request for the session comes from the page that IS the saved Tailscale address (and is really showing it).
+     * Anything else is told "no session" without a network call. [checkDelivery] then decides on the entry itself.
+     */
+    fun isTailscalePage(current: Bindings?, bridgeUrl: String?, webViewUrl: String?): Boolean =
+        current != null && bridgeUrl != null && current.tailscaleUrl != null && bridgeUrl == current.tailscaleUrl &&
+            EndpointRules.isTailscaleUrl(bridgeUrl) && sameOrigin(webViewUrl, bridgeUrl)
 
     enum class Delivery { OK, NOT_ACTIVE_PAGE, NOT_THE_TAILSCALE_PAGE, NO_ENTRY, NO_TAILSCALE_BINDING, BINDINGS_CHANGED, ID_MISMATCH }
 

@@ -27,6 +27,8 @@ class SessionVault(private val store: KeyValueStore, private val cipher: Session
         /** The SharedPreferences file the vault lives in. The backup rules exclude exactly this name (BackupRulesTest). */
         const val PREFS_FILE = "nightlight_session"
         private const val FORMAT = "v1"
+        private const val IV_BYTES = 12
+        private const val TAG_BYTES = 16
     }
 
     /** What SharedPreferences gives: a string per key. */
@@ -86,6 +88,9 @@ class SessionVault(private val store: KeyValueStore, private val cipher: Session
         val iv = unhex(parts[1])
         val ciphertext = unhex(parts[2])
         if (iv == null || ciphertext == null) { store.remove(key); return null }
+        // A real entry has a 12-byte iv and at least a 16-byte GCM tag plus one byte of text. Anything else is not ours, so it is
+        // deleted without asking the cipher (an agy review of the plan: do not hand a malformed blob to the Keystore at all).
+        if (iv.size != IV_BYTES || ciphertext.size <= TAG_BYTES) { store.remove(key); return null }
         val plain = try {
             cipher.open(iv, ciphertext, savedUrl.toByteArray(Charsets.UTF_8))
         } catch (e: KeyTransient) {

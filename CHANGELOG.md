@@ -24,7 +24,7 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   opens the address you set it up with if that answers within about 3 seconds, and the Tailscale address if it does
   not, so at home nothing depends on Tailscale and away from home it opens through Tailscale. You need the Tailscale
   app on the phone, signed in to the same Tailscale network as the server. The two addresses are different web
-  addresses, so you sign in once on each. A session that started on the Tailscale address stays on it until the app
+  addresses; see the next entry for signing in once. A session that started on the Tailscale address stays on it until the app
   is next started. Turning Tailscale or the secure address off on the server removes the saved address the next
   time you open the app. Needs a Nightlight server from the release that goes with it; with an older server the app
   works as before. iOS does not have this yet.

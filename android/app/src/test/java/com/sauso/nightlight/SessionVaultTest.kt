@@ -50,11 +50,15 @@ class SessionVaultTest {
         var sealFailures = ArrayDeque<Exception>()
         var openFailure: Exception? = null
         var sealCalls = 0
+        var openCalls = 0
+        var lastSealAad: ByteArray? = null
+        var lastOpenAad: ByteArray? = null
 
         private fun newKey(): SecretKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
 
         override fun seal(plain: ByteArray, aad: ByteArray): Sealed {
             sealCalls++
+            lastSealAad = aad
             sealFailures.removeFirstOrNull()?.let { throw it }
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
@@ -64,6 +68,8 @@ class SessionVaultTest {
         }
 
         override fun open(iv: ByteArray, ciphertext: ByteArray, aad: ByteArray): ByteArray {
+            openCalls++
+            lastOpenAad = aad
             openFailure?.let { throw it }
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
@@ -87,6 +93,21 @@ class SessionVaultTest {
     fun `an entry round trips with everything it was stamped with`() {
         assertTrue(vault.save(entry()))
         assertEquals(entry(), vault.load(saved))
+    }
+
+    @Test
+    fun `the saved address is the additional authenticated data on both seal and open (a dropped AAD would otherwise hide behind the stamp check)`() {
+        vault.save(entry())
+        assertTrue(saved.toByteArray().contentEquals(cipher.lastSealAad))
+        vault.load(saved)
+        assertTrue(saved.toByteArray().contentEquals(cipher.lastOpenAad))
+        // And a blob is really tied to it: opened under another address's AAD it does not decrypt, with no help from the stamp.
+        val parts = store.map.values.single().split(':')
+        val iv = ByteArray(12) { parts[1].substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+        val ct = ByteArray(parts[2].length / 2) { parts[2].substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+        var refused = false
+        try { cipher.open(iv, ct, other.toByteArray()) } catch (e: Exception) { refused = true }
+        assertTrue("a blob must not decrypt under another address's AAD", refused)
     }
 
     @Test
@@ -147,12 +168,30 @@ class SessionVaultTest {
     }
 
     @Test
+    fun `a blob with the wrong iv or tag size is deleted without the cipher being asked`() {
+        vault.save(entry())
+        val parts = store.map.values.single().split(':')
+        val shortIv = parts[1].dropLast(2) // 11 bytes
+        val longIv = parts[1] + "00" // 13 bytes
+        val tagOnly = "00".repeat(16) // exactly a tag, no text
+        for (bad in listOf("v1:$shortIv:${parts[2]}", "v1:$longIv:${parts[2]}", "v1:${parts[1]}:$tagOnly", "v1:${parts[1]}:${"00".repeat(5)}")) {
+            store.map["s:$saved"] = bad
+            cipher.openCalls = 0
+            assertNull(bad, vault.load(saved))
+            assertFalse(store.map.containsKey("s:$saved"))
+            assertEquals("the cipher must not be asked about a malformed blob: $bad", 0, cipher.openCalls)
+        }
+    }
+
+    @Test
     fun `an entry stamped with a different address than its slot is deleted even though it decrypts`() {
         // Sealed under the AAD of `saved` but stamped for `other`: the stamp inside must agree with the slot.
         val plain = """{"token":"$token","savedUrl":"$other","tailscaleUrl":null,"tailscaleId":null}""".toByteArray()
         val sealed = cipher.seal(plain, saved.toByteArray())
         store.map["s:$saved"] = "v1:${sealed.iv.joinToString("") { "%02x".format(it) }}:${sealed.ciphertext.joinToString("") { "%02x".format(it) }}"
+        cipher.openCalls = 0
         assertNull(vault.load(saved))
+        assertEquals("it must have DECRYPTED and been refused by the stamp, not failed to decrypt", 1, cipher.openCalls)
         assertFalse(store.map.containsKey("s:$saved"))
     }
 

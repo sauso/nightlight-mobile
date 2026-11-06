@@ -329,7 +329,13 @@ class ServerConfigPlugin : Plugin() {
             call.reject(refusal(EndpointRules.AddCheck.NOT_THIS_PAGE))
             return
         }
-        if (saved != null) forgetTailscale(prefs().edit(), primary).apply()
+        if (saved != null) {
+            forgetTailscale(prefs().edit(), primary).apply()
+            // The saved session was stamped with that address. It could never be handed out without it, but if the server offers the same
+            // address again later it would match again: a sign-out in between that could not reach the server would be undone
+            // (agy review of the code). So it goes with the address.
+            sessionExecutor.execute { sessionVault.clear(primary) }
+        }
         call.resolve(JSObject().put("removed", saved != null))
     }
 
@@ -344,7 +350,7 @@ class ServerConfigPlugin : Plugin() {
     //  - the page cannot choose an id or an address: the bindings come from what the app itself saved;
     //  - save, clear and key creation run on ONE first-in-first-out thread (sessionExecutor), so they cannot reorder or race.
     // Every call is also refused unless the page the WebView is really showing has the origin the bridge was built for
-    // (callerIsServerPage): the old-WebView fallback bridge can be called by any frame.
+    // (SessionRules.mayAct, mayClear, isTailscalePage): the old-WebView fallback bridge can be called by any frame.
 
     private val sessionVault: SessionVault by lazy {
         SessionVault(PrefsKeyValueStore(context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)), KeystoreSessionCipher())
@@ -357,27 +363,30 @@ class ServerConfigPlugin : Plugin() {
         return SessionRules.Bindings(primary, tailscale, if (tailscale != null) getTailscaleId(context, primary) else null)
     }
 
-    // The same shape of check as callerIsBundledPage: the WebView's URL can only be read on the main thread.
-    private fun callerIsServerPage(): Boolean {
-        val b = bridge ?: return false
-        val check = FutureTask(Callable { SessionRules.sameOrigin(b.webView?.url, b.serverUrl) })
+    // The URL of the page the WebView is really showing. It can only be read on the main thread (the same shape as
+    // callerIsBundledPage); null when there is no bridge, no answer in time, or any error, which every rule treats as "not the
+    // server's page".
+    private fun webViewUrlOnMainThread(): String? {
+        val b = bridge ?: return null
+        val read = FutureTask(Callable { b.webView?.url })
         return try {
-            if (Looper.myLooper() == Looper.getMainLooper()) check.run() else Handler(Looper.getMainLooper()).post(check)
-            check.get(PAGE_CHECK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            if (Looper.myLooper() == Looper.getMainLooper()) read.run() else Handler(Looper.getMainLooper()).post(read)
+            read.get(PAGE_CHECK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         } catch (e: Exception) {
-            false
+            null
         }
     }
 
     // saveSession({ token }): the web app signed in (or confirmed its sign-in) and asks the app to keep the token. From the
-    // saved address or its Tailscale address only; the token must look like a session token; the entry is stamped with the
-    // addresses and id in force NOW (a first sign-in comes before the Tailscale address is learned, so the web app saves
-    // again after it has: an entry with no Tailscale binding is never handed out). Resolves { saved }.
+    // saved address or its Tailscale address only, and only from the page the WebView is really showing (SessionRules.mayAct:
+    // the origin check is in the rules, so a JVM test covers it); the token must look like a session token; the entry is
+    // stamped with the addresses and id in force NOW (a first sign-in comes before the Tailscale address is learned, so the
+    // web app saves again after it has: an entry with no Tailscale binding is never handed out). Resolves { saved }.
     @PluginMethod
     fun saveSession(call: PluginCall) {
         val token = call.getString("token")
         val current = currentBindings()
-        if (current == null || !EndpointRules.isActivePage(current.savedUrl, current.tailscaleUrl, bridge?.serverUrl) || !callerIsServerPage()) {
+        if (current == null || !SessionRules.mayAct(current, bridge?.serverUrl, webViewUrlOnMainThread())) {
             call.reject("Not available on this page")
             return
         }
@@ -390,15 +399,15 @@ class ServerConfigPlugin : Plugin() {
     }
 
     // getSession(): the page asks for a saved session. Resolves { token } with the token, or { token: null } for EVERY refusal
-    // (the page learns nothing about why). Only the page that is the saved Tailscale address can get one: its own live
-    // /api/health id is read first (off the executor: a slow network must not hold up saves and clears), then the entry is
-    // read and checked against the bindings as they are at that moment.
+    // (the page learns nothing about why). Only the page that is the saved Tailscale address, and is really showing it, can
+    // get one (SessionRules.isTailscalePage): its own live /api/health id is read first (off the executor: a slow network must
+    // not hold up saves and clears), then the entry is read and checked against the bindings as they are at that moment.
     @PluginMethod
     fun getSession(call: PluginCall) {
         val none = JSObject().put("token", JSONObject.NULL)
         val current = currentBindings()
         val page = bridge?.serverUrl
-        if (current == null || page == null || page != current.tailscaleUrl || !callerIsServerPage()) {
+        if (page == null || !SessionRules.isTailscalePage(current, page, webViewUrlOnMainThread())) {
             call.resolve(none)
             return
         }
@@ -418,11 +427,13 @@ class ServerConfigPlugin : Plugin() {
     }
 
     // clearSession({ token? }): the web app signed out, or the server rejected a token. Needs no network. With a token, only
-    // if it is the one stored (a rejection of an old token must not delete a newer login). Resolves { cleared }.
+    // if it is the one stored (a rejection of an old token must not delete a newer login). Allowed from any page that is really
+    // the server's (SessionRules.mayClear), including a Tailscale page whose address was removed or replaced while it was
+    // open: a sign-out there must still delete the entry. Resolves { cleared }.
     @PluginMethod
     fun clearSession(call: PluginCall) {
         val current = currentBindings()
-        if (current == null || !EndpointRules.isActivePage(current.savedUrl, current.tailscaleUrl, bridge?.serverUrl) || !callerIsServerPage()) {
+        if (current == null || !SessionRules.mayClear(current, bridge?.serverUrl, webViewUrlOnMainThread())) {
             call.reject("Not available on this page")
             return
         }
