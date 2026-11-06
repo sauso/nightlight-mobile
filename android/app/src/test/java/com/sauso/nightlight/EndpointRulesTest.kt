@@ -156,4 +156,33 @@ class EndpointRulesTest {
     fun `the short wait is never longer than the full wait`() {
         assertEquals(500L, EndpointRules.localWaitMs("http://192.168.1.50:4000", ts, false, 500L))
     }
+
+    // ---- Change server from the Tailscale address (owner, 2026-11-06) ----
+
+    private val known = listOf(home, "https://nightlight.example.com")
+
+    @Test
+    fun `a remembered server whose Tailscale address answers with its saved id can be reconnected through it`() {
+        assertTrue(EndpointRules.canReconnectViaTailscale(known, home, ts, sameId, sameId))
+    }
+
+    @Test
+    fun `each missing or wrong piece refuses the reconnect`() {
+        assertFalse("not a remembered server", EndpointRules.canReconnectViaTailscale(known, "http://192.168.1.99:4000", ts, sameId, sameId))
+        assertFalse("no url", EndpointRules.canReconnectViaTailscale(known, null, ts, sameId, sameId))
+        assertFalse("no Tailscale address saved", EndpointRules.canReconnectViaTailscale(known, home, null, sameId, sameId))
+        assertFalse("a saved address that is not a Tailscale one", EndpointRules.canReconnectViaTailscale(known, home, "https://evil.example.com", sameId, sameId))
+        assertFalse("no id was saved with it", EndpointRules.canReconnectViaTailscale(known, home, ts, null, sameId))
+        assertFalse("the live id could not be read", EndpointRules.canReconnectViaTailscale(known, home, ts, sameId, null))
+        assertFalse("another server answers there", EndpointRules.canReconnectViaTailscale(known, home, ts, sameId, otherId))
+        assertFalse("nothing remembered at all", EndpointRules.canReconnectViaTailscale(emptyList(), home, ts, sameId, sameId))
+    }
+
+    @Test
+    fun `a saved Tailscale address is kept when the home address reports its id or none, and dropped when another server does`() {
+        assertTrue("same server", EndpointRules.pairStillValid(sameId, sameId))
+        assertTrue("home id unreadable: not knowing is not a reason to lose the way back in", EndpointRules.pairStillValid(sameId, null))
+        assertTrue("no id was saved", EndpointRules.pairStillValid(null, otherId))
+        assertFalse("another machine took over the home address", EndpointRules.pairStillValid(sameId, otherId))
+    }
 }
