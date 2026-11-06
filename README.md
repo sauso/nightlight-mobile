@@ -10,7 +10,7 @@ On Android the first-run screen can also find your server on your home Wi-Fi (**
 you usually don't need to type the address. Nothing is saved until you tap Connect. It finds servers on private
 IPv4 addresses only (10.x, 172.16–31.x, 192.168.x), and a found server opens at its `http://` address, which is
 separate from any https address you use, so you sign in again there. Servers older than the matching Nightlight
-release are not found; the typed address always works. The saved-servers list shows each server's **name** (what the server
+release are not found; the typed address always works. On Android and iOS the saved-servers list shows each server's **name** (what the server
 reports at `/api/health`, bounded by `DiscoveryRules.cleanName`, shown as text only) with its address in smaller text below; the
 phone keeps names only for servers on that list (`EndpointRules.namesForKnown`) and learns one when a server is saved, when it
 is reconnected through its Tailscale address, and at each start while signed in (`addEndpoint`), so servers saved earlier get
@@ -26,8 +26,8 @@ address must report the same server id as the page's server (the id is saved wit
 launch only if the server there still reports it). Forgetting a server (the ✕ on the setup page) removes its Tailscale address; **Change server** keeps it, so on the setup page a remembered server whose home address does not answer (you are on mobile data) is reconnected through its Tailscale address, once that address answers with the id it was saved for (`EndpointRules.canReconnectViaTailscale`). Only the bundled setup page can use that reconnect (a page on a server cannot). The address is dropped when the saved address is next confirmed from the setup screen (a save, not every launch: the launch gate does not read the home address's id) and a different server answers there (`EndpointRules.pairStillValid`). Off Wi-Fi and Ethernet, with a home-network-only saved address (`EndpointRules.isLocalOnlyAddress`) and a Tailscale address saved, the saved address is waited for about 1 second instead of 3 (`EndpointRules.localWaitMs`, `LocalNetwork`). At launch `MainActivity` probes both addresses at once and
 opens the saved one if it answers within 3 seconds, else the Tailscale one (`EndpointChooser`); a quick Tailscale answer
 never beats a slower home answer. The rules are unit-tested on the JVM (`EndpointRulesTest`, `EndpointChooserTest`,
-`EndpointProbeTest`); the plugin glue and the launch gate need a phone (see the PR's checklist). iOS has no launch gate and
-no `addEndpoint`, so it is unchanged.
+`EndpointProbeTest`); the plugin glue and the launch gate need a phone (see the PR's checklist). iOS does the same, with the
+limits listed in [Two addresses for one server (iOS)](#two-addresses-for-one-server-ios).
 
 ### When you change network (Android)
 
@@ -57,7 +57,7 @@ left alone, since they already offer a retry and your saved servers.
   stopped working is not rescued; the app chooses again when you next bring it to the front. All the numbers above are
   judgements, not measurements.
 - **Tested**: the rules are unit-tested on the JVM (`RoamRulesTest`). The watcher and the `MainActivity` glue need a phone (see
-  the PR's checklist). iOS is unchanged.
+  the PR's checklist). iOS does not do this yet: after changing network, restart the app.
 
 ## One sign-in across the two addresses (Android)
 
@@ -83,6 +83,38 @@ refuses that exact token (`clearSession`). The rules are in `SessionRules` and a
   old WebView without WebMessageListener, Capacitor's fallback bridge cannot say WHICH FRAME called (`webView.url` is the top page),
   so a child frame under an accepted page could call `saveSession`; Nightlight's own pages use none and its CSP forbids a
   cross-origin one, so this is a conditional gap, stated.
+
+## Two addresses for one server (iOS)
+
+The iPhone app uses your server's Tailscale address too: at home it opens the address you set it up with, and away from home
+(with the Tailscale app on the phone connected) it opens through Tailscale. **Change server** works away from home, and the saved
+list shows each server's name. The rules are the Android ones above, ported case for case: `ServerConfig.addEndpoint` saves the
+address only if it is exactly `https://<name>.ts.net`, the page asking is the saved server or its Tailscale address, and both
+report the same server id (UserDefaults keys `tailscale_for:<saved address>` and `tailscale_id:<saved address>`, names in
+`server_names`). `clear` (Change server) keeps the address; the ✕ on the setup page (`forget`) removes it. Only the bundled setup
+page can reconnect a remembered server through it, and the address is dropped when another server answers at the home address on
+the next save from the setup screen.
+
+At launch, when a Tailscale address is saved, `MainViewController` probes both addresses at once behind the launch screen and
+opens the saved one if it answers within 3 seconds, else the Tailscale one if it answers with the id it was saved for
+(`EndpointChooser`); a quick Tailscale answer never beats a slower home answer. Off Wi-Fi and Ethernet (one `NWPathMonitor`
+reading at launch; no reading counts as on Wi-Fi), a home-network-only saved address gets about 1 second instead of 3. With no
+Tailscale address saved, the launch is exactly as before: no probe, no wait. The 3 s, 2.5 s (each probe) and 1 s are carried over
+from Android as judgements, not measurements.
+
+Known limits on iOS:
+- **Each address has its own sign-in.** Signing in at home does not sign you in on the Tailscale address, so the first time the
+  app opens through Tailscale it asks you to sign in there too. The one-sign-in copy above is Android only for now.
+- **No switch when the network changes.** The address is chosen when the app starts. After leaving home or coming back, close the
+  app and open it again to change address.
+- **When neither address answers**, the app opens the saved address and shows the "Can't reach your server" screen, as it always
+  has on iOS (Android shows the setup screen instead).
+- **Capacitor iOS cannot tell which frame called a plugin method.** "The page asking" is the address the app opened, so a child
+  frame inside an accepted page counts as that page. Nightlight's own pages use no frames and its CSP forbids a cross-origin one,
+  so this is a conditional gap, as for Android's old WebView.
+- **Tested**: the rules (`EndpointRules.swift`, the reply parsing in `EndpointProbe.swift`, `EndpointChooser.swift`) are compiled
+  on their own with `swiftc` and run in CI (`ios/Tests`, the first step of `build-ios.yml`), with no network. The plugin glue,
+  the launch choice and the network reading need an iPhone. Background audio is unchanged.
 
 ## Branding
 
