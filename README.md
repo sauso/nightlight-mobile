@@ -18,6 +18,8 @@ The launcher icons, splash screens and the logo on the first-run / error pages a
 `branding/logo-source.png` (the same 1024 px logo the web app uses, in `nightlight/frontend/branding/`) by
 `python scripts/make-branding.py` (needs [Pillow](https://pypi.org/project/pillow/)). Change the logo by replacing that
 file and running the script; the colours of the two native pages are set at the top of `www/index.html` and `www/error.html`.
+Those pages use the web app's typefaces, Inter (400, 600) and Nunito (800), as local files in `www/fonts/` (the same
+`@fontsource` 5.3.0 files the web app bundles, Latin only; their SIL Open Font licences sit beside them).
 
 ## Platforms
 
