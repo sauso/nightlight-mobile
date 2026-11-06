@@ -548,10 +548,13 @@ class ServerConfigPlugin : Plugin() {
             // None answered. A REMEMBERED server that has a Tailscale address can still be reached through it: this is how "Change
             // server" gets back in from cellular, where the home address cannot answer (owner, 2026-11-06). The saved address stays
             // the one the person picked; the launch gate then opens the Tailscale address because the saved one is not answering.
+            // ONLY from the bundled setup page, where Change server lands: any page can call save, and this path lets a call switch the
+            // active server to a remembered one it could not reach before, so a page on the current server must not have it (Codex
+            // review). Such a page could already switch to a remembered server that answers; this does not widen that.
             val known = knownServers()
             val remembered = candidates.firstOrNull { it in known }
             val tailscale = remembered?.let { getTailscaleUrl(context, it) }
-            if (remembered != null && tailscale != null) {
+            if (remembered != null && tailscale != null && callerIsBundledPage()) {
                 val liveId = EndpointProbe.fetchHealth(tailscale, 5000)?.id
                 if (EndpointRules.canReconnectViaTailscale(known, remembered, tailscale, getTailscaleId(context, remembered), liveId)) {
                     sessionExecutor.execute {
@@ -610,6 +613,8 @@ class ServerConfigPlugin : Plugin() {
         // home), threw away the only way back in: the setup page lists the saved HOME address, which cannot answer on cellular.
         // The stale-address risk is closed where it arises instead: save() compares the id at the home address with the one the
         // Tailscale address was saved for and drops the pair when another server answers there (EndpointRules.pairStillValid).
+        // Known limit: that runs on a save from the setup screen, not at every launch (the launch gate reads no id at the home address),
+        // so a home address that changed hands can still open the old server through Tailscale until it is next connected to there.
         // forget(url), the explicit "forget this server", still removes it.
         sessionExecutor.execute {
             // Read inside the executor: a save() queued just before this one has landed by now, so the right address is cleared.
