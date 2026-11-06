@@ -276,8 +276,8 @@
     const p = plugin();
     if (!p) return;
     try {
-      // `names` (Android): the display name each saved server sent, or nothing (an older app, iOS, a server saved before names
-      // were kept): the row then shows the address alone, as it always did.
+      // `names` (Android and iOS): the display name each saved server sent, or nothing (an older app, a server saved before
+      // names were kept): the row then shows the address alone, as it always did.
       const { servers, names } = await p.list();
       savedUrls = new Set(servers || []);
       markSavedCards();
