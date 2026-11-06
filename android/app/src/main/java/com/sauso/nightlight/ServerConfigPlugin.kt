@@ -528,9 +528,14 @@ class ServerConfigPlugin : Plugin() {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
                     conn.disconnect()
                     if (code == 200 && body.contains("\"ok\"")) {
+                        // A Tailscale address saved for this address belongs to the server it was saved for. Read who answers here
+                        // now (only when there is one to check), so another machine that took this address over does not keep it.
+                        val liveId = if (getTailscaleId(context, url) != null) EndpointProbe.fetchHealth(url, 3000)?.id else null
                         // On the session executor: the saved address is part of what a saved session is bound to (see addEndpoint).
                         sessionExecutor.execute {
-                            prefs().edit().putString(KEY_URL, url).apply()
+                            val edit = prefs().edit().putString(KEY_URL, url)
+                            dropTailscaleIfAnotherServer(edit, url, liveId)
+                            edit.apply()
                             rememberServer(url)
                             call.resolve(JSObject().put("url", url))
                         }
@@ -540,8 +545,40 @@ class ServerConfigPlugin : Plugin() {
                     // Fall through to the next candidate scheme, if any.
                 }
             }
+            // None answered. A REMEMBERED server that has a Tailscale address can still be reached through it: this is how "Change
+            // server" gets back in from cellular, where the home address cannot answer (owner, 2026-11-06). The saved address stays
+            // the one the person picked; the launch gate then opens the Tailscale address because the saved one is not answering.
+            // ONLY from the bundled setup page, where Change server lands: any page can call save, and this path lets a call switch the
+            // active server to a remembered one it could not reach before, so a page on the current server must not have it (Codex
+            // review). Such a page could already switch to a remembered server that answers; this does not widen that.
+            val known = knownServers()
+            val remembered = candidates.firstOrNull { it in known }
+            val tailscale = remembered?.let { getTailscaleUrl(context, it) }
+            if (remembered != null && tailscale != null && callerIsBundledPage()) {
+                val liveId = EndpointProbe.fetchHealth(tailscale, 5000)?.id
+                if (EndpointRules.canReconnectViaTailscale(known, remembered, tailscale, getTailscaleId(context, remembered), liveId)) {
+                    sessionExecutor.execute {
+                        prefs().edit().putString(KEY_URL, remembered).apply()
+                        rememberServer(remembered)
+                        call.resolve(JSObject().put("url", remembered).put("via", "tailscale"))
+                    }
+                    return@Thread
+                }
+                call.reject("Couldn't reach a Nightlight server at that address, or through its Tailscale address")
+                return@Thread
+            }
             call.reject("Couldn't reach a Nightlight server at that address")
         }.start()
+    }
+
+    // When the saved address is confirmed, drop the Tailscale address saved for it if the server now answering there is not the one
+    // it was saved for (EndpointRules.pairStillValid: a readable different id only). Also clears that address's saved login, which was
+    // bound to it. Runs on the session executor with the editor the caller is about to apply.
+    private fun dropTailscaleIfAnotherServer(edit: SharedPreferences.Editor, url: String, liveId: String?) {
+        if (!EndpointRules.pairStillValid(getTailscaleId(context, url), liveId)) {
+            forgetTailscale(edit, url)
+            sessionVault.clear(url)
+        }
     }
 
     // save({ url, expectId }): see the comment on save. Saved under the URL exactly as discovery reported it.
@@ -552,7 +589,10 @@ class ServerConfigPlugin : Plugin() {
             val result = HealthProbe().checkUrl(url, expectId)
             when (result.outcome) {
                 HealthProbe.Outcome.VERIFIED -> sessionExecutor.execute {
-                    prefs().edit().putString(KEY_URL, url).apply()
+                    // expectId is the id the server at this address just proved to have, so it is the live id for the pair check.
+                    val edit = prefs().edit().putString(KEY_URL, url)
+                    dropTailscaleIfAnotherServer(edit, url, expectId)
+                    edit.apply()
                     rememberServer(url)
                     call.resolve(JSObject().put("url", url))
                 }
@@ -568,16 +608,20 @@ class ServerConfigPlugin : Plugin() {
     // blank slate (use forget() to actually drop one from the list).
     @PluginMethod
     fun clear(call: PluginCall) {
-        // The Tailscale address goes with it: it belongs to the server being left (the review of the Tailscale fallback: it
-        // must not wait around for whatever is saved at that address next).
+        // The Tailscale address is KEPT (owner, 2026-11-06). It used to go with the server being left, so it could not wait around
+        // for whatever was saved at that address next; but then Change server, used while on the Tailscale address (away from
+        // home), threw away the only way back in: the setup page lists the saved HOME address, which cannot answer on cellular.
+        // The stale-address risk is closed where it arises instead: save() compares the id at the home address with the one the
+        // Tailscale address was saved for and drops the pair when another server answers there (EndpointRules.pairStillValid).
+        // Known limit: that runs on a save from the setup screen, not at every launch (the launch gate reads no id at the home address),
+        // so a home address that changed hands can still open the old server through Tailscale until it is next connected to there.
+        // forget(url), the explicit "forget this server", still removes it.
         sessionExecutor.execute {
             // Read inside the executor: a save() queued just before this one has landed by now, so the right address is cleared.
             val leaving = getSavedUrl(context)
-            val edit = prefs().edit().remove(KEY_URL)
-            if (leaving != null) forgetTailscale(edit, leaving)
-            edit.apply()
-            // ...and so does its saved login: "Change server" leaves that server. (Resolved only after both are done, so the
-            // restart the page asks for next starts from a clean state.)
+            prefs().edit().remove(KEY_URL).apply()
+            // The saved login goes: "Change server" leaves that server, and the next sign-in saves it again. (Resolved only after
+            // both are done, so the restart the page asks for next starts from a clean state.)
             if (leaving != null) sessionVault.clear(leaving)
             call.resolve()
         }

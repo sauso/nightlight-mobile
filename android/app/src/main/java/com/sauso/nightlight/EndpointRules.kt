@@ -63,6 +63,29 @@ object EndpointRules {
     fun localWaitMs(saved: String?, tailscale: String?, onLocalNetwork: Boolean, fullMs: Long): Long =
         if (tailscale != null && !onLocalNetwork && isLocalOnlyAddress(saved)) minOf(OFF_NETWORK_WAIT_MS, fullMs) else fullMs
 
+    /**
+     * Whether `save` may take a REMEMBERED server whose own address did not answer, because the Tailscale address saved for it
+     * did, and that address reported the id it was saved for. This is what lets "Change server" get back in from cellular
+     * (owner, 2026-11-06): the setup page lists only the saved home address, which cannot answer there, so without this the only
+     * way back was to type the Tailscale address by hand.
+     *
+     * Every condition must hold: the address is exactly a server this phone remembers (a typed address that merely resembles
+     * one is not), it has a Tailscale address of the one accepted shape and a stored id, and the live id is that same id. An id
+     * is public and proves nothing alone (see [checkIdentity]); what it adds here is that the address was learned from this
+     * server earlier, and nothing is saved from it that was not already saved.
+     */
+    fun canReconnectViaTailscale(knownServers: List<String>, url: String?, tailscaleUrl: String?, wantedId: String?, liveId: String?): Boolean =
+        url != null && url in knownServers && isTailscaleUrl(tailscaleUrl) && wantedId != null && liveId != null && liveId == wantedId
+
+    /**
+     * Whether a Tailscale address saved for [wantedId] still belongs to the server that now answers at the saved address
+     * ([liveId], read when the saved address is next confirmed). A READABLE different id means another machine took over that
+     * home address (a DHCP lease handed on, say), so the old Tailscale address would open the wrong server and must go. An
+     * unreadable id keeps it: not knowing is not a reason to lose the way back in. (Change server used to drop the address
+     * unconditionally to avoid exactly this; keeping it and checking here is what lets Change server work away from home.)
+     */
+    fun pairStillValid(wantedId: String?, liveId: String?): Boolean = wantedId == null || liveId == null || wantedId == liveId
+
     /** Why addEndpoint accepted or refused a request. Reported so a test (and a log line) can tell the refusals apart. */
     enum class AddCheck { OK, NOT_A_TAILSCALE_ADDRESS, NOT_THIS_PAGE, UNREADABLE_SERVER, UNREACHABLE_ADDRESS, DIFFERENT_SERVER }
 
