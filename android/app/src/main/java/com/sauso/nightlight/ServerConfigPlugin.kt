@@ -13,9 +13,11 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import org.json.JSONArray
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 
@@ -117,6 +119,10 @@ class ServerConfigPlugin : Plugin() {
         }
 
         private const val TAG = "ServerConfig"
+
+        // ONE first-in-first-out thread for every session save, clear and read (SessionVault is not thread safe, and a save must
+        // never overtake the clear that followed it). Process-wide so a recreated activity shares it. A daemon thread.
+        private val sessionExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "nightlight-session").apply { isDaemon = true } }
 
         // The plan's wording (#20, decision 3): plain, and it says what to do next.
         private const val NOT_THE_FOUND_SERVER = "That address is not the server we found. Search again."
@@ -259,6 +265,8 @@ class ServerConfigPlugin : Plugin() {
             val list = knownServers()
             list.remove(url)
             prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url)).apply()
+            // The saved login for that address goes too (it was only ever meaningful for that server).
+            sessionExecutor.execute { sessionVault.clear(url) }
         }
         call.resolve()
     }
@@ -323,6 +331,103 @@ class ServerConfigPlugin : Plugin() {
         }
         if (saved != null) forgetTailscale(prefs().edit(), primary).apply()
         call.resolve(JSObject().put("removed", saved != null))
+    }
+
+    // ---- One sign-in across the two addresses (owner, 2026-11-06; plan phase D) ----
+    //
+    // The session token is also kept encrypted in app-private storage (SessionVault, an Android Keystore key), one entry per
+    // SAVED address, so the page on the server's Tailscale address can sign in without asking again. The rules are in
+    // SessionRules (pure, JVM-tested); this is the glue. Three things the review of the plan fixed that the glue must keep:
+    //  - a server's id is PUBLIC and proves nothing, so a session is handed ONLY to the page that IS the saved Tailscale
+    //    address, never to the saved address or any other page, and only while everything the entry was stamped with still
+    //    matches (SessionRules.checkDelivery);
+    //  - the page cannot choose an id or an address: the bindings come from what the app itself saved;
+    //  - save, clear and key creation run on ONE first-in-first-out thread (sessionExecutor), so they cannot reorder or race.
+    // Every call is also refused unless the page the WebView is really showing has the origin the bridge was built for
+    // (callerIsServerPage): the old-WebView fallback bridge can be called by any frame.
+
+    private val sessionVault: SessionVault by lazy {
+        SessionVault(PrefsKeyValue(context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)), KeystoreSessionCipher())
+    }
+
+    // The saved address and the Tailscale address and id saved for it, right now; null when nothing is saved.
+    private fun currentBindings(): SessionRules.Bindings? {
+        val primary = getSavedUrl(context) ?: return null
+        val tailscale = getTailscaleUrl(context, primary)
+        return SessionRules.Bindings(primary, tailscale, if (tailscale != null) getTailscaleId(context, primary) else null)
+    }
+
+    // The same shape of check as callerIsBundledPage: the WebView's URL can only be read on the main thread.
+    private fun callerIsServerPage(): Boolean {
+        val b = bridge ?: return false
+        val check = FutureTask(Callable { SessionRules.sameOrigin(b.webView?.url, b.serverUrl) })
+        return try {
+            if (Looper.myLooper() == Looper.getMainLooper()) check.run() else Handler(Looper.getMainLooper()).post(check)
+            check.get(PAGE_CHECK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // saveSession({ token }): the web app signed in (or confirmed its sign-in) and asks the app to keep the token. From the
+    // saved address or its Tailscale address only; the token must look like a session token; the entry is stamped with the
+    // addresses and id in force NOW (a first sign-in comes before the Tailscale address is learned, so the web app saves
+    // again after it has: an entry with no Tailscale binding is never handed out). Resolves { saved }.
+    @PluginMethod
+    fun saveSession(call: PluginCall) {
+        val token = call.getString("token")
+        val current = currentBindings()
+        if (current == null || !EndpointRules.isActivePage(current.savedUrl, current.tailscaleUrl, bridge?.serverUrl) || !callerIsServerPage()) {
+            call.reject("Not available on this page")
+            return
+        }
+        if (!SessionRules.isPlausibleToken(token)) {
+            call.reject("Not a session token")
+            return
+        }
+        val entry = SessionRules.Entry(token!!, current)
+        sessionExecutor.execute { call.resolve(JSObject().put("saved", sessionVault.save(entry))) }
+    }
+
+    // getSession(): the page asks for a saved session. Resolves { token } with the token, or { token: null } for EVERY refusal
+    // (the page learns nothing about why). Only the page that is the saved Tailscale address can get one: its own live
+    // /api/health id is read first (off the executor: a slow network must not hold up saves and clears), then the entry is
+    // read and checked against the bindings as they are at that moment.
+    @PluginMethod
+    fun getSession(call: PluginCall) {
+        val none = JSObject().put("token", JSONObject.NULL)
+        val current = currentBindings()
+        val page = bridge?.serverUrl
+        if (current == null || page == null || page != current.tailscaleUrl || !callerIsServerPage()) {
+            call.resolve(none)
+            return
+        }
+        Thread {
+            val liveId = EndpointProbe.fetchHealth(page, 3000)?.id
+            sessionExecutor.execute {
+                val now = currentBindings()
+                val entry = if (now != null) sessionVault.load(now.savedUrl) else null
+                val verdict = SessionRules.checkDelivery(page, now, entry, liveId)
+                if (verdict == SessionRules.Delivery.OK && entry != null) {
+                    call.resolve(JSObject().put("token", entry.token))
+                } else {
+                    call.resolve(none)
+                }
+            }
+        }.start()
+    }
+
+    // clearSession({ token? }): the web app signed out, or the server rejected a token. Needs no network. With a token, only
+    // if it is the one stored (a rejection of an old token must not delete a newer login). Resolves { cleared }.
+    @PluginMethod
+    fun clearSession(call: PluginCall) {
+        val current = currentBindings()
+        if (current == null || !EndpointRules.isActivePage(current.savedUrl, current.tailscaleUrl, bridge?.serverUrl) || !callerIsServerPage()) {
+            call.reject("Not available on this page")
+            return
+        }
+        val token = call.getString("token")
+        sessionExecutor.execute { call.resolve(JSObject().put("cleared", sessionVault.clear(current.savedUrl, token))) }
     }
 
     // Confirms the address actually hosts a reachable Nightlight server (its
@@ -436,6 +541,8 @@ class ServerConfigPlugin : Plugin() {
         val edit = prefs().edit().remove(KEY_URL)
         if (leaving != null) forgetTailscale(edit, leaving)
         edit.apply()
+        // ...and so does its saved login: "Change server" leaves that server.
+        if (leaving != null) sessionExecutor.execute { sessionVault.clear(leaving) }
         call.resolve()
     }
 

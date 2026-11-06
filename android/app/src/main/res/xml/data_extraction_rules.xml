@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (android:dataExtractionRules). The saved sign-in (SessionVault, SharedPreferences file nightlight_session) is
+  kept OUT of both kinds of copy: the cloud backup, and the phone-to-phone transfer. On Android 12+ the transfer follows only
+  <device-transfer>, so leaving it out would still copy the file. The encryption key lives in the Keystore and does not travel,
+  so a copied blob would only be undecryptable; keeping it out makes that certain. Everything else is still backed up exactly
+  as before (the saved server list included): an exclude-only rule leaves the rest alone.
+  BackupRulesTest pins this file name, both sections and the domain.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="nightlight_session.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="nightlight_session.xml" />
+    </device-transfer>
+</data-extraction-rules>

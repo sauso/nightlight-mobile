@@ -25,6 +25,26 @@ never beats a slower home answer. The rules are unit-tested on the JVM (`Endpoin
 `EndpointProbeTest`); the plugin glue and the launch gate need a phone (see the PR's checklist). iOS has no launch gate and
 no `addEndpoint`, so it is unchanged.
 
+## One sign-in across the two addresses (Android)
+
+The web app keeps its sign-in token in `localStorage`, which is per web origin, so the saved address and the Tailscale address would
+each ask. The app keeps a second, encrypted copy (`SessionVault`: AES-256-GCM with a non-exportable Android Keystore key, the file
+`nightlight_session`, one entry per saved address, the saved address as the GCM additional data). The web app saves it after sign-in
+(`ServerConfig.saveSession`), asks for it on a page with no token (`getSession`) and clears it on sign-out or when the server
+refuses that exact token (`clearSession`). The rules are in `SessionRules` and are JVM-tested:
+- **A server's id is public, so it proves nothing.** The saved session is handed ONLY to the page that is the saved Tailscale address
+  (never the saved address, http or https), and only while the saved address, the Tailscale address and the Tailscale id still equal
+  the ones the entry was stamped with, and that page's live `/api/health` id equals them.
+- The page cannot choose an id or an address: the entry is keyed and stamped from what the app itself saved; every call is refused
+  unless the WebView's real URL has the origin the bridge was built for.
+- All vault work runs on one first-in-first-out thread. The cipher makes its own IV (a Keystore key refuses a supplied one); a lost
+  key is replaced; a busy keystore deletes nothing.
+- `res/xml/data_extraction_rules.xml` (Android 12+: BOTH `<cloud-backup>` and `<device-transfer>`) and `res/xml/backup_rules.xml`
+  (Android 6-11) exclude the file; `BackupRulesTest` reads them. `allowBackup` stays on so the saved server list is backed up as before.
+- Known limits: the Keystore wrapper and the plugin glue have no JVM test (only the phone check proves them); a person with an
+  account on the server who controls a device at the plain-http saved address could store their own token; two separate sign-ins stay
+  separate. The web app's own storage (`app_webview`) is not excluded from backup (it holds the existing per-origin token).
+
 ## Branding
 
 The launcher icons, splash screens and the logo on the first-run / error pages are generated from
