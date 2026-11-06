@@ -12,6 +12,13 @@ IPv4 addresses only (10.x, 172.16–31.x, 192.168.x), and a found server opens a
 separate from any https address you use, so you sign in again there. Servers older than the matching Nightlight
 release are not found; the typed address always works.
 
+## Branding
+
+The launcher icons, splash screens and the logo on the first-run / error pages are generated from
+`branding/logo-source.png` (the same 1024 px logo the web app uses, in `nightlight/frontend/branding/`) by
+`python scripts/make-branding.py` (needs [Pillow](https://pypi.org/project/pillow/)). Change the logo by replacing that
+file and running the script; the colours of the two native pages are set at the top of `www/index.html` and `www/error.html`.
+
 ## Platforms
 
 - **Android** — signed APK, built in CI and attached to each GitHub release.

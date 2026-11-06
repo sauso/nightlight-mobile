@@ -26,6 +26,13 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   microphone, may need the https address. Typing an address and the saved-servers list work as before. iOS
   does not have this yet.
 
+### Changed
+- **New look to match the Nightlight web app.** The launcher icon, the splash screen (Android and iOS) and the
+  app's own first-run and "Can't reach your server" screens now use the new logo (a periwinkle crescent and a
+  sleeping baby on navy) and the web app's dark colours. The old gold-on-navy artwork and the placeholder
+  splash screen are gone. Your phone may keep showing the old launcher icon until the app is reinstalled or
+  the launcher refreshes. The pictures are generated from one source image by `scripts/make-branding.py`.
+
 ### Fixed
 - Fullscreen camera views now hide the Android status and navigation bars so the on-screen buttons
   can be pressed. Swipe from an edge to show the bars temporarily. This needs the matching server/web
