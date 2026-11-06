@@ -264,9 +264,13 @@ class ServerConfigPlugin : Plugin() {
         if (url != null) {
             val list = knownServers()
             list.remove(url)
-            prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url)).apply()
             // The saved login for that address goes too (it was only ever meaningful for that server).
-            sessionExecutor.execute { sessionVault.clear(url) }
+            sessionExecutor.execute {
+                prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url)).apply()
+                sessionVault.clear(url)
+                call.resolve()
+            }
+            return
         }
         call.resolve()
     }
@@ -313,9 +317,14 @@ class ServerConfigPlugin : Plugin() {
                 call.reject(refusal(if (second == EndpointRules.AddCheck.OK) EndpointRules.AddCheck.UNREACHABLE_ADDRESS else second))
                 return@Thread
             }
-            val previous = getTailscaleUrl(context, primary)
-            prefs().edit().putString(EndpointRules.key(primary), url).putString(EndpointRules.idKey(primary), candidate.id).apply()
-            call.resolve(JSObject().put("added", previous != url))
+            // On the session executor, like every write that changes what a saved session is bound to (the saved address, the
+            // Tailscale address and its id): getSession reads them there too, so a token cannot be delivered under bindings that
+            // change between its last check and its answer (Codex review of the code).
+            sessionExecutor.execute {
+                val previous = getTailscaleUrl(context, primary)
+                prefs().edit().putString(EndpointRules.key(primary), url).putString(EndpointRules.idKey(primary), candidate.id).apply()
+                call.resolve(JSObject().put("added", previous != url))
+            }
         }.start()
     }
 
@@ -329,14 +338,16 @@ class ServerConfigPlugin : Plugin() {
             call.reject(refusal(EndpointRules.AddCheck.NOT_THIS_PAGE))
             return
         }
-        if (saved != null) {
-            forgetTailscale(prefs().edit(), primary).apply()
-            // The saved session was stamped with that address. It could never be handed out without it, but if the server offers the same
-            // address again later it would match again: a sign-out in between that could not reach the server would be undone
-            // (agy review of the code). So it goes with the address.
-            sessionExecutor.execute { sessionVault.clear(primary) }
+        sessionExecutor.execute {
+            if (saved != null) {
+                forgetTailscale(prefs().edit(), primary).apply()
+                // The saved session was stamped with that address. It could never be handed out without it, but if the server offers the same
+                // address again later it would match again: a sign-out in between that could not reach the server would be undone
+                // (agy review of the code). So it goes with the address.
+                sessionVault.clear(primary)
+            }
+            call.resolve(JSObject().put("removed", saved != null))
         }
-        call.resolve(JSObject().put("removed", saved != null))
     }
 
     // ---- One sign-in across the two addresses (owner, 2026-11-06; plan phase D) ----
@@ -505,11 +516,12 @@ class ServerConfigPlugin : Plugin() {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
                     conn.disconnect()
                     if (code == 200 && body.contains("\"ok\"")) {
-                        prefs().edit().putString(KEY_URL, url).apply()
-                        rememberServer(url)
-                        val ret = JSObject()
-                        ret.put("url", url)
-                        call.resolve(ret)
+                        // On the session executor: the saved address is part of what a saved session is bound to (see addEndpoint).
+                        sessionExecutor.execute {
+                            prefs().edit().putString(KEY_URL, url).apply()
+                            rememberServer(url)
+                            call.resolve(JSObject().put("url", url))
+                        }
                         return@Thread
                     }
                 } catch (e: Exception) {
@@ -527,12 +539,10 @@ class ServerConfigPlugin : Plugin() {
         Thread {
             val result = HealthProbe().checkUrl(url, expectId)
             when (result.outcome) {
-                HealthProbe.Outcome.VERIFIED -> {
+                HealthProbe.Outcome.VERIFIED -> sessionExecutor.execute {
                     prefs().edit().putString(KEY_URL, url).apply()
                     rememberServer(url)
-                    val ret = JSObject()
-                    ret.put("url", url)
-                    call.resolve(ret)
+                    call.resolve(JSObject().put("url", url))
                 }
                 HealthProbe.Outcome.CONNECT_FAILED, HealthProbe.Outcome.TIMED_OUT ->
                     call.reject("Couldn't reach a Nightlight server at that address")
@@ -549,12 +559,15 @@ class ServerConfigPlugin : Plugin() {
         // The Tailscale address goes with it: it belongs to the server being left (the review of the Tailscale fallback: it
         // must not wait around for whatever is saved at that address next).
         val leaving = getSavedUrl(context)
-        val edit = prefs().edit().remove(KEY_URL)
-        if (leaving != null) forgetTailscale(edit, leaving)
-        edit.apply()
-        // ...and so does its saved login: "Change server" leaves that server.
-        if (leaving != null) sessionExecutor.execute { sessionVault.clear(leaving) }
-        call.resolve()
+        sessionExecutor.execute {
+            val edit = prefs().edit().remove(KEY_URL)
+            if (leaving != null) forgetTailscale(edit, leaving)
+            edit.apply()
+            // ...and so does its saved login: "Change server" leaves that server. (Resolved only after both are done, so the
+            // restart the page asks for next starts from a clean state.)
+            if (leaving != null) sessionVault.clear(leaving)
+            call.resolve()
+        }
     }
 
     // Recreating the activity rebuilds the Capacitor bridge from scratch, which is

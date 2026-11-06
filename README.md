@@ -43,7 +43,10 @@ refuses that exact token (`clearSession`). The rules are in `SessionRules` and a
   (Android 6-11) exclude the file; `BackupRulesTest` reads them. `allowBackup` stays on so the saved server list is backed up as before.
 - Known limits: the Keystore wrapper and the plugin glue have no JVM test (only the phone check proves them); a person with an
   account on the server who controls a device at the plain-http saved address could store their own token; two separate sign-ins stay
-  separate. The web app's own storage (`app_webview`) is not excluded from backup (it holds the existing per-origin token).
+  separate. The web app's own storage (`app_webview`) is not excluded from backup (it holds the existing per-origin token). On an
+  old WebView without WebMessageListener, Capacitor's fallback bridge cannot say WHICH FRAME called (`webView.url` is the top page),
+  so a child frame under an accepted page could call `saveSession`; Nightlight's own pages use none and its CSP forbids a
+  cross-origin one, so this is a conditional gap, stated.
 
 ## Branding
 

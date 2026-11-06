@@ -15,7 +15,7 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   for a sign-in each. The app now keeps your sign-in, encrypted with a key that never leaves the phone's secure
   keystore, and hands it to the Tailscale address (only that address) the first time you open it there, so signing
   in once at home is enough. Signing out, or a sign-in the server refuses, removes it; a wrong password does not. It is
-  left out of Android's cloud backup and of a phone-to-phone transfer, so a new phone asks you to sign in. The home
+  left out of Android's cloud backup and of a phone-to-phone transfer (the web app's own stored sign-in is unchanged). The home
   address never receives it (it is usually plain `http`), so signing in on the Tailscale address first still asks once
   at home. Needs the server release that goes with it. iOS does not have this yet.
 - **Android: a second address for your server, through Tailscale.** If your Nightlight server has Tailscale and its
