@@ -7,14 +7,19 @@
 <style>
   /* Mirrors the main app's theme (frontend/src/index.css in the nightlight repo) so
      first-run doesn't look like a different product. */
+  /* The same typefaces as the Nightlight web app (Inter for text, Nunito 800 for headings), bundled so the native pages
+     match it with no network; SIL OFL licences are beside the files. Latin only, like the web app. */
+  @font-face { font-family: "Inter"; font-weight: 400; font-style: normal; font-display: swap; src: url("fonts/inter-latin-400-normal.woff2") format("woff2"); }
+  @font-face { font-family: "Inter"; font-weight: 600; font-style: normal; font-display: swap; src: url("fonts/inter-latin-600-normal.woff2") format("woff2"); }
+  @font-face { font-family: "Nunito"; font-weight: 800; font-style: normal; font-display: swap; src: url("fonts/nunito-latin-800-normal.woff2") format("woff2"); }
   :root {
-    --bg: #12172b;
-    --bg-elevated-2: #242c52;
-    --text-primary: #edeef5;
-    --text-secondary: #8a8fb0;
-    --accent: #f4c56a;
-    --offline: #e08585;
-    --border: rgba(244, 197, 106, 0.12);
+    --bg: #14142a;
+    --bg-elevated-2: #221f3c;
+    --text-primary: #e8e2f7;
+    --text-secondary: #bcb3d5;
+    --accent: #8995ff;
+    --offline: #f4a3ad;
+    --border: #383450;
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
@@ -25,9 +30,9 @@
   body {
     min-height: 100%;
     margin: 0;
-    background: radial-gradient(ellipse at top, #171d38 0%, var(--bg) 55%);
+    background: radial-gradient(ellipse at top, #1c1b38 0%, var(--bg) 55%);
     color: var(--text-primary);
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     display: flex;
     padding: 24px;
     padding-top: calc(24px + env(safe-area-inset-top));
@@ -42,11 +47,11 @@
     height: 84px;
     margin: 0 auto 18px;
     border-radius: 22px;
-    box-shadow: 0 8px 30px rgba(244, 197, 106, 0.18);
+    box-shadow: 0 8px 30px rgba(119, 143, 253, 0.22);
   }
   h1 {
-    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
-    font-weight: 600;
+    font-family: "Nunito", system-ui, sans-serif;
+    font-weight: 800;
     font-size: 28px;
     margin: 0 0 6px;
   }
@@ -78,14 +83,14 @@
     font-weight: 600;
     font-family: inherit;
     background: var(--accent);
-    color: #21170a;
+    color: #14142a;
     cursor: pointer;
   }
   button:disabled { opacity: 0.6; }
   .error {
     display: none;
-    background: rgba(224, 133, 133, 0.12);
-    border: 1px solid rgba(224, 133, 133, 0.4);
+    background: rgba(244, 163, 173, 0.12);
+    border: 1px solid rgba(244, 163, 173, 0.4);
     color: var(--offline);
     padding: 10px 12px;
     border-radius: 10px;
@@ -104,7 +109,7 @@
   .saved-row {
     display: flex;
     align-items: center;
-    background: rgba(36, 44, 82, 0.55);
+    background: rgba(34, 31, 60, 0.7);
     border: 1px solid var(--border);
     border-radius: 10px;
     margin-bottom: 8px;
@@ -141,7 +146,7 @@
   .find-status { text-align: center; font-size: 13px; color: var(--text-secondary); margin: 12px 0 0; min-height: 1.2em; }
   .found-list { margin-top: 12px; }
   .found-card {
-    background: rgba(36, 44, 82, 0.55);
+    background: rgba(34, 31, 60, 0.7);
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 12px;
@@ -151,7 +156,7 @@
   .found-meta { font-size: 12px; color: var(--text-secondary); margin: 0 0 8px; overflow-wrap: anywhere; }
   .found-note { font-size: 12px; color: var(--text-secondary); margin: 0 0 12px; }
   .find-help {
-    background: rgba(36, 44, 82, 0.55);
+    background: rgba(34, 31, 60, 0.7);
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 12px;
