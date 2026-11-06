@@ -86,6 +86,19 @@ object EndpointRules {
      */
     fun pairStillValid(wantedId: String?, liveId: String?): Boolean = wantedId == null || liveId == null || wantedId == liveId
 
+    /**
+     * Whether a server's display name may be remembered for the setup page's saved list (owner, 2026-11-06: show the name, with
+     * the address below it in smaller text, instead of only the address). Only for a server this phone already remembers, so the
+     * names can never grow past the saved list, and only a name the server actually sent (DiscoveryRules.cleanName has already
+     * bounded it to a displayable length). The name comes from the server's public /api/health, so the page shows it as TEXT only.
+     */
+    fun mayRememberName(knownServers: List<String>, url: String, name: String?): Boolean =
+        !name.isNullOrBlank() && url in knownServers
+
+    /** The stored names that belong to a remembered server, in the saved list's order; a forgotten server's name is never shown. */
+    fun namesForKnown(stored: Map<String, String>, knownServers: List<String>): Map<String, String> =
+        knownServers.mapNotNull { url -> stored[url]?.takeIf { it.isNotBlank() }?.let { url to it } }.toMap()
+
     /** Why addEndpoint accepted or refused a request. Reported so a test (and a log line) can tell the refusals apart. */
     enum class AddCheck { OK, NOT_A_TAILSCALE_ADDRESS, NOT_THIS_PAGE, UNREADABLE_SERVER, UNREACHABLE_ADDRESS, DIFFERENT_SERVER }
 

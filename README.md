@@ -10,7 +10,11 @@ On Android the first-run screen can also find your server on your home Wi-Fi (**
 you usually don't need to type the address. Nothing is saved until you tap Connect. It finds servers on private
 IPv4 addresses only (10.x, 172.16–31.x, 192.168.x), and a found server opens at its `http://` address, which is
 separate from any https address you use, so you sign in again there. Servers older than the matching Nightlight
-release are not found; the typed address always works.
+release are not found; the typed address always works. The saved-servers list shows each server's **name** (what the server
+reports at `/api/health`, bounded by `DiscoveryRules.cleanName`, shown as text only) with its address in smaller text below; the
+phone keeps names only for servers on that list (`EndpointRules.namesForKnown`) and learns one when a server is saved, when it
+is reconnected through its Tailscale address, and at each start while signed in (`addEndpoint`), so servers saved earlier get
+theirs without any action. A server that has sent no name is listed by its address, as before.
 
 ## Two addresses for one server (Android)
 
