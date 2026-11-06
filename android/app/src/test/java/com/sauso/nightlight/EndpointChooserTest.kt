@@ -102,4 +102,52 @@ class EndpointChooserTest {
         Thread.sleep(100)
         assertEquals(listOf(local), seen.toList())
     }
+
+    // The saved address's OWN shorter wait (off Wi-Fi, a home-network-only address): see EndpointRules.localWaitMs.
+    private fun withLocalWait(localWaitMs: Long, deadlineMs: Long, answers: Map<String, Pair<Long, Boolean>>) =
+        EndpointChooser(
+            probe = { url ->
+                val (delayMs, ok) = answers.getValue(url)
+                Thread.sleep(delayMs)
+                ok
+            },
+            deadlineMs = deadlineMs,
+            localDeadlineMs = localWaitMs,
+        )
+
+    @Test
+    fun `a silent saved address is given up after its own short wait, not the whole deadline`() {
+        val (chosen, ms) = timed { withLocalWait(300L, 2_500L, mapOf(local to (5_000L to true), tailscale to (10L to true))).choose(local, tailscale) }
+        assertEquals(tailscale, chosen)
+        assertTrue("took $ms ms: it waited for the whole deadline", ms in 250L..2_000L)
+    }
+
+    @Test
+    fun `a saved address that answers inside its short wait still wins over a quicker tailscale`() {
+        val chosen = withLocalWait(800L, 2_500L, mapOf(local to (300L to true), tailscale to (10L to true))).choose(local, tailscale)
+        assertEquals(local, chosen)
+    }
+
+    @Test
+    fun `after its short wait a saved address that answers before the deadline still beats a slow tailscale`() {
+        // Local gives up at 200 ms, tailscale answers at 900 ms, local answers at 500 ms: nothing has been chosen yet, so local wins.
+        val chosen = withLocalWait(200L, 2_500L, mapOf(local to (500L to true), tailscale to (900L to true))).choose(local, tailscale)
+        assertEquals(local, chosen)
+    }
+
+    @Test
+    fun `the short wait cannot make the decision later than the whole deadline`() {
+        // A short wait longer than the deadline is clamped to it: the whole decision still ends at the deadline.
+        val (chosen, ms) = timed { withLocalWait(10_000L, 400L, mapOf(local to (5_000L to true), tailscale to (10L to true))).choose(local, tailscale) }
+        assertEquals(tailscale, chosen)
+        assertTrue("took $ms ms", ms in 300L..2_500L)
+    }
+
+    @Test
+    fun `with no tailscale address a short wait still gives up on the saved address when it expires`() {
+        // (MainActivity never passes a short wait without a tailscale address; the chooser itself still ends there.)
+        val (chosen, ms) = timed { withLocalWait(300L, 5_000L, mapOf(local to (5_000L to true))).choose(local, null) }
+        assertNull(chosen)
+        assertTrue("took $ms ms", ms < 3_000)
+    }
 }

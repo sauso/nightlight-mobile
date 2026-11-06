@@ -37,6 +37,12 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   does not have this yet.
 
 ### Changed
+- **Android: the Tailscale fallback opens in about a second when you are not on Wi-Fi.** If the app was set up with a
+  home-network address (one starting 10., 172.16 to 172.31 or 192.168, or a name ending in .local), a Tailscale
+  address is saved, and the phone is not on Wi-Fi or Ethernet, the app waits about 1 second for the home address
+  instead of 3 before it opens through Tailscale (a home address cannot answer on mobile data). A home address that
+  does answer in that time still wins. Addresses that are reachable from anywhere (a domain name, say), and
+  servers with no Tailscale address saved, keep the full wait.
 - **New look to match the Nightlight web app.** The launcher icon, the splash screen (Android and iOS) and the
   app's own first-run and "Can't reach your server" screens now use the new logo (a periwinkle crescent and a
   sleeping baby on navy), the web app's dark colours and its typefaces (Inter and Nunito, bundled with the

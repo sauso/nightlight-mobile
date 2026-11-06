@@ -125,4 +125,35 @@ class EndpointRulesTest {
         assertEquals(EndpointRules.AddCheck.UNREACHABLE_ADDRESS, EndpointRules.checkIdentity(a, null))
         assertEquals(EndpointRules.AddCheck.UNREADABLE_SERVER, EndpointRules.checkIdentity(null, null))
     }
+
+    @Test
+    fun `home-network-only addresses are private IPv4 and dot-local names`() {
+        for (url in listOf("http://192.168.1.50:4000", "http://10.0.0.5", "http://10.200.1.2", "http://10.255.255.254", "http://172.16.4.2:4000", "http://172.31.255.1", "http://nightlight.local:4000", "http://NIGHTLIGHT.LOCAL")) {
+            assertTrue(url, EndpointRules.isLocalOnlyAddress(url))
+        }
+    }
+
+    @Test
+    fun `a public address, a tailnet address or anything unparseable is not local-only, so it gets the ordinary wait`() {
+        for (url in listOf(null, "", "not a url", "https://nightlight.example.com", "https://nightlight.example.ts.net", "http://100.64.0.1:4000",
+            "http://8.8.8.8", "http://172.32.0.1", "http://172.15.0.1", "http://192.169.1.1", "http://localhost:4000", "http://nightlight.local.evil.example")) {
+            assertFalse("treated as local-only: $url", EndpointRules.isLocalOnlyAddress(url))
+        }
+    }
+
+    @Test
+    fun `the short wait applies only when a tailscale address is saved, the phone is off the local network and the address is local-only`() {
+        val full = 3_000L
+        val saved = "http://192.168.1.50:4000"
+        assertEquals(EndpointRules.OFF_NETWORK_WAIT_MS, EndpointRules.localWaitMs(saved, ts, false, full))
+        assertEquals("on Wi-Fi: the whole wait", full, EndpointRules.localWaitMs(saved, ts, true, full))
+        assertEquals("no Tailscale address: nothing to switch to, so the saved address keeps its whole chance", full, EndpointRules.localWaitMs(saved, null, false, full))
+        assertEquals("a public saved address answers on mobile data too", full, EndpointRules.localWaitMs("https://nightlight.example.com", ts, false, full))
+        assertEquals("an unparseable saved address", full, EndpointRules.localWaitMs("nonsense", ts, false, full))
+    }
+
+    @Test
+    fun `the short wait is never longer than the full wait`() {
+        assertEquals(500L, EndpointRules.localWaitMs("http://192.168.1.50:4000", ts, false, 500L))
+    }
 }

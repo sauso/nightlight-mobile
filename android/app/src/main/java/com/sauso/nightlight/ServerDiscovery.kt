@@ -1,8 +1,6 @@
 package com.sauso.nightlight
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
@@ -186,25 +184,7 @@ class ServerDiscovery(context: Context, private val probe: HealthProbe = HealthP
      * OPEN (true) if the check itself fails: this only chooses a message, and discovery's rules stand either way.
      * Needs ACCESS_NETWORK_STATE (AndroidManifest.xml).
      */
-    fun isOnLocalNetwork(): Boolean {
-        val cm = try {
-            appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        } catch (e: Exception) {
-            null
-        } ?: return true
-        return try {
-            // getAllNetworks is deprecated since API 31 in favour of callbacks; a one-off question needs no callback.
-            @Suppress("DEPRECATION")
-            val networks = cm.allNetworks
-            networks.any { network ->
-                val caps = cm.getNetworkCapabilities(network)
-                caps != null &&
-                    (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
-            }
-        } catch (e: Exception) {
-            true
-        }
-    }
+    fun isOnLocalNetwork(): Boolean = LocalNetwork.isOn(appContext)
 
     /**
      * Start a search and return its generation, or null if discovery is unavailable or this object was released.
