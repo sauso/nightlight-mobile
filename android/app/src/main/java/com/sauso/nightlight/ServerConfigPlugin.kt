@@ -262,10 +262,11 @@ class ServerConfigPlugin : Plugin() {
     fun forget(call: PluginCall) {
         val url = call.getString("url")
         if (url != null) {
-            val list = knownServers()
-            list.remove(url)
-            // The saved login for that address goes too (it was only ever meaningful for that server).
+            // The saved login for that address goes too (it was only ever meaningful for that server). The list is read INSIDE the
+            // executor, so a save() queued just before this one is not lost (Opus review).
             sessionExecutor.execute {
+                val list = knownServers()
+                list.remove(url)
                 prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url)).apply()
                 sessionVault.clear(url)
                 call.resolve()
@@ -405,8 +406,19 @@ class ServerConfigPlugin : Plugin() {
             call.reject("Not a session token")
             return
         }
-        val entry = SessionRules.Entry(token!!, current)
-        sessionExecutor.execute { call.resolve(JSObject().put("saved", sessionVault.save(entry))) }
+        // `tailscale` is the address this page's own server just offered (the web app read it while signed in). The stamp keeps the
+        // Tailscale binding only when it equals the one saved, so an address planted by another page never gets a token
+        // (SessionRules.stampFor; Opus review of the code).
+        val claimed = call.getString("tailscale")
+        sessionExecutor.execute {
+            // The bindings are read here, on the executor, so the stamp is the state at the moment of the write.
+            val now = currentBindings()
+            if (now == null) {
+                call.resolve(JSObject().put("saved", false))
+            } else {
+                call.resolve(JSObject().put("saved", sessionVault.save(SessionRules.Entry(token!!, SessionRules.stampFor(now, claimed)))))
+            }
+        }
     }
 
     // getSession(): the page asks for a saved session. Resolves { token } with the token, or { token: null } for EVERY refusal
@@ -558,8 +570,9 @@ class ServerConfigPlugin : Plugin() {
     fun clear(call: PluginCall) {
         // The Tailscale address goes with it: it belongs to the server being left (the review of the Tailscale fallback: it
         // must not wait around for whatever is saved at that address next).
-        val leaving = getSavedUrl(context)
         sessionExecutor.execute {
+            // Read inside the executor: a save() queued just before this one has landed by now, so the right address is cleared.
+            val leaving = getSavedUrl(context)
             val edit = prefs().edit().remove(KEY_URL)
             if (leaving != null) forgetTailscale(edit, leaving)
             edit.apply()

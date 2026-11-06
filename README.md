@@ -35,8 +35,10 @@ refuses that exact token (`clearSession`). The rules are in `SessionRules` and a
 - **A server's id is public, so it proves nothing.** The saved session is handed ONLY to the page that is the saved Tailscale address
   (never the saved address, http or https), and only while the saved address, the Tailscale address and the Tailscale id still equal
   the ones the entry was stamped with, and that page's live `/api/health` id equals them.
-- The page cannot choose an id or an address: the entry is keyed and stamped from what the app itself saved; every call is refused
-  unless the WebView's real URL has the origin the bridge was built for.
+- The page cannot choose an id or an address: the entry is keyed and stamped from what the app itself saved, and the stamp keeps the
+  Tailscale address only when the web app says its own server just offered that same one (`saveSession({token, tailscale})`,
+  `SessionRules.stampFor`): `addEndpoint` can be called by the page at the saved address, so a planted address must never be the one a
+  later sign-in is bound to. Every call is refused unless the WebView's real URL has the origin the bridge was built for.
 - All vault work runs on one first-in-first-out thread. The cipher makes its own IV (a Keystore key refuses a supplied one); a lost
   key is replaced; a busy keystore deletes nothing.
 - `res/xml/data_extraction_rules.xml` (Android 12+: BOTH `<cloud-backup>` and `<device-transfer>`) and `res/xml/backup_rules.xml`

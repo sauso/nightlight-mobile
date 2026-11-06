@@ -14,7 +14,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 - **Android: one sign-in for both of your server's addresses.** The home address and the Tailscale address used to ask
   for a sign-in each. The app now keeps your sign-in, encrypted with a key that never leaves the phone's secure
   keystore, and hands it to the Tailscale address (only that address) the first time you open it there, so signing
-  in once at home is enough. Signing out, or a sign-in the server refuses, removes it; a wrong password does not. It is
+  in once at home is enough. It is kept for the Tailscale address only if your own server has just offered that same address
+  (so an address another page put in the app never receives it). Signing out, or a sign-in the server refuses, removes it; a wrong password does not. It is
   left out of Android's cloud backup and of a phone-to-phone transfer (the web app's own stored sign-in is unchanged). The home
   address never receives it (it is usually plain `http`), so signing in on the Tailscale address first still asks once
   at home. Needs the server release that goes with it. iOS does not have this yet.
@@ -24,7 +25,7 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   opens the address you set it up with if that answers within about 3 seconds, and the Tailscale address if it does
   not, so at home nothing depends on Tailscale and away from home it opens through Tailscale. You need the Tailscale
   app on the phone, signed in to the same Tailscale network as the server. The two addresses are different web
-  addresses; see the next entry for signing in once. A session that started on the Tailscale address stays on it until the app
+  addresses; see the entry above for signing in once. A session that started on the Tailscale address stays on it until the app
   is next started. Turning Tailscale or the secure address off on the server removes the saved address the next
   time you open the app. Needs a Nightlight server from the release that goes with it; with an older server the app
   works as before. iOS does not have this yet.

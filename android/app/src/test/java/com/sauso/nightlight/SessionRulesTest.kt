@@ -189,4 +189,34 @@ class SessionRulesTest {
         assertFalse(SessionRules.sameOrigin("file:///x", "file:///x"))
         assertFalse(SessionRules.sameOrigin("not a url", "not a url"))
     }
+
+    @Test
+    fun `an address java net URI cannot read is still a real origin`() {
+        // java.net.URI gives no host for an underscore name and throws on a fragment with | { } (Opus review): every save and clear
+        // from such a saved address was refused silently, so an offline sign-out there left the entry behind.
+        assertTrue(SessionRules.sameOrigin("http://my_server:4000/", "http://my_server:4000"))
+        assertTrue(SessionRules.sameOrigin("http://192.168.1.50:4000/#/a|b{c}", saved))
+        assertTrue(SessionRules.sameOrigin("http://[fd00::1]:4000/", "http://[fd00::1]:4000"))
+        assertFalse("a userinfo form is not an origin we accept", SessionRules.sameOrigin("http://user@192.168.1.50:4000/", saved))
+        assertFalse("a port past 65535", SessionRules.sameOrigin("http://192.168.1.50:99999/", "http://192.168.1.50:99999"))
+    }
+
+    // ---- what a token is stamped with ----
+
+    @Test
+    fun `a claim equal to the saved Tailscale address keeps the binding`() {
+        assertEquals(current, SessionRules.stampFor(current, ts))
+        assertEquals("a trailing slash and spaces are the same address", current, SessionRules.stampFor(current, " $ts/ "))
+    }
+
+    @Test
+    fun `no claim, a different claim or no saved Tailscale address stamps no binding, so the entry is never handed out`() {
+        val none = Bindings(saved, null, null)
+        assertEquals("an older web app sends no claim", none, SessionRules.stampFor(current, null))
+        assertEquals("the server did not offer one (409, error)", none, SessionRules.stampFor(current, ""))
+        assertEquals("a planted address the real server never offers", none, SessionRules.stampFor(current, "https://real.example.ts.net"))
+        assertEquals(none, SessionRules.stampFor(none, ts))
+        // ...and such an entry is refused at the gate, even when the planted address is now the saved one.
+        assertEquals(Delivery.NO_TAILSCALE_BINDING, delivery(stored = Entry(token, SessionRules.stampFor(current, null))))
+    }
 }

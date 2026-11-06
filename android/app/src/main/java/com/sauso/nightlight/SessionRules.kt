@@ -1,7 +1,5 @@
 package com.sauso.nightlight
 
-import java.net.URI
-
 /**
  * The rules for keeping ONE sign-in across a server's two addresses (owner, 2026-11-06; plan phase D, reviewed by Codex,
  * Opus and agy before it was built). The session token is also kept in app-private native storage ([SessionVault]) so the
@@ -34,6 +32,23 @@ object SessionRules {
 
     /** What is stored (encrypted): the token and the bindings it was saved under. */
     data class Entry(val token: String, val bindings: Bindings)
+
+    /**
+     * The bindings a token is stamped with when the web app saves it. The web app says which Tailscale address ITS OWN SERVER
+     * just offered ([claimedTailscale], read from the authenticated `GET /api/remote-access/tailscale/address`; null when it
+     * could not be read or the server offers none). The stamp keeps the Tailscale address and id only when the two agree.
+     *
+     * WHY (Opus code review of phase D): `addEndpoint` can be called by the page at the SAVED address, and an id is public, so
+     * a hostile device that answered there once could plant an attacker's `https://<x>.ts.net` as the saved Tailscale address.
+     * If the person's next real sign-in were stamped with whatever is saved, the token would be handed to the attacker's page.
+     * The real server never offers the planted address, so the claim differs, the stamp carries no Tailscale binding, and the
+     * entry is never handed out (it fails closed; the next sign-in or start, once the real address has replaced the planted one,
+     * saves it again). An older web app that sends no claim gets no binding either.
+     */
+    fun stampFor(current: Bindings, claimedTailscale: String?): Bindings {
+        val claimed = claimedTailscale?.trim()?.trimEnd('/')
+        return if (claimed != null && claimed == current.tailscaleUrl) current else Bindings(current.savedUrl, null, null)
+    }
 
     /**
      * Whether a call from the page the WebView is really showing ([webViewUrl]) may SAVE a session or ASK for one: there is a
@@ -88,9 +103,10 @@ object SessionRules {
 
     /**
      * Whether [pageUrl] (what the WebView is showing right now) is at the same origin as [serverUrl] (what the bridge was
-     * built with): scheme, host and port, the default port being 80 for http and 443 for https. A frame, or a page that the
-     * address has redirected to on another port, is not the server the bridge was built for (review of phase D: the
-     * fallback bridge on an old WebView can be called by any frame). Anything that does not parse is not the same origin.
+     * built with): scheme, host and port, the default port being 80 for http and 443 for https. What this closes: a main frame
+     * that has moved to another port or host since the bridge was built (a redirect, a link). It does NOT tell a child frame from
+     * its parent: the old-WebView fallback bridge cannot say which frame called (`webView.url` is the top page), a stated limit.
+     * Anything that does not parse is not the same origin.
      */
     fun sameOrigin(pageUrl: String?, serverUrl: String?): Boolean {
         val a = origin(pageUrl) ?: return false
@@ -98,16 +114,18 @@ object SessionRules {
         return a == b
     }
 
+    // Not java.net.URI: it returns no host for a name with an underscore (`http://my_server:4000`) and throws on a fragment with
+    // `|`, `{` or `}`, and either would silently refuse every save and clear from a real saved address (Opus review). The
+    // origin is the part before the first `/`, `?` or `#`: scheme, host (no `@`: a userinfo form is not an origin we accept) and
+    // an optional port.
+    private val ORIGIN_SHAPE = Regex("^(https?)://(\\[[0-9A-Fa-f:.]+\\]|[^/?#:@\\s]+)(?::(\\d{1,5}))?(?:[/?#].*)?$", RegexOption.IGNORE_CASE)
+
     private fun origin(url: String?): Triple<String, String, Int>? {
         if (url == null) return null
-        return try {
-            val u = URI(url)
-            val scheme = u.scheme?.lowercase() ?: return null
-            val host = u.host?.lowercase() ?: return null
-            val port = if (u.port >= 0) u.port else when (scheme) { "http" -> 80; "https" -> 443; else -> return null }
-            Triple(scheme, host, port)
-        } catch (e: Exception) {
-            null
-        }
+        val m = ORIGIN_SHAPE.matchEntire(url.trim()) ?: return null
+        val scheme = m.groupValues[1].lowercase()
+        val port = m.groupValues[3].takeIf { it.isNotEmpty() }?.toInt() ?: if (scheme == "http") 80 else 443
+        if (port > 65535) return null
+        return Triple(scheme, m.groupValues[2].lowercase(), port)
     }
 }
