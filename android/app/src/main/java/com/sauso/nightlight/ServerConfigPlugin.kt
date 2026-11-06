@@ -347,7 +347,7 @@ class ServerConfigPlugin : Plugin() {
     // (callerIsServerPage): the old-WebView fallback bridge can be called by any frame.
 
     private val sessionVault: SessionVault by lazy {
-        SessionVault(PrefsKeyValue(context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)), KeystoreSessionCipher())
+        SessionVault(PrefsKeyValueStore(context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)), KeystoreSessionCipher())
     }
 
     // The saved address and the Tailscale address and id saved for it, right now; null when nothing is saved.
