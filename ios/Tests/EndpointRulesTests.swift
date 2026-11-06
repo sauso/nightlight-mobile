@@ -57,17 +57,19 @@ func runEndpointRulesTests() {
 
     test("a name longer than 255 characters is refused") {
         let label = String(repeating: "a", count: 63)
-        let tooLong = "https://\(label).\(label).\(label).\(label).ts.net" // 8 + 4*64 + 6 = 270
+        let tooLong = "https://\(label).\(label).\(label).\(label).ts.net" // 8 + 4 * 63 + 3 dots + 7 (".ts.net") = 270
         check(tooLong.utf16.count > 255, "the fixture is longer than the bound")
         check(!EndpointRules.isTailscaleUrl(tooLong), "a 270-character address was accepted")
         check(EndpointRules.isTailscaleUrl("https://\(label).\(label).ts.net"), "a 142-character address was refused")
-        // The exact bound: 255 accepted, 256 refused (kills a `>=` for `>`). 8 + 63 + 1 + 63 + 1 + 63 + 1 + 49 + 6 = 255.
-        let label49 = String(repeating: "b", count: 49)
-        let exactly255 = "https://\(label).\(label).\(label).\(label49).ts.net"
+        // The exact bound: 255 accepted, 256 refused (kills a `>=` for `>`). "https://" is 8 and ".ts.net" is 7, so
+        // 8 + 63 + 1 + 63 + 1 + 63 + 1 + 48 + 7 = 255 (both lengths counted with node when the fixtures were written; the
+        // checkEqual lines below fail first if either is ever off).
+        let label48 = String(repeating: "b", count: 48)
+        let exactly255 = "https://\(label).\(label).\(label).\(label48).ts.net"
         checkEqual(exactly255.utf16.count, 255, "fixture length")
         check(EndpointRules.isTailscaleUrl(exactly255), "a 255-character address was refused")
-        let label50 = String(repeating: "b", count: 50)
-        let exactly256 = "https://\(label).\(label).\(label).\(label50).ts.net"
+        let label49 = String(repeating: "b", count: 49)
+        let exactly256 = "https://\(label).\(label).\(label).\(label49).ts.net"
         checkEqual(exactly256.utf16.count, 256, "fixture length")
         check(!EndpointRules.isTailscaleUrl(exactly256), "a 256-character address was accepted")
     }
@@ -84,31 +86,111 @@ func runEndpointRulesTests() {
         check(EndpointRules.key("x") != EndpointRules.idKey("x"), "the id and the address must not share a key")
     }
 
+    // `shown` is the web view's current URL: on these pages it is the bridge's own address with a path, as a real page has.
     test("the page asking must be the saved server or its saved Tailscale address") {
-        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: nil, page: home), EndpointRules.AddCheck.ok)
-        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: ts, page: ts), EndpointRules.AddCheck.ok,
+        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: nil, page: home, shown: home + "/#/live"), EndpointRules.AddCheck.ok)
+        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: ts, page: ts, shown: ts + "/#/about"), EndpointRules.AddCheck.ok,
                    "the page is already on the saved Tailscale address")
-        checkEqual(EndpointRules.checkPage(url: other, primary: home, savedTailscale: ts, page: home), EndpointRules.AddCheck.ok,
+        checkEqual(EndpointRules.checkPage(url: other, primary: home, savedTailscale: ts, page: home, shown: home + "/"), EndpointRules.AddCheck.ok,
                    "a changed address, asked from the saved one")
     }
 
     test("any other page is refused, including the bundled setup page which has no server") {
         let refused = EndpointRules.AddCheck.notThisPage
-        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: nil, page: "https://elsewhere.example"), refused, "another server")
-        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: ts, page: other), refused, "a Tailscale address that is not the saved one")
-        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: nil, page: nil), refused, "the setup page (no server)")
-        checkEqual(EndpointRules.checkPage(url: ts, primary: nil, savedTailscale: nil, page: home), refused, "nothing saved")
-        checkEqual(EndpointRules.checkPage(url: other, primary: home, savedTailscale: nil, page: ts), refused, "the page is the Tailscale address, but none is saved for it")
+        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: nil, page: "https://elsewhere.example", shown: "https://elsewhere.example/"), refused, "another server")
+        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: ts, page: other, shown: other + "/"), refused, "a Tailscale address that is not the saved one")
+        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: nil, page: nil, shown: "capacitor://localhost/"), refused, "the setup page (no server)")
+        checkEqual(EndpointRules.checkPage(url: ts, primary: nil, savedTailscale: nil, page: home, shown: home + "/"), refused, "nothing saved")
+        checkEqual(EndpointRules.checkPage(url: other, primary: home, savedTailscale: nil, page: ts, shown: ts + "/"), refused, "the page is the Tailscale address, but none is saved for it")
+    }
+
+    test("the right bridge is refused when the web view is showing another origin (prefix navigation, PR #32 review)") {
+        let refused = EndpointRules.AddCheck.notThisPage
+        // Capacitor iOS lets the web view open, in the app, any URL that STARTS WITH the bridge's server URL.
+        checkEqual(EndpointRules.checkPage(url: ts, primary: "https://server.example", savedTailscale: nil, page: "https://server.example",
+                                           shown: "https://server.example.attacker.test/"), refused, "a longer host that starts with the saved one")
+        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: nil, page: home, shown: "http://192.168.1.50:40001/"), refused,
+                   "a longer port that starts with the saved one")
+        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: ts, page: ts, shown: "https://nightlight.example.ts.net.attacker.test/"), refused,
+                   "a longer host that starts with the saved Tailscale address")
+        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: nil, page: home, shown: nil), refused, "the page URL could not be read")
+        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: nil, page: home, shown: "about:blank"), refused, "nothing loaded")
+        // The page shown must be the BRIDGE's origin, not merely one of the two addresses (Android's mayAct).
+        checkEqual(EndpointRules.checkPage(url: ts, primary: home, savedTailscale: ts, page: home, shown: ts + "/"), refused,
+                   "the bridge is the saved address but the web view shows the Tailscale one")
+    }
+
+    test("isTrustedPage is what removeEndpoint relies on: the bridge's page AND the shown origin") {
+        check(EndpointRules.isTrustedPage(primary: home, savedTailscale: nil, page: home, shown: home + "/index.html"), "the saved address")
+        check(EndpointRules.isTrustedPage(primary: home, savedTailscale: ts, page: ts, shown: "HTTPS://Nightlight.Example.ts.net:443/#/live"), "the saved Tailscale address")
+        check(!EndpointRules.isTrustedPage(primary: home, savedTailscale: nil, page: home, shown: "http://192.168.1.50:4000.attacker.test/"), "a prefix host")
+        check(!EndpointRules.isTrustedPage(primary: home, savedTailscale: nil, page: ts, shown: ts + "/"), "a Tailscale page with none saved")
+        check(!EndpointRules.isTrustedPage(primary: nil, savedTailscale: nil, page: nil, shown: nil), "nothing at all")
     }
 
     test("an address of the wrong shape is refused before the page is even looked at") {
-        checkEqual(EndpointRules.checkPage(url: "http://nightlight.example.ts.net", primary: home, savedTailscale: nil, page: home), EndpointRules.AddCheck.notATailscaleAddress)
-        checkEqual(EndpointRules.checkPage(url: nil, primary: home, savedTailscale: nil, page: home), EndpointRules.AddCheck.notATailscaleAddress)
+        checkEqual(EndpointRules.checkPage(url: "http://nightlight.example.ts.net", primary: home, savedTailscale: nil, page: home, shown: home + "/"), EndpointRules.AddCheck.notATailscaleAddress)
+        checkEqual(EndpointRules.checkPage(url: nil, primary: home, savedTailscale: nil, page: home, shown: home + "/"), EndpointRules.AddCheck.notATailscaleAddress)
         // Both wrong: the shape is judged first, as on Android.
-        checkEqual(EndpointRules.checkPage(url: "nonsense", primary: nil, savedTailscale: nil, page: nil), EndpointRules.AddCheck.notATailscaleAddress)
+        checkEqual(EndpointRules.checkPage(url: "nonsense", primary: nil, savedTailscale: nil, page: nil, shown: nil), EndpointRules.AddCheck.notATailscaleAddress)
     }
 
-    test("isActivePage is what removeEndpoint relies on") {
+    // ---- sameOrigin (the twin of SessionRulesTest.kt's origin cases) and isOnBundledOrigin ----
+
+    test("sameOrigin: the same scheme, host and port, with case ignored, default ports filled in and paths ignored") {
+        check(EndpointRules.sameOrigin("https://server.example", "https://server.example"), "the exact origin")
+        check(EndpointRules.sameOrigin("https://server.example/", "https://server.example"), "a trailing slash")
+        check(EndpointRules.sameOrigin("https://server.example/#/live?x=1", "https://server.example"), "a path, query and fragment")
+        check(EndpointRules.sameOrigin("https://server.example:443/", "https://server.example"), "https's default port written out")
+        check(EndpointRules.sameOrigin("http://192.168.1.50:80/", "http://192.168.1.50"), "http's default port written out")
+        check(EndpointRules.sameOrigin("HTTPS://SERVER.Example/", "https://server.example"), "case")
+        check(EndpointRules.sameOrigin("http://192.168.1.50:4000/index.html", home), "a home address")
+        check(EndpointRules.sameOrigin("http://my_server:4000/", "http://my_server:4000"), "an underscore host (Android: URI refuses it)")
+        check(EndpointRules.sameOrigin("http://192.168.1.50:4000/#/a|b{c}", home), "odd characters in the fragment")
+        check(EndpointRules.sameOrigin("http://[fd00::1]:4000/", "http://[fd00::1]:4000"), "an IPv6 literal")
+        check(EndpointRules.sameOrigin(" https://server.example/ ", "https://server.example"), "white space around it")
+    }
+
+    test("sameOrigin: another host, scheme or port is another origin, and anything unparseable is refused") {
+        check(!EndpointRules.sameOrigin("https://server.example.attacker.test/", "https://server.example"), "a longer host that starts with it")
+        check(!EndpointRules.sameOrigin("https://server.examples/", "https://server.example"), "one letter longer")
+        check(!EndpointRules.sameOrigin("http://server.example/", "https://server.example"), "http for https")
+        check(!EndpointRules.sameOrigin("https://server.example:8443/", "https://server.example"), "another port")
+        check(!EndpointRules.sameOrigin("http://192.168.1.50:40001/", home), "a longer port that starts with it")
+        check(!EndpointRules.sameOrigin("http://192.168.1.50/", home), "the port dropped")
+        check(!EndpointRules.sameOrigin(nil, "https://server.example"), "no page")
+        check(!EndpointRules.sameOrigin("https://server.example", nil), "no bridge address")
+        check(!EndpointRules.sameOrigin(nil, nil), "nil is never the same origin as nil")
+        check(!EndpointRules.sameOrigin("about:blank", "about:blank"), "about:blank")
+        check(!EndpointRules.sameOrigin("capacitor://localhost/", "capacitor://localhost"), "not http(s)")
+        check(!EndpointRules.sameOrigin("file:///x", "file:///x"), "a file")
+        check(!EndpointRules.sameOrigin("not a url", "not a url"), "not a URL")
+        check(!EndpointRules.sameOrigin("http://user@192.168.1.50:4000/", home), "a userinfo form is not an origin accepted here")
+        check(!EndpointRules.sameOrigin("http://192.168.1.50:99999/", "http://192.168.1.50:99999"), "a port past 65535")
+    }
+
+    test("origin reads scheme, host and port, lower-cased, with the default port") {
+        checkEqual(EndpointRules.origin("HTTP://192.168.1.50:4000/x"), EndpointRules.Origin(scheme: "http", host: "192.168.1.50", port: 4000))
+        checkEqual(EndpointRules.origin("https://Nightlight.Example.ts.net"), EndpointRules.Origin(scheme: "https", host: "nightlight.example.ts.net", port: 443))
+        checkEqual(EndpointRules.origin("http://server.example"), EndpointRules.Origin(scheme: "http", host: "server.example", port: 80))
+        checkEqual(EndpointRules.origin("https://server.example\n/evil"), nil, "a line break inside")
+    }
+
+    test("isOnBundledOrigin: the bundled scheme and host only") {
+        let local = "capacitor://localhost"
+        check(EndpointRules.isOnBundledOrigin("capacitor://localhost/", local: local), "the setup page")
+        check(EndpointRules.isOnBundledOrigin("capacitor://localhost/index.html", local: local), "with a path")
+        check(EndpointRules.isOnBundledOrigin("CAPACITOR://LOCALHOST/", local: local), "case")
+        check(!EndpointRules.isOnBundledOrigin("capacitor://localhost.attacker.test/", local: local), "a longer host")
+        check(!EndpointRules.isOnBundledOrigin("capacitor://localhost:8080/", local: local), "a port")
+        check(!EndpointRules.isOnBundledOrigin("capacitor://user@localhost/", local: local), "user info")
+        check(!EndpointRules.isOnBundledOrigin("https://localhost/", local: local), "another scheme")
+        check(!EndpointRules.isOnBundledOrigin("http://192.168.1.50:4000/", local: local), "a server page")
+        check(!EndpointRules.isOnBundledOrigin(nil, local: local), "no page URL")
+        check(!EndpointRules.isOnBundledOrigin("capacitor://localhost/", local: nil), "no bundled origin")
+    }
+
+    test("isActivePage, the bridge half of isTrustedPage") {
         check(EndpointRules.isActivePage(primary: home, savedTailscale: nil, page: home), "the saved address")
         check(EndpointRules.isActivePage(primary: home, savedTailscale: ts, page: ts), "the saved Tailscale address")
         check(!EndpointRules.isActivePage(primary: home, savedTailscale: nil, page: ts), "a Tailscale page with none saved")

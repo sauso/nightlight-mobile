@@ -2,11 +2,23 @@ name: Build iOS (Simulator)
 
 # Ongoing verification that the iOS app still compiles, on the free public-repo
 # macOS runner. Unsigned Simulator build - no Apple account needed. Runs when the
-# iOS project, web assets, or Capacitor config change, plus on demand. The signed
+# iOS project, web assets, or Capacitor config change: on a push to main, on every
+# pull request into dev or main (so the rules tests and the compiler gate an iOS
+# change BEFORE it merges: nothing on Windows can compile Swift, review of PR #32),
+# plus on demand. The two path lists are the same on purpose. The signed
 # IPA / TestFlight pipeline is a separate, later workflow (needs the Apple account).
 on:
   push:
     branches: [main]
+    paths:
+      - 'ios/**'
+      - 'www/**'
+      - 'capacitor.config.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/build-ios.yml'
+  pull_request:
+    branches: [dev, main]
     paths:
       - 'ios/**'
       - 'www/**'

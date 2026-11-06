@@ -95,6 +95,11 @@ report the same server id (UserDefaults keys `tailscale_for:<saved address>` and
 page can reconnect a remembered server through it, and the address is dropped when another server answers at the home address on
 the next save from the setup screen.
 
+"The page asking" means both the address the app opened and the origin the web view is showing right now
+(`EndpointRules.isTrustedPage`, for `addEndpoint` and `removeEndpoint`; the reconnect also checks the web view is on the bundled
+page). Capacitor iOS lets the web view open, inside the app, any address that merely starts with the server's
+(`https://server.example.attacker.test` for `https://server.example`), so the address the app opened is not enough on its own.
+
 At launch, when a Tailscale address is saved, `MainViewController` probes both addresses at once behind the launch screen and
 opens the saved one if it answers within 3 seconds, else the Tailscale one if it answers with the id it was saved for
 (`EndpointChooser`); a quick Tailscale answer never beats a slower home answer. Off Wi-Fi and Ethernet (one `NWPathMonitor`
@@ -109,9 +114,9 @@ Known limits on iOS:
   app and open it again to change address.
 - **When neither address answers**, the app opens the saved address and shows the "Can't reach your server" screen, as it always
   has on iOS (Android shows the setup screen instead).
-- **Capacitor iOS cannot tell which frame called a plugin method.** "The page asking" is the address the app opened, so a child
-  frame inside an accepted page counts as that page. Nightlight's own pages use no frames and its CSP forbids a cross-origin one,
-  so this is a conditional gap, as for Android's old WebView.
+- **Capacitor iOS cannot tell which frame called a plugin method.** "The page asking" is judged from the address the app opened and
+  the main frame's current origin, so a child frame inside an accepted page counts as that page. Nightlight's own pages use no
+  frames and its CSP forbids a cross-origin one, so this is a conditional gap, as for Android's old WebView.
 - **Tested**: the rules (`EndpointRules.swift`, the reply parsing in `EndpointProbe.swift`, `EndpointChooser.swift`) are compiled
   on their own with `swiftc` and run in CI (`ios/Tests`, the first step of `build-ios.yml`), with no network. The plugin glue,
   the launch choice and the network reading need an iPhone. Background audio is unchanged.

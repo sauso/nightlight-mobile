@@ -1,6 +1,7 @@
 import Foundation
 import Capacitor
 import UIKit
+import WebKit
 
 /// iOS counterpart of `ServerConfigPlugin.kt`. Which Nightlight server the app talks
 /// to is chosen at runtime (the Home Assistant-style first-run flow), not baked in.
@@ -170,6 +171,11 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // built with none (Capacitor then reports the bundled origin as config.serverURL, the same URL as config.localURL). The
     // twin of Android's `bridge.serverUrl`. nil too when there is no bridge, which every rule treats as "not the server's page".
     //
+    // NOT enough on its own (review of PR #32, High): Capacitor iOS lets the web view navigate inside the app to any URL that
+    // merely STARTS WITH this server URL (`https://server.example.attacker.test` for `https://server.example`), so what the
+    // bridge was built with is not where the page is now. Every trust decision therefore also checks the web view's current
+    // URL (shownPageURL, EndpointRules.isTrustedPage / isOnBundledOrigin).
+    //
     // Known limit, stated: Capacitor iOS cannot tell WHICH FRAME called a plugin method (the plugin is given the call, not the
     // frame it came from), so a child frame under an accepted page counts as that page. Nightlight's own pages use no frames
     // and its CSP forbids a cross-origin one, so this is a conditional gap (README, as for Android's old-WebView bridge).
@@ -184,16 +190,34 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         return EndpointRules.withoutTrailingSlashes(serverText)
     }
 
-    // Whether the page calling us is the bundled setup page (public/index.html): a bridge built with no server URL. A fact
-    // about the whole bridge, so nothing a page does can fake it. Fails closed: no bridge or an unreadable config is "not the
-    // bundled page". Android also checks the web view's current URL (DiscoveryRules.isBundledPage); on iOS the bundled bridge
-    // cannot navigate to another origin (Capacitor opens such a link outside the app), so the bridge is the whole answer.
+    // Whether the page calling us is the bundled setup page (public/index.html). Both must hold, as in Android's
+    // DiscoveryRules.isBundledPage: (1) the bridge was built with no server URL, a fact about the whole bridge that nothing a
+    // page does can fake; (2) the web view is really showing the bundled origin (EndpointRules.isOnBundledOrigin), so the
+    // prefix navigation described at pageServerURL cannot lend this path to another page either. Fails closed: no bridge, an
+    // unreadable config or an unreadable page URL is "not the bundled page".
     private func callerIsBundledPage() -> Bool {
         guard let config = bridge?.config else { return false }
         let server: URL? = config.serverURL
         let local: URL? = config.localURL
         guard let serverText = server?.absoluteString, let localText = local?.absoluteString else { return false }
-        return serverText == localText
+        if serverText != localText { return false }
+        return EndpointRules.isOnBundledOrigin(shownPageURL(), local: localText)
+    }
+
+    // The URL the web view's main frame is showing RIGHT NOW, or nil (no bridge, no web view, nothing loaded). WKWebView may
+    // only be read on the main thread. Plugin methods run on Capacitor's plugin queue and save's reconnect on a URLSession
+    // queue, so the read is handed to the main thread with a sync; when already on the main thread it is read directly, never
+    // through a sync from the main thread onto itself (that would deadlock). Nothing here waits on the plugin queue from the
+    // main thread, so the sync cannot deadlock; at worst it waits for a launch choice in progress (up to 3 s).
+    private func shownPageURL() -> String? {
+        guard let b = bridge else { return nil }
+        if Thread.isMainThread {
+            return b.webView?.url?.absoluteString
+        }
+        let read: String? = DispatchQueue.main.sync { () -> String? in
+            return b.webView?.url?.absoluteString
+        }
+        return read
     }
 
     // `url` is the saved (primary) address; `tailscale` is the Tailscale address the server told this phone about, or null.
@@ -269,8 +293,9 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // GET /api/remote-access/tailscale/address while signed in). Saved only when ALL of these hold, each fails closed (the
     // decisions are EndpointRules.checkPage and checkIdentity, run by ios/Tests in CI):
     //   - the url is exactly `https://<name>.ts.net`: no port, path, credentials or IP;
-    //   - the page is the saved server or the Tailscale address already saved for it (pageServerURL), so the bundled setup
-    //     page and anything else are refused;
+    //   - the bridge was built for the saved server or the Tailscale address already saved for it (pageServerURL), AND the web
+    //     view is really showing that origin (shownPageURL; EndpointRules.isTrustedPage says why prefix navigation makes this
+    //     necessary), so the bundled setup page, a page that wandered to another host or port, and anything else are refused;
     //   - the page's server and the url answer /api/health with the SAME id (EndpointProbe): an address that merely looks right
     //     is not saved for a server that is not this one. The id is public, so this is a claim, not proof (see checkIdentity);
     //     it is saved with the address and re-checked each time the address is opened.
@@ -281,11 +306,12 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         let url = EndpointRules.offeredAddress(call.getString("url"))
         let primary = ServerConfigStore.savedURL
         let page = pageServerURL()
+        let shown = shownPageURL()
         var savedTailscale: String? = nil
         if let home = primary {
             savedTailscale = ServerConfigStore.tailscaleURL(for: home)
         }
-        let first = EndpointRules.checkPage(url: url, primary: primary, savedTailscale: savedTailscale, page: page)
+        let first = EndpointRules.checkPage(url: url, primary: primary, savedTailscale: savedTailscale, page: page, shown: shown)
         guard first == .ok, let offered = url, let home = primary, let pageURL = page else {
             call.reject(EndpointRules.refusal(first == .ok ? .notThisPage : first))
             return
@@ -313,14 +339,15 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     // removeEndpoint(): the server has said it no longer offers a Tailscale address (Tailscale was turned off there). Same
-    // page rule as addEndpoint. Resolves { removed }.
+    // page rule as addEndpoint (EndpointRules.isTrustedPage, the web view's current origin included). Resolves { removed }.
     @objc func removeEndpoint(_ call: CAPPluginCall) {
         let primary = ServerConfigStore.savedURL
         var saved: String? = nil
         if let home = primary {
             saved = ServerConfigStore.tailscaleURL(for: home)
         }
-        guard let home = primary, EndpointRules.isActivePage(primary: home, savedTailscale: saved, page: pageServerURL()) else {
+        let trusted = EndpointRules.isTrustedPage(primary: primary, savedTailscale: saved, page: pageServerURL(), shown: shownPageURL())
+        guard let home = primary, trusted else {
             call.reject(EndpointRules.refusal(.notThisPage))
             return
         }

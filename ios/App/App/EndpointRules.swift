@@ -196,12 +196,13 @@ enum EndpointRules {
         }
     }
 
-    /// The checks that need no network: the address has the one accepted shape, and the page asking is the saved server or
-    /// the Tailscale address already saved for it (`page` is what the bridge was built with). The bundled setup page has no
-    /// server (`page` nil) and is refused, as is any other address.
-    static func checkPage(url: String?, primary: String?, savedTailscale: String?, page: String?) -> AddCheck {
+    /// The checks that need no network: the address has the one accepted shape, and the page asking is trusted
+    /// (`isTrustedPage`: the bridge was built for the saved server or the Tailscale address already saved for it, AND the web
+    /// view is really showing that origin, `shown`). The bundled setup page has no server (`page` nil) and is refused, as is
+    /// any other address.
+    static func checkPage(url: String?, primary: String?, savedTailscale: String?, page: String?, shown: String?) -> AddCheck {
         if !isTailscaleUrl(url) { return .notATailscaleAddress }
-        if !isActivePage(primary: primary, savedTailscale: savedTailscale, page: page) { return .notThisPage }
+        if !isTrustedPage(primary: primary, savedTailscale: savedTailscale, page: page, shown: shown) { return .notThisPage }
         return .ok
     }
 
@@ -211,6 +212,85 @@ enum EndpointRules {
         if current == home { return true }
         if let tailscale = savedTailscale, current == tailscale { return true }
         return false
+    }
+
+    /// The page rule addEndpoint and removeEndpoint use: `isActivePage` (the bridge was built for the saved server or its
+    /// saved Tailscale address) AND `sameOrigin(shown, page)`, where `shown` is the web view's CURRENT main-frame URL. The
+    /// twin of Android's SessionRules.mayAct ("every call is refused unless the WebView's real URL has the origin the bridge
+    /// was built for").
+    ///
+    /// WHY the second half is needed on iOS (review of PR #32, High): Capacitor iOS lets the web view navigate, inside the
+    /// app, to any URL whose text merely STARTS WITH the bridge's server URL. A bridge built for `https://server.example`
+    /// therefore also shows `https://server.example.attacker.test/`, and one built for `http://192.168.1.50:4000` also shows
+    /// `http://192.168.1.50:40001/`: other machines, which could then call the plugin as if they were the saved server.
+    /// What the bridge was built with says nothing about where the page went since; the page's own origin does.
+    static func isTrustedPage(primary: String?, savedTailscale: String?, page: String?, shown: String?) -> Bool {
+        if !isActivePage(primary: primary, savedTailscale: savedTailscale, page: page) { return false }
+        return sameOrigin(shown, page)
+    }
+
+    // ---- Origins (the twin of Android's SessionRules.sameOrigin) ----
+
+    /// A web origin: lower-case scheme and host, and the port with the default filled in (80 for http, 443 for https).
+    struct Origin: Equatable {
+        let scheme: String
+        let host: String
+        let port: Int
+    }
+
+    // The origin is the part before the first `/`, `?` or `#`: scheme (http or https only), host (no `@`: a userinfo form is
+    // not an origin accepted here; a bracketed IPv6 literal is) and an optional port. Android's pattern, character for
+    // character, and for its reason: a URL parser that refuses an underscore host or a `|` in a fragment would silently refuse
+    // every call from a real saved address (Opus review of Android phase D). Case is ignored in the pattern and lowered after.
+    private static let originPattern = "^(https?)://(\\[[0-9A-Fa-f:.]+\\]|[^/?#:@\\s]+)(?::(\\d{1,5}))?(?:[/?#].*)?$"
+    private static let originRegex: NSRegularExpression = EndpointRules.makeCaseInsensitiveRegex(EndpointRules.originPattern)
+
+    /// Like makeRegex, ignoring case. Also a FIXED pattern from this code, so `try!` cannot depend on any input.
+    static func makeCaseInsensitiveRegex(_ pattern: String) -> NSRegularExpression {
+        return try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }
+
+    /// The origin of `url`, or nil when it is not an http(s) URL of the accepted shape (white space around it is ignored, as
+    /// Android trims). A port past 65535 is no origin.
+    static func origin(_ url: String?) -> Origin? {
+        guard let raw = url else { return nil }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let whole = NSRange(location: 0, length: text.utf16.count)
+        guard let match = originRegex.firstMatch(in: text, options: [], range: whole) else { return nil }
+        if match.range.location != 0 || match.range.length != whole.length { return nil }
+        let ns = text as NSString
+        let scheme = ns.substring(with: match.range(at: 1)).lowercased()
+        let host = ns.substring(with: match.range(at: 2)).lowercased()
+        var port: Int = (scheme == "http") ? 80 : 443
+        let portRange = match.range(at: 3)
+        if portRange.location != NSNotFound {
+            guard let value = Int(ns.substring(with: portRange)) else { return nil }
+            port = value
+        }
+        if port > 65535 { return nil }
+        return Origin(scheme: scheme, host: host, port: port)
+    }
+
+    /// Whether `a` and `b` have the same origin: scheme, host and port, case ignored, default ports filled in, any path, query
+    /// or fragment ignored. Anything that does not parse (nil, `about:blank`, a `capacitor://` page) is never the same origin.
+    static func sameOrigin(_ a: String?, _ b: String?) -> Bool {
+        guard let left = origin(a), let right = origin(b) else { return false }
+        return left == right
+    }
+
+    /// Whether `shown` (the web view's current URL) is on the bundled origin `local` (Capacitor's `capacitor://localhost` by
+    /// default): the same scheme and host, no port, no user info. The second half of Android's DiscoveryRules.isBundledPage,
+    /// used for the one bundled-page-only path (save's reconnect through the Tailscale address), so a page the bundled bridge
+    /// might show anywhere else cannot use it either. nil or unparseable is "not the bundled page".
+    static func isOnBundledOrigin(_ shown: String?, local: String?) -> Bool {
+        guard let shownText = shown, let localText = local else { return false }
+        guard let page = URLComponents(string: shownText), let bundled = URLComponents(string: localText) else { return false }
+        guard let pageScheme = page.scheme, let bundledScheme = bundled.scheme else { return false }
+        if pageScheme.lowercased() != bundledScheme.lowercased() { return false }
+        guard let pageHost = page.host, let bundledHost = bundled.host, !bundledHost.isEmpty else { return false }
+        if pageHost.lowercased() != bundledHost.lowercased() { return false }
+        if page.port != nil || page.user != nil || page.password != nil { return false }
+        return true
     }
 
     /// The check that needs the network's answers: the server the page is on (`reference`) and the offered address
