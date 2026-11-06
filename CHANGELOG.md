@@ -29,7 +29,7 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   keystore, and hands it to the Tailscale address (only that address) the first time you open it there, so signing
   in once at home is enough. It is kept for the Tailscale address only if your own server has just offered that same address
   (so an address another page put in the app never receives it). Signing out, or a sign-in the server refuses, removes it; a wrong password does not. It is
-  left out of Android's cloud backup and of a phone-to-phone transfer (the web app's own stored sign-in is unchanged). The home
+  left out of Android's cloud backup and of a phone-to-phone transfer (the web app's own stored sign-in is now left out too, see Changed). The home
   address never receives it (it is usually plain `http`), so signing in on the Tailscale address first still asks once
   at home. Needs the server release that goes with it. iOS does not have this yet.
 - **Android: a second address for your server, through Tailscale.** If your Nightlight server has Tailscale and its
@@ -63,6 +63,13 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   does not have this yet.
 
 ### Changed
+- **Android: the web app's own stored sign-in is no longer included in Android's backup or phone-to-phone transfer.** The web app keeps
+  a sign-in token for each address it has opened in the app's web storage, and until now that folder was copied into Google's
+  backup and onto a new phone, where the token worked until it expired. It is now left out, as the encrypted copy already was
+  (Android's guidance is to keep credentials out of backups). On a restored or transferred phone you sign in once more, and the
+  web app's own small local settings start fresh; your saved servers are still restored, so there is nothing to retype. Phones
+  that already took a backup keep the older copy until it is replaced. Not tested on a device: the unit test checks the rules
+  files, not Android's restore.
 - **Android: the Tailscale fallback opens in about a second when you are not on Wi-Fi.** If the app was set up with a
   home-network address (one starting 10., 172.16 to 172.31 or 192.168, or a name ending in .local), a Tailscale
   address is saved, and the phone is not on Wi-Fi or Ethernet, the app waits about 1 second for the home address

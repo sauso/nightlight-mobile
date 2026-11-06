@@ -76,11 +76,12 @@ refuses that exact token (`clearSession`). The rules are in `SessionRules` and a
 - All vault work runs on one first-in-first-out thread. The cipher makes its own IV (a Keystore key refuses a supplied one); a lost
   key is replaced; a busy keystore deletes nothing.
 - `res/xml/data_extraction_rules.xml` (Android 12+: BOTH `<cloud-backup>` and `<device-transfer>`) and `res/xml/backup_rules.xml`
-  (Android 6-11) exclude the file; `BackupRulesTest` reads them. `allowBackup` stays on so the saved server list is backed up as before.
+  (Android 6-11) exclude the file AND the web app's own storage (`app_webview`, which holds the web sign-in token of each address);
+  `BackupRulesTest` reads them. A restored or transferred phone therefore asks for one sign-in again (and loses the web app's small
+  local settings); `allowBackup` stays on so the saved server list (SharedPreferences) is backed up as before, so nothing is retyped.
 - Known limits: the Keystore wrapper and the plugin glue have no JVM test (only the phone check proves them); a person with an
   account on the server who controls a device at the plain-http saved address could store their own token; two separate sign-ins stay
-  separate. The web app's own storage (`app_webview`) is not excluded from backup (it holds the existing per-origin token). On an
-  old WebView without WebMessageListener, Capacitor's fallback bridge cannot say WHICH FRAME called (`webView.url` is the top page),
+  separate. On an old WebView without WebMessageListener, Capacitor's fallback bridge cannot say WHICH FRAME called (`webView.url` is the top page),
   so a child frame under an accepted page could call `saveSession`; Nightlight's own pages use none and its CSP forbids a
   cross-origin one, so this is a conditional gap, stated.
 

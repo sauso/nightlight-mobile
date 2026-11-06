@@ -5,13 +5,19 @@
   <device-transfer>, so leaving it out would still copy the file. The encryption key lives in the Keystore and does not travel,
   so a copied blob would only be undecryptable; keeping it out makes that certain. Everything else is still backed up exactly
   as before (the saved server list included): an exclude-only rule leaves the rest alone.
+  The web app's own storage (the WebView data folder, app_webview, which holds the web sign-in token of each address the
+  app has opened) is excluded too (owner, 2026-11-07; Android's own guidance is to keep credentials out of backups). The cost is
+  that a restored or transferred phone asks for one sign-in again, and loses the web app's own small settings stored there; the
+  saved server list is in SharedPreferences and is still backed up, so there is nothing to retype.
   BackupRulesTest pins this file name, both sections and the domain.
 -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="nightlight_session.xml" />
+        <exclude domain="root" path="app_webview" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="nightlight_session.xml" />
+        <exclude domain="root" path="app_webview" />
     </device-transfer>
 </data-extraction-rules>
