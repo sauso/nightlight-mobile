@@ -157,7 +157,7 @@ class SessionVaultTest {
     }
 
     @Test
-    fun `one entry per saved address: a second save replaces, two addresses are independent`() {
+    fun `one entry per saved address, so a second save replaces and two addresses are independent`() {
         vault.save(entry(saved, "one.two.three"))
         vault.save(entry(saved, "four.five.six"))
         vault.save(entry(other, "seven.eight.nine"))
