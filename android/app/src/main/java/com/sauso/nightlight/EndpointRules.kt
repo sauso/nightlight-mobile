@@ -32,6 +32,37 @@ object EndpointRules {
      */
     fun idKey(primary: String): String = "tailscale_id:$primary"
 
+    /**
+     * True when [url]'s host can only be reached from a local network: a private IPv4 address (10/8, 172.16/12, 192.168/16) or
+     * a `.local` name. A public name or address (a domain with HTTPS, say) is NOT local-only: it answers on mobile data too.
+     * Anything that does not parse is not local-only (so the ordinary wait applies).
+     */
+    fun isLocalOnlyAddress(url: String?): Boolean {
+        if (url == null) return false
+        val host = try {
+            java.net.URI(url).host
+        } catch (e: Exception) {
+            null
+        } ?: return false
+        return DiscoveryRules.isPrivateIpv4(host) || host.lowercase().endsWith(".local")
+    }
+
+    // How long a launch waits for a saved address that says nothing, when the phone cannot be on its network (below). A
+    // judgement, not a measurement: a reachable home server answers in milliseconds and even a slow Wi-Fi in well under a
+    // second, so this is generous for a phone that merely just joined Wi-Fi, and short enough that the Tailscale fallback
+    // opens in about a second instead of three.
+    const val OFF_NETWORK_WAIT_MS = 1_000L
+
+    /**
+     * How long the launch gate waits for the saved address before it uses the Tailscale one. The short wait applies only when
+     * ALL of: a Tailscale address is saved (otherwise there is nothing to switch to, so the saved address keeps its whole
+     * chance), the phone is not on Wi-Fi or Ethernet, and the saved address is one only a local network can answer. Every other
+     * case waits the full [fullMs]. Away from home on mobile data, a home address cannot answer: waiting three seconds for it
+     * was the pause the owner saw on the first phone test (2026-11-06).
+     */
+    fun localWaitMs(saved: String?, tailscale: String?, onLocalNetwork: Boolean, fullMs: Long): Long =
+        if (tailscale != null && !onLocalNetwork && isLocalOnlyAddress(saved)) minOf(OFF_NETWORK_WAIT_MS, fullMs) else fullMs
+
     /** Why addEndpoint accepted or refused a request. Reported so a test (and a log line) can tell the refusals apart. */
     enum class AddCheck { OK, NOT_A_TAILSCALE_ADDRESS, NOT_THIS_PAGE, UNREADABLE_SERVER, UNREACHABLE_ADDRESS, DIFFERENT_SERVER }
 

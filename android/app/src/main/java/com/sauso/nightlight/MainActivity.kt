@@ -81,7 +81,10 @@ class MainActivity : BridgeActivity() {
                     ServerConfigPlugin.isReachable(url, 2500)
                 }
             }
-            val chosen = EndpointChooser(probe).choose(savedUrl, tailscaleUrl)
+            // Off Wi-Fi with a home-network-only saved address, that address cannot answer, so it is waited for only briefly
+            // (EndpointRules.localWaitMs); otherwise the full 3 s, as before.
+            val localWait = EndpointRules.localWaitMs(savedUrl, tailscaleUrl, LocalNetwork.isOn(this), EndpointChooser.DEADLINE_MS)
+            val chosen = EndpointChooser(probe, localDeadlineMs = localWait).choose(savedUrl, tailscaleUrl)
             if (chosen != null) {
                 config = CapConfig.Builder(this)
                     .setServerUrl(chosen)
