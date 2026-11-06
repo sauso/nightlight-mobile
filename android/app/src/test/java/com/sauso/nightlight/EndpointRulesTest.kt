@@ -178,6 +178,26 @@ class EndpointRulesTest {
         assertFalse("nothing remembered at all", EndpointRules.canReconnectViaTailscale(emptyList(), home, ts, sameId, sameId))
     }
 
+    // ---- The server's name in the saved list (owner, 2026-11-06) ----
+
+    @Test
+    fun `a name is remembered only for a remembered server and only when the server sent one`() {
+        assertTrue(EndpointRules.mayRememberName(known, home, "Nightlight"))
+        assertFalse("not a remembered server", EndpointRules.mayRememberName(known, "http://192.168.1.99:4000", "Nightlight"))
+        assertFalse("no name sent", EndpointRules.mayRememberName(known, home, null))
+        assertFalse("a blank name", EndpointRules.mayRememberName(known, home, "   "))
+        assertFalse("nothing remembered", EndpointRules.mayRememberName(emptyList(), home, "Nightlight"))
+    }
+
+    @Test
+    fun `only the names of remembered servers are listed, in the saved list's order, and a blank one is dropped`() {
+        val stored = mapOf(home to "Home", "https://nightlight.example.com" to "  ", "http://192.168.1.99:4000" to "A forgotten server")
+        assertEquals(mapOf(home to "Home"), EndpointRules.namesForKnown(stored, known))
+        assertEquals(emptyMap<String, String>(), EndpointRules.namesForKnown(emptyMap(), known))
+        assertEquals(listOf("https://nightlight.example.com", home), EndpointRules.namesForKnown(
+            mapOf(home to "Home", "https://nightlight.example.com" to "Away"), listOf("https://nightlight.example.com", home)).keys.toList())
+    }
+
     @Test
     fun `a saved Tailscale address is kept when the home address reports its id or none, and dropped when another server does`() {
         assertTrue("same server", EndpointRules.pairStillValid(sameId, sameId))

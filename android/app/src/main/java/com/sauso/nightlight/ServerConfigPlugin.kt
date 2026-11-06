@@ -59,6 +59,9 @@ class ServerConfigPlugin : Plugin() {
         // lets the setup screen offer previous servers as one-tap choices instead
         // of making the person retype an address they've already proven works.
         private const val KEY_KNOWN = "known_servers"
+        // The display name each remembered server sent (its public /api/health `name`), as one JSON object { address: name }, so the
+        // setup page can list "Name" with the address under it (owner, 2026-11-06). Only for remembered servers (EndpointRules).
+        private const val KEY_NAMES = "server_names"
 
         fun getSavedUrl(context: Context): String? {
             val url = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_URL, null)
@@ -217,6 +220,33 @@ class ServerConfigPlugin : Plugin() {
 
     private fun knownServers(): MutableList<String> = knownServersOf(prefs())
 
+    private fun storedNames(): MutableMap<String, String> {
+        val out = mutableMapOf<String, String>()
+        try {
+            val obj = JSONObject(prefs().getString(KEY_NAMES, "{}"))
+            for (key in obj.keys()) obj.optString(key, "").let { if (it.isNotBlank()) out[key] = it }
+        } catch (e: Exception) {
+            // Corrupt prefs entry - treat as no names (the list falls back to addresses).
+        }
+        return out
+    }
+
+    // Remember the name a server sent. Called after rememberServer(url), so the url is in the saved list; on the session executor
+    // like the other writes (a read-modify-write of one JSON value).
+    private fun rememberName(url: String, name: String?) {
+        if (!EndpointRules.mayRememberName(knownServers(), url, name)) return
+        val names = storedNames()
+        names[url] = name!!
+        prefs().edit().putString(KEY_NAMES, namesJson(names)).apply()
+    }
+
+    // A loop, not JSONObject(map): the Map constructor's key type does not accept a Kotlin Map<String, String> without a cast.
+    private fun namesJson(names: Map<String, String>): String {
+        val obj = JSONObject()
+        for ((url, name) in names) obj.put(url, name)
+        return obj.toString()
+    }
+
     private fun rememberServer(url: String) {
         val list = knownServers()
         list.remove(url)
@@ -249,7 +279,13 @@ class ServerConfigPlugin : Plugin() {
     @PluginMethod
     fun list(call: PluginCall) {
         val ret = JSObject()
-        ret.put("servers", JSArray(knownServers()))
+        val known = knownServers()
+        ret.put("servers", JSArray(known))
+        // Added alongside `servers` (an older page ignores it): the names the servers sent, for the setup page to show above the
+        // address. Only remembered servers' names, so a forgotten server's name is never listed.
+        val names = JSObject()
+        for ((url, name) in EndpointRules.namesForKnown(storedNames(), known)) names.put(url, name)
+        ret.put("names", names)
         val active = getSavedUrl(context)
         ret.put("active", active)
         ret.put("tailscale", active?.let { getTailscaleUrl(context, it) })
@@ -267,7 +303,10 @@ class ServerConfigPlugin : Plugin() {
             sessionExecutor.execute {
                 val list = knownServers()
                 list.remove(url)
-                prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url)).apply()
+                val names = storedNames()
+                names.remove(url)
+                prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url))
+                    .putString(KEY_NAMES, namesJson(names)).apply()
                 sessionVault.clear(url)
                 call.resolve()
             }
@@ -324,6 +363,9 @@ class ServerConfigPlugin : Plugin() {
             sessionExecutor.execute {
                 val previous = getTailscaleUrl(context, primary)
                 prefs().edit().putString(EndpointRules.key(primary), url).putString(EndpointRules.idKey(primary), candidate.id).apply()
+                // The saved server's name, learned for free here: this runs at every start while signed in, so servers saved before
+                // names were kept get theirs without any action (the page's server and the saved address are the same server).
+                rememberName(primary, reference?.name)
                 call.resolve(JSObject().put("added", previous != url))
             }
         }.start()
@@ -531,12 +573,15 @@ class ServerConfigPlugin : Plugin() {
                         // A Tailscale address saved for this address belongs to the server it was saved for. Read who answers here
                         // now (only when there is one to check), so another machine that took this address over does not keep it.
                         val liveId = if (getTailscaleId(context, url) != null) EndpointProbe.fetchHealth(url, 3000)?.id else null
+                        // The name the server sent in the same reply (null when it sent none, or an older server with no id).
+                        val name = DiscoveryRules.parseHealth(body)?.name
                         // On the session executor: the saved address is part of what a saved session is bound to (see addEndpoint).
                         sessionExecutor.execute {
                             val edit = prefs().edit().putString(KEY_URL, url)
                             dropTailscaleIfAnotherServer(edit, url, liveId)
                             edit.apply()
                             rememberServer(url)
+                            rememberName(url, name)
                             call.resolve(JSObject().put("url", url))
                         }
                         return@Thread
@@ -555,11 +600,13 @@ class ServerConfigPlugin : Plugin() {
             val remembered = candidates.firstOrNull { it in known }
             val tailscale = remembered?.let { getTailscaleUrl(context, it) }
             if (remembered != null && tailscale != null && callerIsBundledPage()) {
-                val liveId = EndpointProbe.fetchHealth(tailscale, 5000)?.id
+                val live = EndpointProbe.fetchHealth(tailscale, 5000)
+                val liveId = live?.id
                 if (EndpointRules.canReconnectViaTailscale(known, remembered, tailscale, getTailscaleId(context, remembered), liveId)) {
                     sessionExecutor.execute {
                         prefs().edit().putString(KEY_URL, remembered).apply()
                         rememberServer(remembered)
+                        rememberName(remembered, live?.name)
                         call.resolve(JSObject().put("url", remembered).put("via", "tailscale"))
                     }
                     return@Thread
@@ -594,6 +641,7 @@ class ServerConfigPlugin : Plugin() {
                     dropTailscaleIfAnotherServer(edit, url, expectId)
                     edit.apply()
                     rememberServer(url)
+                    rememberName(url, result.health?.name)
                     call.resolve(JSObject().put("url", url))
                 }
                 HealthProbe.Outcome.CONNECT_FAILED, HealthProbe.Outcome.TIMED_OUT ->
