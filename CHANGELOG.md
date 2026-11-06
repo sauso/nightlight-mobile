@@ -15,7 +15,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   when Wi-Fi turns to mobile data, the app now switches to your server's Tailscale address by itself within a few
   seconds, instead of staying on a home address that cannot answer until you restart the app. Coming home, it does not
   switch back while you are using it (the Tailscale address keeps working on Wi-Fi): it moves back to the home address
-  the next time you open the app or turn the screen back on, and never while it is in Picture-in-Picture. Each switch
+  the next time you open the app or turn the screen back on (a few seconds after it appears, so something typed in those
+  first seconds can be lost), and never while it is in Picture-in-Picture. Each switch
   reloads the app onto its home screen, so a video you were watching starts again. If the network keeps dropping in and
   out, the app switches at most 3 times in 5 minutes. It works while the app is on screen: listening with the screen off
   on a network that has stopped working is not rescued until you next open the app. Needs the Tailscale address

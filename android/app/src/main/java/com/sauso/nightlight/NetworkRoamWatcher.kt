@@ -49,6 +49,10 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
         // unless it is busy, and an answer that does not come counts as "not known" (which never switches anything).
         private const val MAIN_THREAD_TIMEOUT_MS = 1_000L
 
+        // The second look at the saved address before a fail-over (see evaluate). Shorter than the launch's 2.5 s probe: the first
+        // probe already waited, this one only has to catch a blip. A judgement, not a measurement.
+        private const val STILL_ANSWERING_MS = 1_500
+
         // The transports NetworkEventFilter compares. Wi-Fi to mobile data is the case this is for; Ethernet and VPN are
         // included because a VPN coming up or its underlying network changing (Tailscale itself) also changes what answers.
         private const val WIFI = 1
@@ -184,6 +188,14 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
             }
             return
         }
+        // A fail-over off a page that is still working is the one wrong move that costs something (a sign-in or an MFA code half
+        // typed): the saved address's probe above can fail for a moment while the page is fine. Ask it once more before leaving it
+        // (Codex review of the code). A saved address that really is gone fails this too, and the switch goes ahead.
+        if (target == tailscale && ServerConfigPlugin.isReachable(saved, STILL_ANSWERING_MS)) {
+            Log.i(TAG, "The saved address still answers: staying on it")
+            return
+        }
+        if (generation.get() != gen) return
         val which = if (target == tailscale) "the Tailscale address" else "the saved address"
         if (!MainActivity.recreateLog.mayRoam(MainActivity.recreateClockMs())) {
             // No retry: the next network event or the next start checks again.
@@ -194,6 +206,9 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
             if (generation.get() != gen || activity.isFinishing || activity.isDestroyed) return@runOnUiThread
             // The page may have moved while the probes ran: only switch away from the page the decision was about.
             if (RoamRules.currentAddress(activity.shownPageUrl(), saved, tailscale) != current) return@runOnUiThread
+            // Picture-in-Picture can start between the check and here (the activity stays started in PiP, so the generation does
+            // not move): a fail-back must never recreate a floating video (Codex review of the code). Read on the main thread.
+            if (target == saved && activity.isInPictureInPictureMode) return@runOnUiThread
             // Asked again HERE: the load-error recreate also runs on the main thread, so this check and the note below cannot
             // interleave with it.
             val now = MainActivity.recreateClockMs()

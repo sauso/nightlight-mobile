@@ -186,6 +186,17 @@ class RoamRulesTest {
         assertTrue(log.mayRoam(120_100L))
     }
 
+    // The exact boundaries (Codex review: 7.9/8.1 s and 19.9/20.1 s did not tell ">=" from ">"). "At least" the gap is allowed.
+    @Test
+    fun `the 8 s and 20 s gaps are met at exactly the gap, not one millisecond after`() {
+        val error = RecreateLog().also { it.noteRecreate(100_000L) }
+        assertFalse(error.mayErrorRecreate(107_999L))
+        assertTrue(error.mayErrorRecreate(108_000L))
+        val roam = RecreateLog().also { it.noteRecreate(100_000L) }
+        assertFalse(roam.mayRoam(119_999L))
+        assertTrue(roam.mayRoam(120_000L))
+    }
+
     @Test
     fun `load-error recreates do not count towards the roam limit`() {
         val log = RecreateLog()

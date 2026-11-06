@@ -31,7 +31,8 @@ Leave home with the app open and, when Wi-Fi turns to mobile data, the app moves
 seconds, with no restart (when a Tailscale address is saved, as above, and the Tailscale app on the phone is connected).
 Coming home, it does not move back while you are using it (the Tailscale address keeps working on Wi-Fi). It moves back to the
 home address the next time the app comes to the front (opened again, or the screen turned back on), and never while it is in
-Picture-in-Picture. Either move reloads the app onto its home screen, so a video you were watching
+Picture-in-Picture. It does so a few seconds after the app comes to the front (a settle wait plus the check), so something typed
+in those first seconds (a sign-in code, say) can be lost: a known limit. Either move reloads the app onto its home screen, so a video you were watching
 starts again. Sign-in carries across as described in the next section: moving back home asks you to sign in only if you never
 signed in on the home address.
 
