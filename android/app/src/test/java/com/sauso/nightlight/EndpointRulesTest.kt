@@ -128,7 +128,7 @@ class EndpointRulesTest {
 
     @Test
     fun `home-network-only addresses are private IPv4 and dot-local names`() {
-        for (url in listOf("http://192.168.1.50:4000", "http://10.0.0.5", "http://172.16.4.2:4000", "http://172.31.255.1", "http://nightlight.local:4000", "http://NIGHTLIGHT.LOCAL")) {
+        for (url in listOf("http://192.168.1.50:4000", "http://10.0.0.5", "http://10.200.1.2", "http://10.255.255.254", "http://172.16.4.2:4000", "http://172.31.255.1", "http://nightlight.local:4000", "http://NIGHTLIGHT.LOCAL")) {
             assertTrue(url, EndpointRules.isLocalOnlyAddress(url))
         }
     }
