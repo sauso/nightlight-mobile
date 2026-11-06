@@ -11,6 +11,9 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Added
+- **Android: saved servers show their name.** On the setup screen, each saved server is now listed by the name your server
+  reports, with its address in smaller text underneath, instead of only the address. A server saved earlier gets its name
+  the next time you open the app signed in; a server that reports no name is shown by its address, as before.
 - **Android: one sign-in for both of your server's addresses.** The home address and the Tailscale address used to ask
   for a sign-in each. The app now keeps your sign-in, encrypted with a key that never leaves the phone's secure
   keystore, and hands it to the Tailscale address (only that address) the first time you open it there, so signing

@@ -129,6 +129,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* A saved server with a known name: the name, and the address under it in smaller, quieter text. */
+  .saved-row .addr-name { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+  .saved-row .addr-sub { display: block; margin-top: 2px; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; }
   .saved-row .forget {
     width: auto;
     flex-shrink: 0;
@@ -273,7 +276,9 @@
     const p = plugin();
     if (!p) return;
     try {
-      const { servers } = await p.list();
+      // `names` (Android): the display name each saved server sent, or nothing (an older app, iOS, a server saved before names
+      // were kept): the row then shows the address alone, as it always did.
+      const { servers, names } = await p.list();
       savedUrls = new Set(servers || []);
       markSavedCards();
       savedList.innerHTML = '';
@@ -287,7 +292,21 @@
 
         const addr = document.createElement('button');
         addr.className = 'addr';
-        addr.textContent = url.replace(/^https?:\/\//, '');
+        const shown = url.replace(/^https?:\/\//, '');
+        const name = names && typeof names[url] === 'string' ? names[url].trim() : '';
+        if (name) {
+          // The name is what the server sent, so it is set as TEXT, never as markup. The address goes below it, smaller.
+          const nameEl = document.createElement('span');
+          nameEl.className = 'addr-name';
+          nameEl.textContent = name;
+          const subEl = document.createElement('span');
+          subEl.className = 'addr-sub';
+          subEl.textContent = shown;
+          addr.append(nameEl, subEl);
+          addr.setAttribute('aria-label', name + ', ' + shown);
+        } else {
+          addr.textContent = shown;
+        }
         addr.addEventListener('click', () => connect(url));
 
         const forget = document.createElement('button');
