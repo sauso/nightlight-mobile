@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 6-11 (android:fullBackupContent): the same exclusion as data_extraction_rules.xml, which Android 12+ uses instead.
+  On these versions this one file covers both the cloud backup and a device transfer.
+  BackupRulesTest pins this file name and the domain.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="nightlight_session.xml" />
+</full-backup-content>
