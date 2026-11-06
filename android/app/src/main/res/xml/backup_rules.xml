@@ -2,8 +2,10 @@
 <!--
   Android 6-11 (android:fullBackupContent): the same exclusion as data_extraction_rules.xml, which Android 12+ uses instead.
   On these versions this one file covers both the cloud backup and a device transfer.
+  The web app's storage (app_webview) is excluded too, for the reason given in data_extraction_rules.xml.
   BackupRulesTest pins this file name and the domain.
 -->
 <full-backup-content>
     <exclude domain="sharedpref" path="nightlight_session.xml" />
+    <exclude domain="root" path="app_webview" />
 </full-backup-content>
