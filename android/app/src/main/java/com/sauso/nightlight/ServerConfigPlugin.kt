@@ -25,7 +25,9 @@ import java.util.concurrent.TimeUnit
  *
  * From the web side (both the bundled setup/error pages and the remote app):
  *
- *   Capacitor.Plugins.ServerConfig.get()            -> { url: string | null }
+ *   Capacitor.Plugins.ServerConfig.get()            -> { url: string | null, tailscale: string | null }
+ *   Capacitor.Plugins.ServerConfig.addEndpoint({ url })   -> { added }; saves the server's Tailscale address (see below)
+ *   Capacitor.Plugins.ServerConfig.removeEndpoint()       -> { removed }
  *   Capacitor.Plugins.ServerConfig.save({ url })    -> validates + persists, rejects if unreachable
  *   Capacitor.Plugins.ServerConfig.save({ url, expectId })
  *                                                   -> the same, and refuses unless the server there
@@ -60,6 +62,17 @@ class ServerConfigPlugin : Plugin() {
             val url = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_URL, null)
             return if (url.isNullOrBlank()) null else url
         }
+
+        // The server's Tailscale address that goes with the saved server [primary], or null (see EndpointRules).
+        fun getTailscaleUrl(context: Context, primary: String): String? {
+            val url = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(EndpointRules.key(primary), null)
+            // Re-checked on read: only an address of the one accepted shape ever reaches the launch gate or the page.
+            return if (EndpointRules.isTailscaleUrl(url)) url else null
+        }
+
+        // The server id the saved Tailscale address was saved for (see EndpointRules.idKey), or null.
+        fun getTailscaleId(context: Context, primary: String): String? =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(EndpointRules.idKey(primary), null)
 
         private fun knownServersOf(prefs: SharedPreferences): MutableList<String> {
             val list = mutableListOf<String>()
@@ -205,10 +218,14 @@ class ServerConfigPlugin : Plugin() {
         prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).apply()
     }
 
+    // `url` is the saved (primary) address; `tailscale` is the Tailscale address the server told this phone about, or null.
+    // Which one the page was loaded from is NOT said here: the page knows its own origin.
     @PluginMethod
     fun get(call: PluginCall) {
         val ret = JSObject()
-        ret.put("url", getSavedUrl(context))
+        val saved = getSavedUrl(context)
+        ret.put("url", saved)
+        ret.put("tailscale", saved?.let { getTailscaleUrl(context, it) })
         call.resolve(ret)
     }
 
@@ -227,20 +244,85 @@ class ServerConfigPlugin : Plugin() {
     fun list(call: PluginCall) {
         val ret = JSObject()
         ret.put("servers", JSArray(knownServers()))
-        ret.put("active", getSavedUrl(context))
+        val active = getSavedUrl(context)
+        ret.put("active", active)
+        ret.put("tailscale", active?.let { getTailscaleUrl(context, it) })
         call.resolve(ret)
     }
 
-    // Drop a server from the remembered list (does not touch the active choice).
+    // Drop a server from the remembered list (does not touch the active choice). Its Tailscale address goes with it:
+    // it was only ever meaningful for that server.
     @PluginMethod
     fun forget(call: PluginCall) {
         val url = call.getString("url")
         if (url != null) {
             val list = knownServers()
             list.remove(url)
-            prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).apply()
+            prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url)).apply()
         }
         call.resolve()
+    }
+
+    // The Tailscale address saved for the saved server, with the server id it was saved for.
+    private fun forgetTailscale(edit: SharedPreferences.Editor, primary: String): SharedPreferences.Editor =
+        edit.remove(EndpointRules.key(primary)).remove(EndpointRules.idKey(primary))
+
+    private fun refusal(check: EndpointRules.AddCheck): String = when (check) {
+        EndpointRules.AddCheck.NOT_A_TAILSCALE_ADDRESS -> "Not a Tailscale address"
+        EndpointRules.AddCheck.NOT_THIS_PAGE -> "Not available on this page"
+        EndpointRules.AddCheck.UNREADABLE_SERVER -> "Couldn't read this server's identity"
+        EndpointRules.AddCheck.UNREACHABLE_ADDRESS -> "Couldn't reach that Tailscale address"
+        EndpointRules.AddCheck.DIFFERENT_SERVER -> "That address is a different server"
+        EndpointRules.AddCheck.OK -> ""
+    }
+
+    // addEndpoint({ url }): the server on screen has said "you can also reach me at <url>" (the web app read it from
+    // GET /api/remote-access/tailscale/address while signed in). Saved only when ALL of these hold, each fails closed
+    // (the decisions are EndpointRules.checkPage and checkIdentity, unit-tested on the JVM):
+    //   - the url is exactly `https://<name>.ts.net`: no port, path, credentials or IP;
+    //   - the page is the saved server or the Tailscale address already saved for it (bridge.serverUrl), so the bundled setup
+    //     page and anything else are refused;
+    //   - the page's server and the url answer /api/health with the SAME id (EndpointProbe): an address that merely looks
+    //     right is not saved for a server that is not this one. The id is public, so this is a claim, not proof (see
+    //     checkIdentity); it is saved with the address and re-checked each time the address is opened.
+    // Resolves { added }: true when this is new or different, false when it was already saved (so the app tells the
+    // person once). Nothing is switched or restarted here: the address is used the next time the app starts.
+    @PluginMethod
+    fun addEndpoint(call: PluginCall) {
+        val url = call.getString("url")?.trim()?.trimEnd('/')
+        val primary = getSavedUrl(context)
+        val page = bridge?.serverUrl
+        val first = EndpointRules.checkPage(url, primary, primary?.let { getTailscaleUrl(context, it) }, page)
+        if (first != EndpointRules.AddCheck.OK || url == null || primary == null || page == null) {
+            call.reject(refusal(if (first == EndpointRules.AddCheck.OK) EndpointRules.AddCheck.NOT_THIS_PAGE else first))
+            return
+        }
+        Thread {
+            val reference = EndpointProbe.fetchHealth(page, 4000)
+            val candidate = EndpointProbe.fetchHealth(url, 5000)
+            val second = EndpointRules.checkIdentity(reference, candidate)
+            if (second != EndpointRules.AddCheck.OK || candidate == null) {
+                call.reject(refusal(if (second == EndpointRules.AddCheck.OK) EndpointRules.AddCheck.UNREACHABLE_ADDRESS else second))
+                return@Thread
+            }
+            val previous = getTailscaleUrl(context, primary)
+            prefs().edit().putString(EndpointRules.key(primary), url).putString(EndpointRules.idKey(primary), candidate.id).apply()
+            call.resolve(JSObject().put("added", previous != url))
+        }.start()
+    }
+
+    // removeEndpoint(): the server has said it no longer offers a Tailscale address (Tailscale was turned off there).
+    // Same page rule as addEndpoint. Resolves { removed }.
+    @PluginMethod
+    fun removeEndpoint(call: PluginCall) {
+        val primary = getSavedUrl(context)
+        val saved = primary?.let { getTailscaleUrl(context, it) }
+        if (primary == null || !EndpointRules.isActivePage(primary, saved, bridge?.serverUrl)) {
+            call.reject(refusal(EndpointRules.AddCheck.NOT_THIS_PAGE))
+            return
+        }
+        if (saved != null) forgetTailscale(prefs().edit(), primary).apply()
+        call.resolve(JSObject().put("removed", saved != null))
     }
 
     // Confirms the address actually hosts a reachable Nightlight server (its
@@ -348,7 +430,12 @@ class ServerConfigPlugin : Plugin() {
     // blank slate (use forget() to actually drop one from the list).
     @PluginMethod
     fun clear(call: PluginCall) {
-        prefs().edit().remove(KEY_URL).apply()
+        // The Tailscale address goes with it: it belongs to the server being left (the review of the Tailscale fallback: it
+        // must not wait around for whatever is saved at that address next).
+        val leaving = getSavedUrl(context)
+        val edit = prefs().edit().remove(KEY_URL)
+        if (leaving != null) forgetTailscale(edit, leaving)
+        edit.apply()
         call.resolve()
     }
 
