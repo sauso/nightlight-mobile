@@ -12,6 +12,18 @@ IPv4 addresses only (10.x, 172.16–31.x, 192.168.x), and a found server opens a
 separate from any https address you use, so you sign in again there. Servers older than the matching Nightlight
 release are not found; the typed address always works.
 
+## Two addresses for one server (Android)
+
+The address you set the app up with stays the **saved** address. If the server has Tailscale and its secure address on, the
+web app asks the server for that address after sign-in and hands it to the app (`ServerConfig.addEndpoint`), which keeps it
+beside the saved one (SharedPreferences key `tailscale_for:<saved address>`). The app checks it first: it must be exactly
+`https://<name>.ts.net`, the page asking must be the saved server (or its Tailscale address), and `/api/health` at the new
+address must report the same server id as the page's server. At launch `MainActivity` probes both addresses at once and
+opens the saved one if it answers within 3 seconds, else the Tailscale one (`EndpointChooser`); a quick Tailscale answer
+never beats a slower home answer. The rules are unit-tested on the JVM (`EndpointRulesTest`, `EndpointChooserTest`,
+`EndpointProbeTest`); the plugin glue and the launch gate need a phone (see the PR's checklist). iOS has no launch gate and
+no `addEndpoint`, so it is unchanged.
+
 ## Branding
 
 The launcher icons, splash screens and the logo on the first-run / error pages are generated from

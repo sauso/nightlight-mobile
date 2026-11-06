@@ -11,6 +11,16 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Added
+- **Android: a second address for your server, through Tailscale.** If your Nightlight server has Tailscale and its
+  secure address turned on, the app now learns that address by itself after you sign in (a short message says so the
+  first time) and keeps it beside the address you set the app up with. When the app starts it tries both at once: it
+  opens the address you set it up with if that answers within about 3 seconds, and the Tailscale address if it does
+  not, so at home nothing depends on Tailscale and away from home it opens through Tailscale. You need the Tailscale
+  app on the phone, signed in to the same Tailscale network as the server. The two addresses are different web
+  addresses, so you sign in once on each. A session that started on the Tailscale address stays on it until the app
+  is next started. Turning Tailscale or the secure address off on the server removes the saved address the next
+  time you open the app. Needs a Nightlight server from the release that goes with it; with an older server the app
+  works as before. iOS does not have this yet.
 - **Android: Look for my Nightlight.** The first-run screen can now find your Nightlight server on your Wi-Fi,
   so you usually don't need to type its address. Tap **Look for my Nightlight**: each server that answers is
   shown with its name, its address and the start of its ID. Nothing is saved or switched until you tap

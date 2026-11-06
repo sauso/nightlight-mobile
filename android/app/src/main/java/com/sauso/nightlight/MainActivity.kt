@@ -63,16 +63,18 @@ class MainActivity : BridgeActivity() {
         // a local Capacitor page where the bridge works, so the user can retry or switch servers —
         // instead of stranding the WebView on a long connection timeout (a blank screen). If reachable,
         // load it; a server that then dies MID-session is caught by the errorPath page (see below).
+        //
+        // A server can have a second address: the Tailscale one it told this phone about (ServerConfig.addEndpoint). The saved
+        // address is tried first and the Tailscale one is the fallback (owner, 2026-11-06: local first, so at home the phone
+        // never depends on Tailscale). Both are probed together under one 3 s deadline (EndpointChooser), so being away from
+        // home waits once, not twice. The SAVED address is never rewritten by this: only the address the bridge opens differs.
         val savedUrl = ServerConfigPlugin.getSavedUrl(this)
         if (savedUrl != null) {
-            val reachable = booleanArrayOf(false)
-            Thread { reachable[0] = ServerConfigPlugin.isReachable(savedUrl, 2500) }.apply {
-                start()
-                join(3000)
-            }
-            if (reachable[0]) {
+            val tailscaleUrl = ServerConfigPlugin.getTailscaleUrl(this, savedUrl)
+            val chosen = EndpointChooser({ ServerConfigPlugin.isReachable(it, 2500) }).choose(savedUrl, tailscaleUrl)
+            if (chosen != null) {
                 config = CapConfig.Builder(this)
-                    .setServerUrl(savedUrl)
+                    .setServerUrl(chosen)
                     .create()
             }
             // else: leave config untouched so the bundled setup page (www/index.html) loads — a local

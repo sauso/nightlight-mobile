@@ -25,7 +25,9 @@ import java.util.concurrent.TimeUnit
  *
  * From the web side (both the bundled setup/error pages and the remote app):
  *
- *   Capacitor.Plugins.ServerConfig.get()            -> { url: string | null }
+ *   Capacitor.Plugins.ServerConfig.get()            -> { url: string | null, tailscale: string | null }
+ *   Capacitor.Plugins.ServerConfig.addEndpoint({ url })   -> { added }; saves the server's Tailscale address (see below)
+ *   Capacitor.Plugins.ServerConfig.removeEndpoint()       -> { removed }
  *   Capacitor.Plugins.ServerConfig.save({ url })    -> validates + persists, rejects if unreachable
  *   Capacitor.Plugins.ServerConfig.save({ url, expectId })
  *                                                   -> the same, and refuses unless the server there
@@ -59,6 +61,13 @@ class ServerConfigPlugin : Plugin() {
         fun getSavedUrl(context: Context): String? {
             val url = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_URL, null)
             return if (url.isNullOrBlank()) null else url
+        }
+
+        // The server's Tailscale address that goes with the saved server [primary], or null (see EndpointRules).
+        fun getTailscaleUrl(context: Context, primary: String): String? {
+            val url = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(EndpointRules.key(primary), null)
+            // Re-checked on read: only an address of the one accepted shape ever reaches the launch gate or the page.
+            return if (EndpointRules.isTailscaleUrl(url)) url else null
         }
 
         private fun knownServersOf(prefs: SharedPreferences): MutableList<String> {
@@ -205,10 +214,14 @@ class ServerConfigPlugin : Plugin() {
         prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).apply()
     }
 
+    // `url` is the saved (primary) address; `tailscale` is the Tailscale address the server told this phone about, or null.
+    // Which one the page was loaded from is NOT said here: the page knows its own origin.
     @PluginMethod
     fun get(call: PluginCall) {
         val ret = JSObject()
-        ret.put("url", getSavedUrl(context))
+        val saved = getSavedUrl(context)
+        ret.put("url", saved)
+        ret.put("tailscale", saved?.let { getTailscaleUrl(context, it) })
         call.resolve(ret)
     }
 
@@ -227,20 +240,84 @@ class ServerConfigPlugin : Plugin() {
     fun list(call: PluginCall) {
         val ret = JSObject()
         ret.put("servers", JSArray(knownServers()))
-        ret.put("active", getSavedUrl(context))
+        val active = getSavedUrl(context)
+        ret.put("active", active)
+        ret.put("tailscale", active?.let { getTailscaleUrl(context, it) })
         call.resolve(ret)
     }
 
-    // Drop a server from the remembered list (does not touch the active choice).
+    // Drop a server from the remembered list (does not touch the active choice). Its Tailscale address goes with it:
+    // it was only ever meaningful for that server.
     @PluginMethod
     fun forget(call: PluginCall) {
         val url = call.getString("url")
         if (url != null) {
             val list = knownServers()
             list.remove(url)
-            prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).apply()
+            prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).remove(EndpointRules.key(url)).apply()
         }
         call.resolve()
+    }
+
+    // The page's own server (the address the bridge was built with), IF it is this phone's saved server or the Tailscale
+    // address saved for it. Anything else (the bundled setup page, which has no server; a stale value) is refused by the
+    // two methods below, so they only ever act for the server the person is actually using.
+    private fun activeServerPair(): Pair<String, String?>? {
+        val primary = getSavedUrl(context) ?: return null
+        val tailscale = getTailscaleUrl(context, primary)
+        val page = bridge?.serverUrl ?: return null
+        return if (page == primary || page == tailscale) Pair(primary, tailscale) else null
+    }
+
+    // addEndpoint({ url }): the server on screen has said "you can also reach me at <url>" (the web app read it from
+    // GET /api/remote-access/tailscale/address while signed in). Saved only when ALL of these hold, each fails closed:
+    //   - the url is exactly `https://<name>.ts.net` (EndpointRules.isTailscaleUrl): no port, path, credentials, IP;
+    //   - the page is the saved server or its saved Tailscale address (activeServerPair);
+    //   - the page's server and the url answer /api/health with the SAME id (EndpointProbe), so an address that merely
+    //     looks right is not saved for a server that is not this one.
+    // Resolves { added }: true when this is new or different, false when it was already saved (so the app tells the
+    // person once). Nothing is switched or restarted here: the address is used the next time the app starts.
+    @PluginMethod
+    fun addEndpoint(call: PluginCall) {
+        val url = call.getString("url")?.trim()?.trimEnd('/')
+        if (!EndpointRules.isTailscaleUrl(url)) {
+            call.reject("Not a Tailscale address")
+            return
+        }
+        val pair = activeServerPair()
+        val page = bridge?.serverUrl
+        if (pair == null || page == null) {
+            call.reject("Not available on this page")
+            return
+        }
+        Thread {
+            val reference = EndpointProbe.fetchHealth(page, 4000)
+            val candidate = EndpointProbe.fetchHealth(url!!, 5000)
+            when {
+                reference == null -> call.reject("Couldn't read this server's identity")
+                candidate == null -> call.reject("Couldn't reach that Tailscale address")
+                reference.id != candidate.id -> call.reject("That address is a different server")
+                else -> {
+                    val previous = getTailscaleUrl(context, pair.first)
+                    prefs().edit().putString(EndpointRules.key(pair.first), url).apply()
+                    call.resolve(JSObject().put("added", previous != url))
+                }
+            }
+        }.start()
+    }
+
+    // removeEndpoint(): the server has said it no longer offers a Tailscale address (Tailscale was turned off there).
+    // Same page rule as addEndpoint. Resolves { removed }.
+    @PluginMethod
+    fun removeEndpoint(call: PluginCall) {
+        val pair = activeServerPair()
+        if (pair == null) {
+            call.reject("Not available on this page")
+            return
+        }
+        val had = pair.second != null
+        if (had) prefs().edit().remove(EndpointRules.key(pair.first)).apply()
+        call.resolve(JSObject().put("removed", had))
     }
 
     // Confirms the address actually hosts a reachable Nightlight server (its
