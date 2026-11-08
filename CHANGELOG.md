@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-08
+
 ### Added
 - **iOS: a second address for your server, through Tailscale, and saved servers show their name.** The iPhone app now
   does what the Android app does with your server's Tailscale address. It learns the address by itself after you sign in
