@@ -19,8 +19,8 @@ import Foundation
 //
 // Not reachable here (glue, iPhone checks only): the path monitor and how an iPhone fills in a path's interfaces and gateways,
 // the generation that makes a late check dead on arrival, the second look's probe itself, the main-thread reads of the page URL
-// and Picture-in-Picture, the final main-thread gates (an upgrade waits for an active app, an escape does not), the settle and
-// retry timing on the watcher's queue, the lifecycle calls, and the rebuild itself (NetworkRoamWatcher.swift).
+// and Picture-in-Picture, the reading of whether the app is active (the rule applied to it, heldBackAtLastStep, IS tested here),
+// the settle and retry timing on the watcher's queue, the lifecycle calls, and the rebuild itself (NetworkRoamWatcher.swift).
 
 private enum RoamFixture {
     static let saved = "http://192.168.1.50:4000"
@@ -204,6 +204,23 @@ func runRoamRulesTests() {
         check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: saved, chosen: other, inPip: false, currentAnswers: false) == nil, "dead saved page")
         check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: tailscale, chosen: other, inPip: false, currentAnswers: false) == nil, "dead Tailscale page")
         check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: saved, chosen: other, inPip: false, currentAnswers: true) == nil, "working saved page, at a start")
+    }
+
+    // ---- heldBackAtLastStep: the main-thread gate just before the rebuild (Codex code review of PR #38) ----
+
+    test("roam: an escape is not held back while the app is inactive, in either direction") {
+        // A dead page is left even under Control Center or a call banner: holding it would leave the person on it.
+        check(!RoamRules.heldBackAtLastStep(move: RoamMove(address: tailscale, escape: true), appActive: false), "escape to tailscale held back")
+        check(!RoamRules.heldBackAtLastStep(move: RoamMove(address: saved, escape: true), appActive: false), "escape to the saved address held back")
+        check(!RoamRules.heldBackAtLastStep(move: RoamMove(address: tailscale, escape: true), appActive: true), "escape held back while active")
+    }
+
+    test("roam: an upgrade is held back while the app is inactive") {
+        check(RoamRules.heldBackAtLastStep(move: RoamMove(address: tailscale, escape: false), appActive: false), "an upgrade went ahead while inactive")
+    }
+
+    test("roam: an upgrade is not held back while the app is active") {
+        check(!RoamRules.heldBackAtLastStep(move: RoamMove(address: tailscale, escape: false), appActive: true), "an upgrade was held back while active")
     }
 
     // ---- RecreateLog: the loop guard ----

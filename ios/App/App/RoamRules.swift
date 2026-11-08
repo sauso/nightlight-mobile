@@ -91,6 +91,17 @@ enum RoamRules {
         return nil
     }
 
+    /// Whether the LAST step, on the main thread just before the rebuild (NetworkRoamWatcher.finishRoam), holds `move` back
+    /// because the app is not active (Control Center, a call banner or the app switcher make it inactive without a trip to the
+    /// background, so no lifecycle call has stopped the check, and a reload under them is not wanted: Codex code review of PR
+    /// #36). It holds back an UPGRADE only. An ESCAPE goes ahead in either direction: its page has already stopped answering,
+    /// so a reload loses nothing, and holding it back would leave the person on a dead page, a dead Tailscale page included,
+    /// until the next event (Codex plan review of Tailscale first, 2026-11-09). Pure, so ios/Tests pins it (Codex code review of
+    /// PR #38). Picture-in-Picture is not here: target already refuses an upgrade in it, and an escape ignores it.
+    static func heldBackAtLastStep(move: RoamMove, appActive: Bool) -> Bool {
+        return !move.escape && !appActive
+    }
+
     // When the check finds NOTHING answering (the tunnel is not routing yet, the new network has no internet yet), it runs again
     // at about these times after the first check, then stops until the next network event. Android's RETRY_OFFSETS_MS, carried
     // over with its reason: the system does not promise another path update when an address starts answering later (Codex

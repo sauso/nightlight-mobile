@@ -295,9 +295,8 @@ final class NetworkRoamWatcher {
             NetworkRoamWatcher.logLine("Nightlight roam: would move to \(which) (\(kind), \(why)), held back by the reload limit")
             return
         }
-        let escape: Bool = move.escape
         DispatchQueue.main.async {
-            self.finishRoam(gen, saved: saved, tailscale: tailscale, current: current, escape: escape, which: which, kind: kind, why: why)
+            self.finishRoam(gen, saved: saved, tailscale: tailscale, current: current, move: move, which: which, kind: kind, why: why)
         }
     }
 
@@ -312,19 +311,15 @@ final class NetworkRoamWatcher {
     // WebKit's own callback would tear down the web view that is calling back; so it is read once, on the watcher's queue, just
     // before the decision. For an upgrade (the only move Picture-in-Picture holds back) nothing slow runs between that read and
     // this step (the second look runs before it), so the gap is one hop to the main thread.
-    private func finishRoam(_ gen: Int, saved: String, tailscale: String, current: String, escape: Bool, which: String, kind: String, why: String) {
+    private func finishRoam(_ gen: Int, saved: String, tailscale: String, current: String, move: RoamMove, which: String, kind: String, why: String) {
         if !isCurrent(gen) { return }
         let window: UIWindow? = NetworkRoamWatcher.appWindow()
         let shown: String? = NetworkRoamWatcher.webView(in: window)?.url?.absoluteString
         if RoamRules.currentAddress(webViewUrl: shown, saved: saved, tailscale: tailscale) != current { return }
-        // An UPGRADE (a working saved page moving to the Tailscale address) waits for the app to be active (Codex code review of
-        // PR #36, for what was then the fail-back): Control Center, a call banner or the app switcher make the app inactive
-        // without a trip to the background, so no lifecycle call has stopped this check, and a reload under them is not wanted.
-        // An ESCAPE is NOT held back, in either direction (Codex plan review of Tailscale first, 2026-11-09): its page has
-        // already stopped answering, so a reload loses nothing, and holding it back would leave the person on a dead page (a
-        // dead Tailscale page included, which the old "off Tailscale only while active" check would have done) until the next
-        // event. A held upgrade is not retried: the next start checks again.
-        if !escape && UIApplication.shared.applicationState != .active {
+        // An UPGRADE waits for the app to be active; an ESCAPE does not, in either direction (RoamRules.heldBackAtLastStep says
+        // why, and ios/Tests pins it). A held upgrade is not retried: the next start checks again.
+        let appActive: Bool = (UIApplication.shared.applicationState == .active)
+        if RoamRules.heldBackAtLastStep(move: move, appActive: appActive) {
             NetworkRoamWatcher.logLine("Nightlight roam: would move to \(which) (\(kind), \(why)), held back because the app is not active")
             return
         }

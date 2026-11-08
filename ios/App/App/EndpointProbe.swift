@@ -237,12 +237,27 @@ enum EndpointProbe {
     /// plan review 2026-11-09), so the two can never judge an address differently. Here, not in MainViewController, so the
     /// watcher's queue calls plain Foundation code, never a method of a UIKit class.
     static func addressAnswers(_ url: String, tailscale: String, wantedId: String?, timeout: TimeInterval) -> Bool {
+        return addressAnswers(url, tailscale: tailscale, wantedId: wantedId,
+                              readHealth: { (address: String) -> ServerHealth? in
+                                  return EndpointProbe.fetchHealth(address, timeout: timeout)
+                              },
+                              reachable: { (address: String) -> Bool in
+                                  return EndpointProbe.isReachable(address, timeout: timeout)
+                              })
+    }
+
+    /// The same decision with the two network reads passed in, so ios/Tests drives it with replies built from fixture bodies
+    /// and no network (the split acceptReply already makes: the decision apart from the request; Codex code review of PR #38).
+    /// `readHealth` is fetchHealth for the Tailscale address, `reachable` is isReachable for any other address.
+    static func addressAnswers(_ url: String, tailscale: String, wantedId: String?, readHealth: (String) -> ServerHealth?, reachable: (String) -> Bool) -> Bool {
         if url == tailscale {
+            // No id saved: it never counts, and nothing is asked (fail closed; a missing id must not compare equal to a
+            // missing reply).
             guard let wanted = wantedId else { return false }
-            let live: String? = fetchHealth(url, timeout: timeout)?.id
+            let live: String? = readHealth(url)?.id
             return live == wanted
         }
-        return isReachable(url, timeout: timeout)
+        return reachable(url)
     }
 }
 

@@ -144,48 +144,63 @@ func runEndpointChooserTests() {
     }
 
     // ---- The real chooser, with fake probes ----
+    //
+    // How the time windows are set (Codex code review of PR #38: the first ones left a loaded CI runner a few hundred ms). A
+    // sleep or a timed wait never ends EARLY, so the wrong chooser a window is there to catch can only decide at its fixture
+    // time or later, never sooner. Each upper bound therefore sits a little under the EARLIEST time that wrong chooser could
+    // decide (a grace's end, the deadline, a slow answer), and those times are set a second or more after the correct decision,
+    // so the correct path has that much room on a slow runner. Lower bounds need no room: the chooser cannot decide before its
+    // own grace or deadline, which start after the test's clock. Where an outcome itself depends on a race (an answer inside the
+    // grace, say), the answer and the limit are far apart for the same reason.
 
     test("a tailscale answer that comes first wins at once, without waiting for the saved address") {
+        // Correct: about 20 ms. A chooser that held Tailscale back until the grace's end (2 000) or the saved answer (2 500)
+        // cannot decide before 2 000, so the top of the window (1 800) catches it and leaves the correct path 1.7 s.
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser([local: FakeAnswer(delayMs: 900, ok: true), tailscale: FakeAnswer(delayMs: 20, ok: true)]).choose(local: local, tailscale: tailscale)
+        let chosen = chooser(deadlineMs: 4_000, graceMs: 2_000, [local: FakeAnswer(delayMs: 2_500, ok: true), tailscale: FakeAnswer(delayMs: 20, ok: true)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, tailscale, "the old saved-first rule opens the saved address here")
-        check(ms < 600, "waited " + String(ms) + " ms for the saved address")
+        check(ms < 1_800, "waited " + String(ms) + " ms for the saved address or the grace")
     }
 
     test("a saved answer that comes first still waits for a tailscale answer inside the grace, and tailscale wins") {
+        // The tailscale answer (300) is 2.2 s inside the grace (2 500), so a slow runner cannot push it out of the grace.
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser(graceMs: 800, [local: FakeAnswer(delayMs: 20, ok: true), tailscale: FakeAnswer(delayMs: 300, ok: true)]).choose(local: local, tailscale: tailscale)
+        let chosen = chooser(deadlineMs: 4_000, graceMs: 2_500, [local: FakeAnswer(delayMs: 20, ok: true), tailscale: FakeAnswer(delayMs: 300, ok: true)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, tailscale, "a saved answer was taken without the grace")
         check(ms >= 250, "decided after " + String(ms) + " ms, before the tailscale answer")
     }
 
     test("a tailscale answer slower than the grace loses to the saved address, which is taken when the grace ends") {
+        // Correct: at the grace's end (500). A chooser that ignored the grace's end decides at the tailscale answer (2 000, and
+        // then picks Tailscale) or the deadline (4 000) at the earliest, so the top of the window (1 800) catches it and leaves
+        // the correct path 1.3 s.
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser(deadlineMs: 2_500, graceMs: 500, [local: FakeAnswer(delayMs: 20, ok: true), tailscale: FakeAnswer(delayMs: 1_600, ok: true)]).choose(local: local, tailscale: tailscale)
+        let chosen = chooser(deadlineMs: 4_000, graceMs: 500, [local: FakeAnswer(delayMs: 20, ok: true), tailscale: FakeAnswer(delayMs: 2_000, ok: true)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, local, "the grace did not end the wait")
-        // Not before the grace's end; nowhere near the deadline (2 500) or the tailscale answer (1 600).
-        check(ms >= 450 && ms <= 1_300, "decided after " + String(ms) + " ms, not at the end of the grace")
+        check(ms >= 450 && ms < 1_800, "decided after " + String(ms) + " ms, not at the end of the grace")
     }
 
     test("the grace is counted from the start of the choice, not from the saved answer") {
-        // Saved at 500, grace 600: the saved address is taken at about 600 ms. Counted from the saved answer it would be 1 100.
+        // Saved at 1 500, grace 1 600: correct is about 1 600 ms. Counted from the saved answer the grace would end at 3 100 at
+        // the earliest, so the top of the window (3 000) catches that and leaves the correct path 1.4 s. The deadline (5 000)
+        // and the tailscale answer (6 000) come after both.
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser(deadlineMs: 2_000, graceMs: 600, [local: FakeAnswer(delayMs: 500, ok: true), tailscale: FakeAnswer(delayMs: 2_500, ok: true)]).choose(local: local, tailscale: tailscale)
+        let chosen = chooser(deadlineMs: 5_000, graceMs: 1_600, [local: FakeAnswer(delayMs: 1_500, ok: true), tailscale: FakeAnswer(delayMs: 6_000, ok: true)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, local)
-        check(ms >= 550 && ms <= 1_000, "decided after " + String(ms) + " ms")
+        check(ms >= 1_550 && ms < 3_000, "decided after " + String(ms) + " ms")
     }
 
     test("a saved answer with tailscale refused is taken at once: the failure ends the grace") {
+        // Correct: about 150 ms. A chooser that ignored the failure waits for the grace (2 500).
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser(deadlineMs: 3_000, graceMs: 1_500, [local: FakeAnswer(delayMs: 20, ok: true), tailscale: FakeAnswer(delayMs: 150, ok: false)]).choose(local: local, tailscale: tailscale)
+        let chosen = chooser(deadlineMs: 4_000, graceMs: 2_500, [local: FakeAnswer(delayMs: 20, ok: true), tailscale: FakeAnswer(delayMs: 150, ok: false)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, local)
-        // About 150 ms; a chooser that ignored the failure would wait for the grace (1 500).
-        check(ms < 900, "took " + String(ms) + " ms: the failed tailscale probe did not end the grace")
+        check(ms < 2_000, "took " + String(ms) + " ms: the failed tailscale probe did not end the grace")
     }
 
     test("a saved answer with a tailscale probe that throws is taken at once: the failure ends the grace") {
@@ -196,108 +211,121 @@ func runEndpointChooserTests() {
             }
             Thread.sleep(forTimeInterval: 0.02)
             return true
-        }, deadlineMs: 3_000, tailscaleGraceMs: 1_500)
+        }, deadlineMs: 4_000, tailscaleGraceMs: 2_500)
+        // Correct: about 150 ms. A chooser that ignored the thrown failure waits for the grace (2 500).
         let start = DispatchTime.now().uptimeNanoseconds
         let chosen = throwing.choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, local)
-        check(ms < 900, "took " + String(ms) + " ms: the thrown probe did not end the grace")
+        check(ms < 2_000, "took " + String(ms) + " ms: the thrown probe did not end the grace")
     }
 
     test("tailscale failing first and the saved address answering later opens the saved address") {
+        // Correct: at the saved answer, about 500 ms. A chooser that sat out the deadline first decides at 4 000 at the earliest.
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser([local: FakeAnswer(delayMs: 500, ok: true), tailscale: FakeAnswer(delayMs: 20, ok: false)]).choose(local: local, tailscale: tailscale)
+        let chosen = chooser(deadlineMs: 4_000, [local: FakeAnswer(delayMs: 500, ok: true), tailscale: FakeAnswer(delayMs: 20, ok: false)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, local, "gave up on the saved address when tailscale failed")
-        check(ms >= 450 && ms <= 1_500, "decided after " + String(ms) + " ms")
+        check(ms >= 450 && ms < 3_500, "decided after " + String(ms) + " ms")
     }
 
     test("a failed saved address waits for a slow tailscale answer and takes it before the deadline") {
+        // Correct: at the tailscale answer, about 700 ms, 3.3 s before the deadline (4 000), where a chooser that sat out the
+        // deadline first would decide at the earliest.
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser(deadlineMs: 2_000, graceMs: 300, [local: FakeAnswer(delayMs: 20, ok: false), tailscale: FakeAnswer(delayMs: 700, ok: true)]).choose(local: local, tailscale: tailscale)
+        let chosen = chooser(deadlineMs: 4_000, graceMs: 300, [local: FakeAnswer(delayMs: 20, ok: false), tailscale: FakeAnswer(delayMs: 700, ok: true)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, tailscale, "gave up when the saved address failed")
-        check(ms >= 650 && ms <= 1_800, "decided after " + String(ms) + " ms")
+        check(ms >= 650 && ms < 3_500, "decided after " + String(ms) + " ms")
     }
 
     test("a silent saved address does not hold back a tailscale answer") {
+        // Correct: about 200 ms. The old saved-first rule waited for the saved address until the deadline (4 000).
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser(deadlineMs: 1_500, [local: FakeAnswer(delayMs: 5_000, ok: true), tailscale: FakeAnswer(delayMs: 200, ok: true)]).choose(local: local, tailscale: tailscale)
+        let chosen = chooser(deadlineMs: 4_000, [local: FakeAnswer(delayMs: 9_000, ok: true), tailscale: FakeAnswer(delayMs: 200, ok: true)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, tailscale)
-        // About 200 ms; the old saved-first rule waited for the saved address until the deadline (1 500).
-        check(ms < 1_000, "took " + String(ms) + " ms")
+        check(ms < 3_000, "took " + String(ms) + " ms")
     }
 
     test("both failing gives nothing, at once") {
+        // Correct: about 20 ms. A chooser that kept waiting with nothing left to answer decides at the deadline (4 000).
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser([local: FakeAnswer(delayMs: 20, ok: false), tailscale: FakeAnswer(delayMs: 20, ok: false)]).choose(local: local, tailscale: tailscale)
+        let chosen = chooser(deadlineMs: 4_000, [local: FakeAnswer(delayMs: 20, ok: false), tailscale: FakeAnswer(delayMs: 20, ok: false)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, nil)
-        check(ms < 900, "took " + String(ms) + " ms: waited for the deadline (2 000) with nothing left to answer")
+        check(ms < 3_000, "took " + String(ms) + " ms: waited for the deadline with nothing left to answer")
     }
 
     test("both silent gives nothing at the deadline, and never much later") {
+        // Correct: at the deadline (600). A chooser that let the deadline pass waits for the answers (5 000) at the earliest.
         let start = DispatchTime.now().uptimeNanoseconds
         let chosen = chooser(deadlineMs: 600, [local: FakeAnswer(delayMs: 5_000, ok: true), tailscale: FakeAnswer(delayMs: 5_000, ok: true)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, nil)
-        check(ms >= 550 && ms <= 1_500, "decided after " + String(ms) + " ms, not at the deadline")
+        check(ms >= 550 && ms < 4_000, "decided after " + String(ms) + " ms, not at the deadline")
     }
 
     test("a tailscale answer after the deadline is not used") {
+        // Correct: at the deadline (400), with nothing. A chooser that waited for the late answer decides at 3 000 at the earliest.
         let start = DispatchTime.now().uptimeNanoseconds
-        let afterFailure = chooser(deadlineMs: 400, [local: FakeAnswer(delayMs: 20, ok: false), tailscale: FakeAnswer(delayMs: 900, ok: true)]).choose(local: local, tailscale: tailscale)
+        let afterFailure = chooser(deadlineMs: 400, [local: FakeAnswer(delayMs: 20, ok: false), tailscale: FakeAnswer(delayMs: 3_000, ok: true)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(afterFailure, nil, "after a failed saved address")
-        check(ms < 850, "took " + String(ms) + " ms: waited for the late tailscale answer")
-        let afterSilence = chooser(deadlineMs: 400, [local: FakeAnswer(delayMs: 5_000, ok: true), tailscale: FakeAnswer(delayMs: 900, ok: true)]).choose(local: local, tailscale: tailscale)
+        check(ms < 2_500, "took " + String(ms) + " ms: waited for the late tailscale answer")
+        let afterSilence = chooser(deadlineMs: 400, [local: FakeAnswer(delayMs: 5_000, ok: true), tailscale: FakeAnswer(delayMs: 3_000, ok: true)]).choose(local: local, tailscale: tailscale)
         checkEqual(afterSilence, nil, "after a silent saved address")
     }
 
     test("a saved answer is taken at the deadline even when the grace is longer than the deadline") {
+        // Correct: the saved address at the deadline (1 500; the saved answer at 20 has 1.48 s to come in before it). A chooser
+        // that waited for the grace (5 000) instead decides at the tailscale answer (3 000) at the earliest.
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser(deadlineMs: 500, graceMs: 5_000, [local: FakeAnswer(delayMs: 20, ok: true), tailscale: FakeAnswer(delayMs: 1_500, ok: true)]).choose(local: local, tailscale: tailscale)
+        let chosen = chooser(deadlineMs: 1_500, graceMs: 5_000, [local: FakeAnswer(delayMs: 20, ok: true), tailscale: FakeAnswer(delayMs: 3_000, ok: true)]).choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, local, "a grace past the deadline lost the saved answer")
-        check(ms >= 450 && ms <= 1_200, "decided after " + String(ms) + " ms")
+        check(ms >= 1_450 && ms < 2_800, "decided after " + String(ms) + " ms")
     }
 
     test("a probe that throws counts as failed: two throwing probes give nothing at once") {
         let throwing = EndpointChooser(probe: { _ in
             throw ChooserTestError.boom
-        }, deadlineMs: 2_000, tailscaleGraceMs: 600)
+        }, deadlineMs: 4_000, tailscaleGraceMs: 600)
+        // Correct: at once. A chooser that took a throw for a probe still running decides at the deadline (4 000).
         let start = DispatchTime.now().uptimeNanoseconds
         let chosen = throwing.choose(local: local, tailscale: tailscale)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, nil, "a thrown probe was taken as an answer")
-        check(ms < 900, "took " + String(ms) + " ms: a thrown probe was treated as still running")
+        check(ms < 3_000, "took " + String(ms) + " ms: a thrown probe was treated as still running")
     }
 
     // ---- No tailscale address saved: exactly the chooser as it was with none ----
 
     test("with no tailscale address a saved answer is taken at once, with no grace") {
+        // Correct: about 20 ms. A chooser that applied the grace with no tailscale address decides at 3 000 at the earliest.
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser(graceMs: 1_500, [local: FakeAnswer(delayMs: 20, ok: true)]).choose(local: local, tailscale: nil)
+        let chosen = chooser(deadlineMs: 4_000, graceMs: 3_000, [local: FakeAnswer(delayMs: 20, ok: true)]).choose(local: local, tailscale: nil)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, local)
-        check(ms < 900, "took " + String(ms) + " ms: waited for a grace with no tailscale address")
+        check(ms < 2_500, "took " + String(ms) + " ms: waited for a grace with no tailscale address")
     }
 
     test("with no tailscale address a failed saved address gives nothing at once") {
+        // Correct: about 20 ms. A chooser that kept waiting decides at the deadline (4 000).
         let start = DispatchTime.now().uptimeNanoseconds
-        let chosen = chooser([local: FakeAnswer(delayMs: 20, ok: false)]).choose(local: local, tailscale: nil)
+        let chosen = chooser(deadlineMs: 4_000, [local: FakeAnswer(delayMs: 20, ok: false)]).choose(local: local, tailscale: nil)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, nil)
-        check(ms < 900, "took " + String(ms) + " ms")
+        check(ms < 3_000, "took " + String(ms) + " ms")
     }
 
     test("with no tailscale address a silent saved address gives nothing at the deadline") {
+        // Correct: at the deadline (600). A chooser that let the deadline pass waits for the answer (5 000) at the earliest.
         let start = DispatchTime.now().uptimeNanoseconds
         let chosen = chooser(deadlineMs: 600, [local: FakeAnswer(delayMs: 5_000, ok: true)]).choose(local: local, tailscale: nil)
         let ms = elapsedMs(since: start)
         checkEqual(chosen, nil)
-        check(ms >= 550 && ms <= 1_500, "decided after " + String(ms) + " ms, not at the deadline")
+        check(ms >= 550 && ms < 4_000, "decided after " + String(ms) + " ms, not at the deadline")
     }
 
     test("tailscale is probed only when there is one, and each address once") {
@@ -331,8 +359,10 @@ func runEndpointChooserTests() {
         Thread.sleep(forTimeInterval: 0.6)
     }
 
-    test("the default grace is EndpointRules' 1 second: a tailscale answer at 0.7 s still beats a saved one at once") {
-        let byDefault = EndpointChooser(probe: sleepingProbe([local: FakeAnswer(delayMs: 10, ok: true), tailscale: FakeAnswer(delayMs: 700, ok: true)]))
+    test("the default grace is EndpointRules' 1 second: a tailscale answer at 0.35 s still beats a saved one at once") {
+        // The tailscale answer (350) has 650 ms of room inside the default grace (1 000) on a slow runner, and comes after the
+        // end of a 250 ms grace (the no-VPN value, the likeliest wrong default), where the saved address would already be taken.
+        let byDefault = EndpointChooser(probe: sleepingProbe([local: FakeAnswer(delayMs: 10, ok: true), tailscale: FakeAnswer(delayMs: 350, ok: true)]))
         checkEqual(byDefault.choose(local: local, tailscale: tailscale), tailscale)
     }
 
