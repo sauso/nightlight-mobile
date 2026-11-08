@@ -223,4 +223,12 @@ func runEndpointProbeTests() {
         check(EndpointProbe.sameEndpoint(URL(string: "http://192.168.1.50:4000/api/health"), home), "a home address")
         check(!EndpointProbe.sameEndpoint(URL(string: "http://192.168.1.50/api/health"), home), "the port dropped is another port")
     }
+
+    test("a tailscale address with no saved id never counts as answering") {
+        // Tailscale first opens this address before the saved one, so the id check must fail CLOSED: with no id saved the answer
+        // is false before any request is made. (A version that compared the live id with the missing one would read nil == nil
+        // as a match here, since this name never answers.)
+        let ts = "https://nightlight.example.ts.net"
+        check(!EndpointProbe.addressAnswers(ts, tailscale: ts, wantedId: nil, timeout: 2.0), "a tailscale address with no saved id counted as answering")
+    }
 }

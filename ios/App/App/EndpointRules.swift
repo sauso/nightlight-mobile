@@ -1,7 +1,8 @@
 import Foundation
 
-// EndpointRules.swift: the rules for a server's second address, the one the phone uses away from home (owner, 2026-11-06:
-// the phone tries the local address first and falls back to the server's Tailscale address, which the server tells it about).
+// EndpointRules.swift: the rules for a server's second address, its Tailscale address, which the server tells the phone about
+// (owner, 2026-11-06). Since the owner decision of 2026-11-09 ("Tailscale first") the app opens that secure address first when
+// it answers, and the address it was set up with when it does not (EndpointChooser says why).
 //
 // The iOS twin of android/app/src/main/java/com/sauso/nightlight/EndpointRules.kt, ported rule for rule with the same names
 // and the same refusal sentences, plus the two pieces of DiscoveryRules.kt these rules need (parseIpv4, isPrivateIpv4).
@@ -88,29 +89,33 @@ enum EndpointRules {
 
     /// True when `url`'s host can only be reached from a local network: a private IPv4 address (10/8, 172.16/12, 192.168/16)
     /// or a `.local` name. A public name or address (a domain with HTTPS, say) is NOT local-only: it answers on mobile data
-    /// too. Anything that does not parse is not local-only (so the ordinary wait applies).
+    /// too. Anything that does not parse is not local-only.
+    /// No caller since Tailscale first removed the launch's short off-Wi-Fi wait (localWaitMs, 2026-11-09); kept, with its IPv4
+    /// rules and their tests, for the planned iPhone port of Find server (Codex plan review of Tailscale first, 2026-11-09).
     static func isLocalOnlyAddress(_ url: String?) -> Bool {
         guard let value = url else { return false }
         guard let host = URLComponents(string: value)?.host, !host.isEmpty else { return false }
         return isPrivateIpv4(host) || host.lowercased().hasSuffix(".local")
     }
 
-    // How long a launch waits for a saved address that says nothing, when the phone cannot be on its network (below). A
-    // judgement carried over from Android (#26), not a measurement: a reachable home server answers in milliseconds and even a
-    // slow Wi-Fi in well under a second, so this is generous for a phone that merely just joined Wi-Fi, and short enough that
-    // the Tailscale fallback opens in about a second instead of three.
-    static let offNetworkWaitMs: Int = 1_000
+    // ---- The Tailscale grace (Tailscale first, owner decision 2026-11-09) ----
+    //
+    // How long a launch that already has an answer from the saved address still waits for the Tailscale address
+    // (EndpointChooser's grace, counted from the start of the choice). Both are JUDGEMENTS, not measurements: Tailscale on and
+    // healthy answers in well under a second, so one second lets it win when it is there; and when the phone positively has no
+    // VPN (so no Tailscale answer is expected), the saved address should not be held back by more than a quarter of a second.
+    // A Tailscale address that answers later than the grace loses that launch to the saved address, and the next foreground
+    // start moves the page over (RoamRules.target, the upgrade). Named differently from Android's TAILSCALE_GRACE_MS and
+    // TAILSCALE_GRACE_NO_VPN_MS only so the constant and the function below do not share a Swift name.
+    static let defaultTailscaleGraceMs: Int = 1_000
+    static let noVpnTailscaleGraceMs: Int = 250
 
-    /// How long the launch waits for the saved address before it uses the Tailscale one. The short wait applies only when ALL
-    /// of: a Tailscale address is saved (otherwise there is nothing to switch to, so the saved address keeps its whole chance),
-    /// the phone is not on Wi-Fi or Ethernet, and the saved address is one only a local network can answer. Every other case
-    /// waits the full `fullMs`. Away from home on mobile data, a home address cannot answer: waiting three seconds for it was
-    /// the pause the owner saw on the first Android phone test (2026-11-06).
-    static func localWaitMs(saved: String?, tailscale: String?, onLocalNetwork: Bool, fullMs: Int) -> Int {
-        if tailscale != nil && !onLocalNetwork && isLocalOnlyAddress(saved) {
-            return min(offNetworkWaitMs, fullMs)
-        }
-        return fullMs
+    /// The grace for this launch. The VPN reading (MainViewController's VpnSnapshot) is a HINT that can only SHORTEN the wait:
+    /// it is false only when the phone positively reports no VPN, and a reading that fails counts as a VPN (fail open = the
+    /// full grace). So a wrong hint can at worst let a slower but valid Tailscale answer lose to the saved address (the old
+    /// saved-first behaviour), never open an address that was not verified (the id check is the probe's, unchanged).
+    static func tailscaleGraceMs(vpnPresent: Bool) -> Int {
+        return vpnPresent ? defaultTailscaleGraceMs : noVpnTailscaleGraceMs
     }
 
     /// Whether `save` may take a REMEMBERED server whose own address did not answer, because the Tailscale address saved for
@@ -296,8 +301,10 @@ enum EndpointRules {
     /// The check that needs the network's answers: the server the page is on (`reference`) and the offered address
     /// (`candidate`) both reported an id, and it is the same one. This is an identity CLAIM, not proof: /api/health is public,
     /// so a page that is itself hostile can name an address that repeats the id. That page is the server the person chose to
-    /// use, so it could already show anything; what it cannot do is change the saved address, and the address is opened only
-    /// when the saved one is not answering.
+    /// use, so it could already show anything; what it cannot do is change the saved address. Since Tailscale first (owner
+    /// decision 2026-11-09) the address it names is opened BEFORE the saved one whenever it answers with that id, where it used
+    /// to be opened only when the saved one was not answering: still an address of the one accepted shape (`https://<name>.ts.net`),
+    /// offered by the server the person chose, and the saved sign-in still goes only to it (SessionRules), as before.
     static func checkIdentity(reference: ServerHealth?, candidate: ServerHealth?) -> AddCheck {
         guard let ref = reference else { return .unreadableServer }
         guard let cand = candidate else { return .unreachableAddress }

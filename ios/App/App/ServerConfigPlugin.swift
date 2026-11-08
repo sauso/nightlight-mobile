@@ -659,7 +659,8 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
 
     // None answered. A REMEMBERED server that has a Tailscale address can still be reached through it: this is how "Change
     // server" gets back in from cellular, where the home address cannot answer (owner, 2026-11-06). The saved address stays the
-    // one the person picked; the launch choice then opens the Tailscale address because the saved one is not answering.
+    // one the person picked; the launch choice then opens the Tailscale address (which it tries first anyway since Tailscale
+    // first, owner decision 2026-11-09; here the saved one is not answering either).
     // ONLY from the bundled setup page, where Change server lands: any page can call save, and this path lets a call switch the
     // active server to a remembered one it could not reach before, so a page on the current server must not have it (Codex
     // review, Android). Such a page could already switch to a remembered server that answers; this does not widen that.

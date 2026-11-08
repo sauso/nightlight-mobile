@@ -3,7 +3,8 @@ import Foundation
 // EndpointRulesTests.swift: the iOS twin of android/app/src/test/java/com/sauso/nightlight/EndpointRulesTest.kt, case for
 // case: what may be saved as a server's Tailscale address (it arrives from the server the app has open, so the rule is strict:
 // exactly `https://<name>.ts.net`; each refusal is a near miss of the accepted shape), which page may save it, the Change-server
-// reconnect, the names, and the off-Wi-Fi wait. Added for iOS: the refusal sentences word for word (the web app's About card
+// reconnect, the names, and the Tailscale grace (Tailscale first, 2026-11-09; it replaced the off-Wi-Fi wait and its tests).
+// Added for iOS: the refusal sentences word for word (the web app's About card
 // matches on them), the trailing-line-break case NSRegularExpression would otherwise let through, the address trimming
 // addEndpoint does, and the IPv4 rules isLocalOnlyAddress needs (from DiscoveryRulesTest.kt).
 
@@ -251,21 +252,18 @@ func runEndpointRulesTests() {
         }
     }
 
-    test("the short wait applies only when a tailscale address is saved, the phone is off the local network and the address is local-only") {
-        let full = 3_000
-        let saved = "http://192.168.1.50:4000"
-        checkEqual(EndpointRules.localWaitMs(saved: saved, tailscale: ts, onLocalNetwork: false, fullMs: full), EndpointRules.offNetworkWaitMs)
-        checkEqual(EndpointRules.offNetworkWaitMs, 1_000, "the carried-over judgement")
-        checkEqual(EndpointRules.localWaitMs(saved: saved, tailscale: ts, onLocalNetwork: true, fullMs: full), full, "on Wi-Fi: the whole wait")
-        checkEqual(EndpointRules.localWaitMs(saved: saved, tailscale: nil, onLocalNetwork: false, fullMs: full), full,
-                   "no Tailscale address: nothing to switch to, so the saved address keeps its whole chance")
-        checkEqual(EndpointRules.localWaitMs(saved: "https://nightlight.example.com", tailscale: ts, onLocalNetwork: false, fullMs: full), full,
-                   "a public saved address answers on mobile data too")
-        checkEqual(EndpointRules.localWaitMs(saved: "nonsense", tailscale: ts, onLocalNetwork: false, fullMs: full), full, "an unparseable saved address")
+    // ---- The Tailscale grace (Tailscale first, owner decision 2026-11-09) ----
+
+    test("the tailscale grace is 1 second, or a quarter second when the phone positively has no VPN") {
+        checkEqual(EndpointRules.tailscaleGraceMs(vpnPresent: true), 1_000, "a VPN, or a reading that failed (fail open)")
+        checkEqual(EndpointRules.tailscaleGraceMs(vpnPresent: false), 250, "positively no VPN")
+        checkEqual(EndpointRules.defaultTailscaleGraceMs, 1_000, "the judgement for a phone with a VPN")
+        checkEqual(EndpointRules.noVpnTailscaleGraceMs, 250, "the judgement for a phone with none")
     }
 
-    test("the short wait is never longer than the full wait") {
-        checkEqual(EndpointRules.localWaitMs(saved: "http://192.168.1.50:4000", tailscale: ts, onLocalNetwork: false, fullMs: 500), 500)
+    test("the VPN hint can only shorten the grace, and the grace ends before the launch's deadline") {
+        check(EndpointRules.tailscaleGraceMs(vpnPresent: false) < EndpointRules.tailscaleGraceMs(vpnPresent: true), "no VPN must not wait longer than a VPN")
+        check(EndpointRules.defaultTailscaleGraceMs < EndpointChooser.defaultDeadlineMs, "a grace as long as the deadline would hold every launch with Tailscale off for the whole deadline")
     }
 
     // ---- Change server from the Tailscale address (owner, 2026-11-06) ----

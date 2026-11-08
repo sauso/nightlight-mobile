@@ -13,9 +13,14 @@ import Foundation
 // path that stops being satisfied, a change of Wi-Fi network). Added for iOS: the bundled `capacitor://` pages, a change of
 // gateway alone, a change of status alone, the sets ignoring order, and a new filter (a new monitor) starting with its own echo.
 //
+// The `target` cases were REWRITTEN for Tailscale first (owner decision 2026-11-09; the table is the build brief's, the same on
+// Android): a move is an ESCAPE off a dead page (either direction, either trigger, even in Picture-in-Picture) or the UPGRADE of a
+// working saved page to Tailscale (a foreground start only, not in Picture-in-Picture); a working Tailscale page never moves.
+//
 // Not reachable here (glue, iPhone checks only): the path monitor and how an iPhone fills in a path's interfaces and gateways,
-// the generation that makes a late check dead on arrival, the main-thread reads of the page URL and Picture-in-Picture, the
-// settle and retry timing on the watcher's queue, the lifecycle calls, and the rebuild itself (NetworkRoamWatcher.swift).
+// the generation that makes a late check dead on arrival, the second look's probe itself, the main-thread reads of the page URL
+// and Picture-in-Picture, the final main-thread gates (an upgrade waits for an active app, an escape does not), the settle and
+// retry timing on the watcher's queue, the lifecycle calls, and the rebuild itself (NetworkRoamWatcher.swift).
 
 private enum RoamFixture {
     static let saved = "http://192.168.1.50:4000"
@@ -81,69 +86,124 @@ func runRoamRulesTests() {
         check(RoamRules.currentAddress(webViewUrl: nil, saved: saved, tailscale: tailscale) == nil, "nil")
     }
 
-    // ---- target: whether to switch, and in which direction ----
+    // ---- target: whether to move, where, and whether it is an ESCAPE or an UPGRADE (Tailscale first, 2026-11-09) ----
+    // `currentAnswers` is the watcher's second look at the page's own address: false = dead, true = works, nil = not taken.
 
-    test("roam: fail-over happens on a network change") {
-        checkEqual(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: saved, chosen: tailscale, inPip: false), tailscale)
+    func escapeTo(_ address: String) -> RoamMove? {
+        return RoamMove(address: address, escape: true)
     }
 
-    test("roam: fail-over happens at a foreground start") {
-        checkEqual(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: saved, chosen: tailscale, inPip: false), tailscale)
+    func upgradeTo(_ address: String) -> RoamMove? {
+        return RoamMove(address: address, escape: false)
     }
 
-    test("roam: fail-over happens in picture-in-picture too") {
-        // The page on screen is already dead: the PiP restriction is for fail-back only.
-        checkEqual(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: saved, chosen: tailscale, inPip: true), tailscale)
+    let triggers: [RoamTrigger] = [change, start]
+    let pipStates: [Bool] = [false, true]
+    let lookResults: [Bool?] = [false, true, nil]
+    let other = "https://other.example"
+
+    test("roam: a dead saved page escapes to tailscale, on either trigger and in picture-in-picture") {
+        // The page has already stopped working, so a reload loses nothing: no trigger or Picture-in-Picture rule holds it back.
+        for trigger in triggers {
+            for pip in pipStates {
+                checkEqual(RoamRules.target(trigger: trigger, saved: saved, tailscale: tailscale, current: saved, chosen: tailscale, inPip: pip, currentAnswers: false),
+                           escapeTo(tailscale), "\(trigger), in PiP \(pip)")
+            }
+        }
     }
 
-    test("roam: fail-back happens at a foreground start") {
-        checkEqual(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: tailscale, chosen: saved, inPip: false), saved)
+    test("roam: a dead tailscale page escapes to the saved address, on either trigger and in picture-in-picture") {
+        // The direction the old rules held back until a foreground start: under Tailscale first that would trap a person on a
+        // dead Tailscale page (Codex plan review of Tailscale first, 2026-11-09).
+        for trigger in triggers {
+            for pip in pipStates {
+                checkEqual(RoamRules.target(trigger: trigger, saved: saved, tailscale: tailscale, current: tailscale, chosen: saved, inPip: pip, currentAnswers: false),
+                           escapeTo(saved), "\(trigger), in PiP \(pip)")
+            }
+        }
     }
 
-    test("roam: fail-back does not happen on a network change") {
-        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: tailscale, chosen: saved, inPip: false) == nil, "moved back home on a network change")
+    test("roam: a working saved page is upgraded to tailscale at a foreground start") {
+        checkEqual(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: saved, chosen: tailscale, inPip: false, currentAnswers: true),
+                   upgradeTo(tailscale))
     }
 
-    test("roam: fail-back does not happen in picture-in-picture") {
-        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: tailscale, chosen: saved, inPip: true) == nil, "moved back home under a floating video")
+    test("roam: a working saved page is not upgraded on a network change") {
+        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: saved, chosen: tailscale, inPip: false, currentAnswers: true) == nil,
+              "a working page was reloaded on a network change")
+    }
+
+    test("roam: a working saved page is not upgraded in picture-in-picture") {
+        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: saved, chosen: tailscale, inPip: true, currentAnswers: true) == nil,
+              "a working page was reloaded under a floating video")
+    }
+
+    test("roam: a page whose second look could not be taken counts as working, never as dead") {
+        // Never reload on a doubt: the same moves as a working page, and an upgrade, not an escape.
+        checkEqual(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: saved, chosen: tailscale, inPip: false, currentAnswers: nil),
+                   upgradeTo(tailscale), "the upgrade at a start")
+        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: saved, chosen: tailscale, inPip: false, currentAnswers: nil) == nil,
+              "a saved page was moved on a network change")
+        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: saved, chosen: tailscale, inPip: true, currentAnswers: nil) == nil,
+              "a saved page was moved in picture-in-picture")
+        for trigger in triggers {
+            check(RoamRules.target(trigger: trigger, saved: saved, tailscale: tailscale, current: tailscale, chosen: saved, inPip: false, currentAnswers: nil) == nil,
+                  "a tailscale page was moved to the saved address: \(trigger)")
+        }
+    }
+
+    test("roam: a working tailscale page is never moved to the saved address") {
+        // The old fail-back. Under Tailscale first the secure address is the one preferred, at a start too.
+        for trigger in triggers {
+            check(RoamRules.target(trigger: trigger, saved: saved, tailscale: tailscale, current: tailscale, chosen: saved, inPip: false, currentAnswers: true) == nil,
+                  "moved off a working tailscale page: \(trigger)")
+        }
     }
 
     test("roam: nothing happens without a tailscale address") {
-        // Implied by the direction rules as well (with no Tailscale address there is nothing to fail over to): this pins the
-        // behaviour, and a mutant that drops only the explicit nil check is equivalent (as on Android).
-        check(RoamRules.target(trigger: change, saved: saved, tailscale: nil, current: saved, chosen: tailscale, inPip: false) == nil, "switched with no Tailscale address")
+        // Implied by the rules after it as well: this pins the behaviour, and a mutant that drops only the explicit nil check is
+        // equivalent (as on Android).
+        check(RoamRules.target(trigger: start, saved: saved, tailscale: nil, current: saved, chosen: tailscale, inPip: false, currentAnswers: false) == nil, "a dead page")
+        check(RoamRules.target(trigger: start, saved: saved, tailscale: nil, current: saved, chosen: tailscale, inPip: false, currentAnswers: true) == nil, "a working page")
     }
 
     test("roam: nothing happens when the page is on neither address") {
-        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: nil, chosen: tailscale, inPip: false) == nil, "fail-over from no page")
-        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: nil, chosen: saved, inPip: false) == nil, "fail-back from no page")
+        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: nil, chosen: tailscale, inPip: false, currentAnswers: false) == nil, "no page, dead")
+        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: nil, chosen: saved, inPip: false, currentAnswers: false) == nil, "no page, dead, to saved")
+        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: nil, chosen: tailscale, inPip: false, currentAnswers: true) == nil, "no page, working")
+    }
+
+    test("roam: an unrelated page address never moves, even when it is dead") {
+        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: other, chosen: tailscale, inPip: false, currentAnswers: false) == nil, "dead, to tailscale")
+        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: other, chosen: saved, inPip: false, currentAnswers: false) == nil, "dead, to saved")
+        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: other, chosen: tailscale, inPip: false, currentAnswers: true) == nil, "working, at a start")
     }
 
     test("roam: nothing happens when nothing answered") {
-        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: saved, chosen: nil, inPip: false) == nil, "on the saved address")
-        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: tailscale, chosen: nil, inPip: false) == nil, "on the Tailscale address")
+        for answers in lookResults {
+            check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: saved, chosen: nil, inPip: false, currentAnswers: answers) == nil, "on the saved address")
+            check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: tailscale, chosen: nil, inPip: false, currentAnswers: answers) == nil, "on the Tailscale address")
+        }
     }
 
     test("roam: nothing happens when the choice is the address already on screen") {
-        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: saved, chosen: saved, inPip: false) == nil, "saved stays saved")
-        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: tailscale, chosen: tailscale, inPip: false) == nil, "Tailscale stays Tailscale")
+        // Even with the look saying dead (it is not taken for the same address; this pins the rule, not the watcher).
+        for answers in lookResults {
+            check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: saved, chosen: saved, inPip: false, currentAnswers: answers) == nil, "saved stays saved")
+            check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: tailscale, chosen: tailscale, inPip: false, currentAnswers: answers) == nil, "Tailscale stays Tailscale")
+        }
     }
 
     test("roam: a saved address that is its own tailscale address never switches to itself") {
-        // The one case where only the same-address check stops a "fail-over" (saved == tailscale == current == chosen).
-        check(RoamRules.target(trigger: change, saved: tailscale, tailscale: tailscale, current: tailscale, chosen: tailscale, inPip: false) == nil, "switched to itself")
+        // The one case where only the same-address check stops a move (saved == tailscale == current == chosen).
+        check(RoamRules.target(trigger: start, saved: tailscale, tailscale: tailscale, current: tailscale, chosen: tailscale, inPip: false, currentAnswers: false) == nil, "escaped to itself")
+        check(RoamRules.target(trigger: start, saved: tailscale, tailscale: tailscale, current: tailscale, chosen: tailscale, inPip: false, currentAnswers: true) == nil, "upgraded to itself")
     }
 
-    test("roam: an unrelated page address never switches") {
-        let other = "https://other.example"
-        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: other, chosen: tailscale, inPip: false) == nil, "fail-over from another page")
-        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: other, chosen: saved, inPip: false) == nil, "fail-back from another page")
-    }
-
-    test("roam: an unrelated chosen address is never switched to") {
-        let other = "https://other.example"
-        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: saved, chosen: other, inPip: false) == nil, "from the saved address")
-        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: tailscale, chosen: other, inPip: false) == nil, "from the Tailscale address")
+    test("roam: an unrelated chosen address is never moved to, even off a dead page") {
+        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: saved, chosen: other, inPip: false, currentAnswers: false) == nil, "dead saved page")
+        check(RoamRules.target(trigger: change, saved: saved, tailscale: tailscale, current: tailscale, chosen: other, inPip: false, currentAnswers: false) == nil, "dead Tailscale page")
+        check(RoamRules.target(trigger: start, saved: saved, tailscale: tailscale, current: saved, chosen: other, inPip: false, currentAnswers: true) == nil, "working saved page, at a start")
     }
 
     // ---- RecreateLog: the loop guard ----
