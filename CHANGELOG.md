@@ -10,6 +10,100 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-08
+
+### Added
+- **iOS: a second address for your server, through Tailscale, and saved servers show their name.** The iPhone app now
+  does what the Android app does with your server's Tailscale address. It learns the address by itself after you sign in
+  (a short message says so the first time), and when the app starts it tries both addresses at once: it opens the address
+  you set it up with if that answers within about 3 seconds (about 1 second when the phone is not on Wi-Fi and that address
+  is a home-network one), and the Tailscale address if it does not. You need the Tailscale app on the phone, signed in to
+  the same Tailscale network as the server. **Change server** keeps the Tailscale address, so away from home you can tap
+  your saved server on the setup screen and the app reconnects through it; the **✕** on a saved server forgets it. The
+  saved-servers list shows each server's name, with its address in smaller text underneath. Two things are still Android
+  only: one sign-in for both addresses (on an iPhone the Tailscale address asks you to sign in once of its own), and moving
+  between the addresses when the network changes (on an iPhone, close and reopen the app). If neither address answers,
+  the app shows the "Can't reach your server" screen, as before. With no Tailscale address saved, the app starts exactly
+  as before. Like the Android version, it needs a Nightlight server from the release that goes with it.
+- **Android: the app moves to your server's other address when you change network.** Leave home with the app open and,
+  when Wi-Fi turns to mobile data, the app now switches to your server's Tailscale address by itself within a few
+  seconds, instead of staying on a home address that cannot answer until you restart the app. Coming home, it does not
+  switch back while you are using it (the Tailscale address keeps working on Wi-Fi): it moves back to the home address
+  the next time you open the app or turn the screen back on (a few seconds after it appears, so something typed in those
+  first seconds can be lost), and never while it is in Picture-in-Picture. Each switch
+  reloads the app onto its home screen, so a video you were watching starts again. If the network keeps dropping in and
+  out, the app switches at most 3 times in 5 minutes. It works while the app is on screen: listening with the screen off
+  on a network that has stopped working is not rescued until you next open the app. Needs the Tailscale address
+  described below. iOS does not have this yet: on an iPhone, close and reopen the app after changing network.
+- **Android: saved servers show their name.** On the setup screen, each saved server is now listed by the name your server
+  reports, with its address in smaller text underneath, instead of only the address. A server saved earlier gets its name
+  the next time you open the app signed in; a server that reports no name is shown by its address, as before.
+- **Android: one sign-in for both of your server's addresses.** The home address and the Tailscale address used to ask
+  for a sign-in each. The app now keeps your sign-in, encrypted with a key that never leaves the phone's secure
+  keystore, and hands it to the Tailscale address (only that address) the first time you open it there, so signing
+  in once at home is enough. It is kept for the Tailscale address only if your own server has just offered that same address
+  (so an address another page put in the app never receives it). Signing out, or a sign-in the server refuses, removes it; a wrong password does not. It is
+  left out of Android's cloud backup and of a phone-to-phone transfer (the web app's own stored sign-in is now left out too, see Changed). The home
+  address never receives it (it is usually plain `http`), so signing in on the Tailscale address first still asks once
+  at home. Needs the server release that goes with it. iOS does not have this yet: on an iPhone each address asks you to
+  sign in.
+- **Android: a second address for your server, through Tailscale.** If your Nightlight server has Tailscale and its
+  secure address turned on, the app now learns that address by itself after you sign in (a short message says so the
+  first time) and keeps it beside the address you set the app up with. When the app starts it tries both at once: it
+  opens the address you set it up with if that answers within about 3 seconds, and the Tailscale address if it does
+  not, so at home nothing depends on Tailscale and away from home it opens through Tailscale. You need the Tailscale
+  app on the phone, signed in to the same Tailscale network as the server. The two addresses are different web
+  addresses; see the entry above for signing in once. A session that started on the Tailscale address stays on it while you use
+  the app, and moves back to the home address the next time the app comes to the front where the home address answers
+  (see the first entry above). Turning Tailscale or the secure address off on the server removes the saved address the next
+  time you open the app. **Change server** keeps it, so when you are away from home you can tap your saved server on
+  the setup screen and the app reconnects through the Tailscale address (the saved home address cannot answer on mobile
+  data); the **✕** on a saved server forgets the Tailscale address too. If a different server later answers at your home
+  address, the old Tailscale address is dropped the next time you connect to that home address from the setup screen (not
+  at every launch). Needs a Nightlight server from the release that goes with it; with an older server the app
+  works as before. iOS now has this too (see the iOS entry above), apart from the one sign-in and the switch when the
+  network changes.
+- **Android: Look for my Nightlight.** The first-run screen can now find your Nightlight server on your Wi-Fi,
+  so you usually don't need to type its address. Tap **Look for my Nightlight**: each server that answers is
+  shown with its name, its address and the start of its ID. Nothing is saved or switched until you tap
+  **Connect**, and Connect checks again that the address still belongs to the server you picked. It works
+  when your phone and the server are on the same network. It does not work across separate networks or VLANs
+  unless your router passes these announcements along, on a guest Wi-Fi that keeps devices apart, or for a
+  server on Docker's default bridge network. It only finds servers on private IPv4 addresses (10.x,
+  172.16–31.x, 192.168.x): a network that uses another range, or IPv6 only, needs the typed address. It needs
+  a Nightlight server that announces itself (the first server release after 0.45.0); an older server is
+  simply not found. A found server connects at `http://<its address>` over your home network, without
+  encryption. That is a different web address from any https address you may already use, so you will be
+  asked to sign in again (with your second step, if you use one), and some features, like talking through the
+  microphone, may need the https address. Typing an address and the saved-servers list work as before. iOS
+  does not have this yet.
+
+### Changed
+- **Android: the web app's own stored sign-in is no longer included in Android's backup or phone-to-phone transfer.** The web app keeps
+  a sign-in token for each address it has opened in the app's web storage, and until now that folder was copied into Google's
+  backup and onto a new phone, where the token worked until it expired. It is now left out, as the encrypted copy already was
+  (Android's guidance is to keep credentials out of backups). On a restored or transferred phone you sign in once more, and the
+  web app's own small local settings start fresh; your saved servers are still restored, so there is nothing to retype. Phones
+  that already took a backup keep the older copy until it is replaced. Not tested on a device: the unit test checks the rules
+  files, not Android's restore.
+- **Android: the Tailscale fallback opens in about a second when you are not on Wi-Fi.** If the app was set up with a
+  home-network address (one starting 10., 172.16 to 172.31 or 192.168, or a name ending in .local), a Tailscale
+  address is saved, and the phone is not on Wi-Fi or Ethernet, the app waits about 1 second for the home address
+  instead of 3 before it opens through Tailscale (a home address cannot answer on mobile data). A home address that
+  does answer in that time still wins. Addresses that are reachable from anywhere (a domain name, say), and
+  servers with no Tailscale address saved, keep the full wait.
+- **New look to match the Nightlight web app.** The launcher icon, the splash screen (Android and iOS) and the
+  app's own first-run and "Can't reach your server" screens now use the new logo (a periwinkle crescent and a
+  sleeping baby on navy), the web app's dark colours and its typefaces (Inter and Nunito, bundled with the
+  app, so the two screens look like the app with no network needed). The old gold-on-navy artwork and the placeholder
+  splash screen are gone. Your phone may keep showing the old launcher icon until the app is reinstalled or
+  the launcher refreshes. The pictures are generated from one source image by `scripts/make-branding.py`.
+
+### Fixed
+- Fullscreen camera views now hide the Android status and navigation bars so the on-screen buttons
+  can be pressed. Swipe from an edge to show the bars temporarily. This needs the matching server/web
+  update to call the native plugin; there is no iOS change.
+
 ## [0.8.3] - 2026-10-24
 
 ### Changed

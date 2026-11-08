@@ -2,11 +2,23 @@ name: Build iOS (Simulator)
 
 # Ongoing verification that the iOS app still compiles, on the free public-repo
 # macOS runner. Unsigned Simulator build - no Apple account needed. Runs when the
-# iOS project, web assets, or Capacitor config change, plus on demand. The signed
+# iOS project, web assets, or Capacitor config change: on a push to main, on every
+# pull request into dev or main (so the rules tests and the compiler gate an iOS
+# change BEFORE it merges: nothing on Windows can compile Swift, review of PR #32),
+# plus on demand. The two path lists are the same on purpose. The signed
 # IPA / TestFlight pipeline is a separate, later workflow (needs the Apple account).
 on:
   push:
     branches: [main]
+    paths:
+      - 'ios/**'
+      - 'www/**'
+      - 'capacitor.config.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/build-ios.yml'
+  pull_request:
+    branches: [dev, main]
     paths:
       - 'ios/**'
       - 'www/**'
@@ -22,6 +34,23 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      # The pure rules behind the server's Tailscale address (ios/App/App/EndpointRules.swift, EndpointProbe.swift,
+      # EndpointChooser.swift), compiled ALONE with swiftc together with ios/Tests and run as a plain program: the project
+      # has no Xcode test target. Those three files import Foundation only, so this needs no npm, no Capacitor and no
+      # Simulator, and it runs first so a broken rule fails in seconds. The program prints each test, then each failed
+      # check with its file and line, and exits non-zero on any failure. It uses no network (the probes are fakes).
+      # -swift-version 5: the app's own language mode (SWIFT_VERSION in project.pbxproj). The macOS 13 target is only so the
+      # Unicode and Thread APIs the rules use are available whatever the compiler's default deployment target is.
+      - name: Run the iOS rules tests (swiftc, no Simulator)
+        run: |
+          swiftc -swift-version 5 -target "$(uname -m)-apple-macosx13.0" \
+            ios/App/App/EndpointRules.swift \
+            ios/App/App/EndpointProbe.swift \
+            ios/App/App/EndpointChooser.swift \
+            ios/Tests/*.swift \
+            -o "$RUNNER_TEMP/rules-tests"
+          "$RUNNER_TEMP/rules-tests"
 
       - name: Set up Node
         uses: actions/setup-node@v4

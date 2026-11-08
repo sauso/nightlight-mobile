@@ -1,11 +1,13 @@
 package com.sauso.nightlight
 
 import android.app.PictureInPictureParams
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Rational
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -22,16 +24,51 @@ class MainActivity : BridgeActivity() {
     // page just backgrounds normally instead of floating a settings screen.
     var autoPipEnabled = false
 
+    // Re-chooses the address when the network changes (NetworkRoamWatcher). Made in onCreate, started in onStart, stopped in
+    // onStop: it only runs while the activity is started.
+    private var roamWatcher: NetworkRoamWatcher? = null
+
     companion object {
-        // When the WebView hits a main-frame load error we recreate() the activity to fall back to the
-        // setup page. This timestamp is static so it SURVIVES the recreate(), letting us debounce and
-        // never spin in a recreate loop if a server is reachable enough to retry but keeps failing to load.
-        private var lastErrorRecreateAt = 0L
-        private const val ERROR_RECREATE_DEBOUNCE_MS = 8000L
+        // Every recreate() this app makes for its own reasons: a main-frame load error (below, which falls back to the setup
+        // page) and a move to the server's other address (NetworkRoamWatcher). It lives in the companion so it SURVIVES the
+        // recreate it records, and ONE log serves both so they cannot add up to a recreate loop (Codex review of the roaming
+        // plan): the load-error path keeps its 8 s debounce, now measured from any recreate; a roam needs 20 s since any
+        // recreate and at most 3 roams in 5 minutes (RecreateLog, tested in RoamRulesTest).
+        val recreateLog = RecreateLog()
+
+        // The clock recreateLog is read with, by both callers. Time since boot rather than the wall clock (which the old
+        // debounce used): it never jumps, so a clock set back cannot hold the recreates off, or set forward let them repeat.
+        fun recreateClockMs(): Long = SystemClock.elapsedRealtime()
 
         // The one shape a server request from a link may have (#559): http(s), a host or bracketed IPv6
         // literal, an optional port. Mirrors REQUEST_ORIGIN_SHAPE in the web app's nativeBridge.js.
         private val REQUEST_ORIGIN = Regex("^https?://(?:[A-Za-z0-9._-]+|\\[[0-9A-Fa-f:.]+\\])(?::\\d{1,5})?$")
+
+        /**
+         * Which of the server's addresses to open: [saved] if it answers, else [tailscale] (when one is saved), else null.
+         * The launch gate (onCreate) and the network watcher (NetworkRoamWatcher) both call THIS, so the address the app
+         * moves to when the network changes is exactly the one a fresh launch would open. Blocks for up to
+         * EndpointChooser.DEADLINE_MS: never call it on the main thread except from the launch gate, which has always waited
+         * here (the splash screen is showing).
+         *
+         * Both are probed together under one 3 s deadline (EndpointChooser), so being away from home waits once, not twice.
+         */
+        fun chooseAddress(context: Context, saved: String, tailscale: String?): String? {
+            // The Tailscale address only counts if the server answering there still has the id it was saved for, so an address
+            // saved for one server can never open another (a saved address handed to a different machine, say).
+            val wantedId = ServerConfigPlugin.getTailscaleId(context, saved)
+            val probe = { url: String ->
+                if (url == tailscale) {
+                    wantedId != null && EndpointProbe.fetchHealth(url, 2500)?.id == wantedId
+                } else {
+                    ServerConfigPlugin.isReachable(url, 2500)
+                }
+            }
+            // Off Wi-Fi with a home-network-only saved address, that address cannot answer, so it is waited for only briefly
+            // (EndpointRules.localWaitMs); otherwise the full 3 s, as before.
+            val localWait = EndpointRules.localWaitMs(saved, tailscale, LocalNetwork.isOn(context), EndpointChooser.DEADLINE_MS)
+            return EndpointChooser(probe, localDeadlineMs = localWait).choose(saved, tailscale)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,6 +76,7 @@ class MainActivity : BridgeActivity() {
         registerPlugin(BackgroundAudioPlugin::class.java)
         registerPlugin(ServerConfigPlugin::class.java)
         registerPlugin(PipPlugin::class.java)
+        registerPlugin(ImmersivePlugin::class.java)
         registerPlugin(FirebaseInitPlugin::class.java)
         registerPlugin(DownloadPlugin::class.java)
 
@@ -62,16 +100,18 @@ class MainActivity : BridgeActivity() {
         // a local Capacitor page where the bridge works, so the user can retry or switch servers —
         // instead of stranding the WebView on a long connection timeout (a blank screen). If reachable,
         // load it; a server that then dies MID-session is caught by the errorPath page (see below).
+        //
+        // A server can have a second address: the Tailscale one it told this phone about (ServerConfig.addEndpoint). The saved
+        // address is tried first and the Tailscale one is the fallback (owner, 2026-11-06: local first, so at home the phone
+        // never depends on Tailscale). The choice itself is chooseAddress (companion), shared with NetworkRoamWatcher, which
+        // makes the same choice again when the network changes and recreates the activity to land here if it differs.
+        // The SAVED address is never rewritten by this: only the address the bridge opens differs.
         val savedUrl = ServerConfigPlugin.getSavedUrl(this)
         if (savedUrl != null) {
-            val reachable = booleanArrayOf(false)
-            Thread { reachable[0] = ServerConfigPlugin.isReachable(savedUrl, 2500) }.apply {
-                start()
-                join(3000)
-            }
-            if (reachable[0]) {
+            val chosen = chooseAddress(this, savedUrl, ServerConfigPlugin.getTailscaleUrl(this, savedUrl))
+            if (chosen != null) {
                 config = CapConfig.Builder(this)
-                    .setServerUrl(savedUrl)
+                    .setServerUrl(chosen)
                     .create()
             }
             // else: leave config untouched so the bundled setup page (www/index.html) loads — a local
@@ -88,15 +128,15 @@ class MainActivity : BridgeActivity() {
         // strand the WebView on the system "webpage not available" page, recoverable only by force-quitting.
         // Wrap the bridge's WebView client: on a main-frame load error, re-run onCreate via recreate(),
         // whose reachability gate (above) drops an unreachable server to the bundled setup page — a LOCAL
-        // page where the native bridge works and the saved server is one tap away to retry. Debounced via a
-        // process-lived timestamp so a reachable-but-flaky load can't recreate-loop; the setup page is a
-        // local load, so it never re-triggers this itself.
+        // page where the native bridge works and the saved server is one tap away to retry. Debounced via the
+        // process-lived recreateLog (shared with the network watcher's recreates) so a reachable-but-flaky load can't
+        // recreate-loop; the setup page is a local load, so it never re-triggers this itself.
         bridge.webView.webViewClient = object : BridgeWebViewClient(bridge) {
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (request.isForMainFrame) {
-                    val now = System.currentTimeMillis()
-                    if (now - lastErrorRecreateAt > ERROR_RECREATE_DEBOUNCE_MS) {
-                        lastErrorRecreateAt = now
+                    val now = recreateClockMs()
+                    if (recreateLog.mayErrorRecreate(now)) {
+                        recreateLog.noteRecreate(now)
                         view.post { recreate() }
                         return
                     }
@@ -104,7 +144,35 @@ class MainActivity : BridgeActivity() {
                 super.onReceivedError(view, request, error)
             }
         }
+
+        roamWatcher = NetworkRoamWatcher(this)
     }
+
+    // The network watcher runs only while the activity is started: it needs the page on screen, and a check while the app is
+    // in the background could recreate an activity nobody is looking at. Starting it also checks the address once (the
+    // FOREGROUND_START check), which is how an app that roamed while in the background, or came home, re-chooses when it is
+    // shown again. Not started without a saved server: the bundled first-run page has no address to move between.
+    override fun onStart() {
+        super.onStart()
+        if (ServerConfigPlugin.getSavedUrl(this) != null) roamWatcher?.start()
+    }
+
+    // Stopped BEFORE the activity is: anything still queued or running is dead on arrival from here on. onStop also runs before
+    // every recreate(), so a replaced activity's watcher can never recreate its successor.
+    override fun onStop() {
+        roamWatcher?.stop()
+        super.onStop()
+    }
+
+    // In case onStop did not run first. stop() is safe to call twice.
+    override fun onDestroy() {
+        roamWatcher?.stop()
+        super.onDestroy()
+    }
+
+    // The URL of the page the WebView is really showing (not the bridge's configured server, which stays the remote address
+    // while a bundled error page is on screen). Main thread only: NetworkRoamWatcher reads it through the main thread.
+    fun shownPageUrl(): String? = bridge?.webView?.url
 
     // Hardware back / the OS edge back-gesture is handled by the @capacitor/app plugin, which
     // dispatches a `backButton` event to the web app (see useHardwareBack in the frontend). That's
@@ -215,6 +283,7 @@ class MainActivity : BridgeActivity() {
     // (mute/settings/fullscreen) that otherwise clutter the tiny floating window.
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        ImmersivePlugin.onPipModeChanged(this, isInPictureInPictureMode)
         PipPlugin.notifyPipModeChanged(isInPictureInPictureMode)
     }
 }

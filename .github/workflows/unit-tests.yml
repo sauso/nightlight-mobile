@@ -1,0 +1,66 @@
+name: Unit tests
+
+# The JVM unit tests under android/app/src/test (the first in this repo, #20: the discovery rules, the health probe
+# against a real local socket server, and the discovery bookkeeping). Runs on every PR into dev and every push to
+# dev. Needs no signing secrets: testDebugUnitTest builds nothing that is signed. There is no device or emulator
+# here, so nothing that needs Android itself (NsdManager, the WebView, the plugin bridge) is tested by this job.
+on:
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Same setup as build-apk.yml, which builds this project; see that file for why each step is as it is.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Capacitor 8's CLI requires Node >= 22.
+          node-version: 22
+          cache: npm
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # Capacitor 8's capacitor-android module compiles with source release 21.
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # Not the action's default 'tools platform-tools': the obsolete `tools` package is gone from the SDK
+          # repository and `sdkmanager tools` fails (build-apk.yml, seen 2026-10-24).
+          packages: 'platform-tools'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The Gradle project includes Capacitor's Android modules from node_modules and the generated
+      # capacitor-cordova-android-plugins module, which only exist after a sync.
+      - name: Sync web assets into the Android project
+        run: npx cap sync android
+
+      - name: Run JVM unit tests
+        # chmod: the executable bit can be lost by a commit made on Windows (as in build-apk.yml).
+        run: cd android && chmod +x gradlew && ./gradlew testDebugUnitTest --no-daemon
+
+      # The HTML report says which test failed and why; kept for a week so a failed run can be read.
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: android/app/build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 7

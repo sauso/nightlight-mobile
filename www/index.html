@@ -7,29 +7,38 @@
 <style>
   /* Mirrors the main app's theme (frontend/src/index.css in the nightlight repo) so
      first-run doesn't look like a different product. */
+  /* The same typefaces as the Nightlight web app (Inter for text, Nunito 800 for headings), bundled so the native pages
+     match it with no network; SIL OFL licences are beside the files. Latin only, like the web app. */
+  @font-face { font-family: "Inter"; font-weight: 400; font-style: normal; font-display: swap; src: url("fonts/inter-latin-400-normal.woff2") format("woff2"); }
+  @font-face { font-family: "Inter"; font-weight: 600; font-style: normal; font-display: swap; src: url("fonts/inter-latin-600-normal.woff2") format("woff2"); }
+  @font-face { font-family: "Nunito"; font-weight: 800; font-style: normal; font-display: swap; src: url("fonts/nunito-latin-800-normal.woff2") format("woff2"); }
   :root {
-    --bg: #12172b;
-    --bg-elevated-2: #242c52;
-    --text-primary: #edeef5;
-    --text-secondary: #8a8fb0;
-    --accent: #f4c56a;
-    --offline: #e08585;
-    --border: rgba(244, 197, 106, 0.12);
+    --bg: #14142a;
+    --bg-elevated-2: #221f3c;
+    --text-primary: #e8e2f7;
+    --text-secondary: #bcb3d5;
+    --accent: #8995ff;
+    --offline: #f4a3ad;
+    --border: #383450;
   }
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
+  [hidden] { display: none !important; }
+  html { height: 100%; }
+  /* min-height plus margin:auto on the card, not align-items:center: with found servers listed the page can be
+     taller than the screen, and flex centring would then push its top out of reach (it cannot be scrolled to).
+     Auto margins centre a short page and fall back to 0 on a tall one. */
   body {
-    background: radial-gradient(ellipse at top, #171d38 0%, var(--bg) 55%);
+    min-height: 100%;
+    margin: 0;
+    background: radial-gradient(ellipse at top, #1c1b38 0%, var(--bg) 55%);
     color: var(--text-primary);
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     display: flex;
-    align-items: center;
-    justify-content: center;
     padding: 24px;
     padding-top: calc(24px + env(safe-area-inset-top));
     padding-bottom: calc(24px + env(safe-area-inset-bottom));
   }
-  .card { width: 100%; max-width: 380px; text-align: center; }
+  .card { width: 100%; max-width: 380px; margin: auto; text-align: center; }
   /* Same treatment as the web app's login screen (.auth-icon / .auth-card in
      frontend/src/index.css) so first-run looks like the same product. */
   .app-icon {
@@ -38,11 +47,11 @@
     height: 84px;
     margin: 0 auto 18px;
     border-radius: 22px;
-    box-shadow: 0 8px 30px rgba(244, 197, 106, 0.18);
+    box-shadow: 0 8px 30px rgba(119, 143, 253, 0.22);
   }
   h1 {
-    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
-    font-weight: 600;
+    font-family: "Nunito", system-ui, sans-serif;
+    font-weight: 800;
     font-size: 28px;
     margin: 0 0 6px;
   }
@@ -74,14 +83,14 @@
     font-weight: 600;
     font-family: inherit;
     background: var(--accent);
-    color: #21170a;
+    color: #14142a;
     cursor: pointer;
   }
   button:disabled { opacity: 0.6; }
   .error {
     display: none;
-    background: rgba(224, 133, 133, 0.12);
-    border: 1px solid rgba(224, 133, 133, 0.4);
+    background: rgba(244, 163, 173, 0.12);
+    border: 1px solid rgba(244, 163, 173, 0.4);
     color: var(--offline);
     padding: 10px 12px;
     border-radius: 10px;
@@ -100,7 +109,7 @@
   .saved-row {
     display: flex;
     align-items: center;
-    background: rgba(36, 44, 82, 0.55);
+    background: rgba(34, 31, 60, 0.7);
     border: 1px solid var(--border);
     border-radius: 10px;
     margin-bottom: 8px;
@@ -120,6 +129,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* A saved server with a known name: the name, and the address under it in smaller, quieter text. */
+  .saved-row .addr-name { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+  .saved-row .addr-sub { display: block; margin-top: 2px; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; }
   .saved-row .forget {
     width: auto;
     flex-shrink: 0;
@@ -131,6 +143,47 @@
     margin: 0;
     cursor: pointer;
   }
+  /* "Look for my Nightlight" (#20): same cards and colours as the saved-servers list. */
+  .find { text-align: left; }
+  .find-intro { text-align: center; font-size: 13px; color: var(--text-secondary); margin: 0 0 12px; }
+  .find-status { text-align: center; font-size: 13px; color: var(--text-secondary); margin: 12px 0 0; min-height: 1.2em; }
+  .found-list { margin-top: 12px; }
+  .found-card {
+    background: rgba(34, 31, 60, 0.7);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 10px;
+  }
+  .found-name { font-size: 15px; font-weight: 600; margin: 0 0 4px; overflow-wrap: anywhere; }
+  .found-meta { font-size: 12px; color: var(--text-secondary); margin: 0 0 8px; overflow-wrap: anywhere; }
+  .found-note { font-size: 12px; color: var(--text-secondary); margin: 0 0 12px; }
+  .find-help {
+    background: rgba(34, 31, 60, 0.7);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    margin-top: 12px;
+    font-size: 13px;
+  }
+  .find-help p { margin: 0 0 6px; }
+  .find-help ul { margin: 0; padding-left: 18px; color: var(--text-secondary); }
+  .find-help li { margin-bottom: 4px; }
+  button.secondary {
+    margin-top: 12px;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+  }
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 24px 0 18px;
+  }
+  .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 </style>
 </head>
 <body>
@@ -138,6 +191,29 @@
     <img src="icon-192.png" alt="" class="app-icon" />
     <h1>Nightlight</h1>
     <p class="tagline">Connect to your server to watch over the nursery.</p>
+
+    <!-- "Look for my Nightlight" (#20). Hidden until the script sees the native search exists (Android today; not
+         iOS yet), so on iOS the search never appears and the address box works as before. -->
+    <section id="find" class="find" aria-label="Find your Nightlight" hidden>
+      <p class="find-intro">Make sure your phone is on your home Wi-Fi.</p>
+      <button id="look" type="button">Look for my Nightlight</button>
+      <p id="find-status" class="find-status" role="status" aria-live="polite"></p>
+      <div id="found-list" class="found-list"></div>
+      <div id="find-help" class="find-help" hidden>
+        <p>No Nightlight found yet.</p>
+        <ul>
+          <li>Is your phone on the same Wi-Fi as your Nightlight server?</li>
+          <li>Is the server switched on and running?</li>
+          <li>Guest Wi-Fi often keeps devices apart. Try your main Wi-Fi.</li>
+          <li>Is your server running in Docker on the default bridge network? Then it can't be found this way;
+            type its address below.</li>
+          <li>If your phone uses a VPN, turn it off while searching, or allow access to your local network.</li>
+          <li>You can always enter the address below.</li>
+        </ul>
+      </div>
+      <button id="search-again" type="button" class="secondary" hidden>Search again</button>
+      <div class="divider" aria-hidden="true">or enter an address</div>
+    </section>
 
     <label for="server">Server address</label>
     <input id="server" type="url" inputmode="url" autocapitalize="none" autocorrect="off"
@@ -167,11 +243,14 @@
     errorBox.style.display = 'block';
   }
 
-  async function connect(url) {
+  // expectId is given only for a server that "Look for my Nightlight" found (#20): save() then refuses unless the
+  // server at that address still reports the same id, because the address may have changed hands since the card
+  // appeared. Returns true once restarting, false if it showed an error.
+  async function connect(url, expectId) {
     const p = plugin();
     if (!p) {
       showError('Native bridge unavailable - try reinstalling the app.');
-      return;
+      return false;
     }
     errorBox.style.display = 'none';
     button.disabled = true;
@@ -181,13 +260,15 @@
       // persisting; restart() then rebuilds the bridge pointed at it. Saved-server
       // taps go through the same validation, so a dead saved server errors here
       // instead of restarting into the can't-reach page.
-      await p.save({ url });
+      await p.save(expectId ? { url, expectId } : { url });
       button.textContent = 'Connected';
       await p.restart();
+      return true;
     } catch (err) {
       showError(err?.message || 'Could not connect to that address.');
       button.disabled = false;
       button.textContent = 'Connect';
+      return false;
     }
   }
 
@@ -195,7 +276,11 @@
     const p = plugin();
     if (!p) return;
     try {
-      const { servers } = await p.list();
+      // `names` (Android and iOS): the display name each saved server sent, or nothing (an older app, a server saved before
+      // names were kept): the row then shows the address alone, as it always did.
+      const { servers, names } = await p.list();
+      savedUrls = new Set(servers || []);
+      markSavedCards();
       savedList.innerHTML = '';
       if (!servers || servers.length === 0) {
         savedSection.style.display = 'none';
@@ -207,7 +292,21 @@
 
         const addr = document.createElement('button');
         addr.className = 'addr';
-        addr.textContent = url.replace(/^https?:\/\//, '');
+        const shown = url.replace(/^https?:\/\//, '');
+        const name = names && typeof names[url] === 'string' ? names[url].trim() : '';
+        if (name) {
+          // The name is what the server sent, so it is set as TEXT, never as markup. The address goes below it, smaller.
+          const nameEl = document.createElement('span');
+          nameEl.className = 'addr-name';
+          nameEl.textContent = name;
+          const subEl = document.createElement('span');
+          subEl.className = 'addr-sub';
+          subEl.textContent = shown;
+          addr.append(nameEl, subEl);
+          addr.setAttribute('aria-label', name + ', ' + shown);
+        } else {
+          addr.textContent = shown;
+        }
         addr.addEventListener('click', () => connect(url));
 
         const forget = document.createElement('button');
@@ -226,6 +325,237 @@
     } catch {
       savedSection.style.display = 'none';
     }
+  }
+
+  // ---- "Look for my Nightlight" (#20) ----
+  //
+  // The native side (ServerConfigPlugin.startDiscovery, Android only for now) browses the Wi-Fi for Nightlight
+  // servers and reports one only after it answered its health check with the id it announced. It never saves or
+  // switches anything: a card's Connect goes through save({ url, expectId }) and restart(), like a typed address.
+  const findSection = document.getElementById('find');
+  const lookButton = document.getElementById('look');
+  const findStatus = document.getElementById('find-status');
+  const foundList = document.getElementById('found-list');
+  const findHelp = document.getElementById('find-help');
+  const searchAgain = document.getElementById('search-again');
+
+  // Plan (#20): the help panel after 15 s with nothing found, while still listening; stop after 2 minutes. The
+  // phone's own discovery found the server almost at once in the spike (design 15.1), so 15 s is long enough to say
+  // "not yet"; the search goes on behind the help, because a server across a router's mDNS relay was measured at
+  // 20 to 52 s.
+  const HELP_AFTER_MS = 15 * 1000;
+  const STOP_AFTER_MS = 2 * 60 * 1000;
+  // Native sends exactly http://<IPv4>:<port>. Anything else is not shown (belt and braces: the text is set with
+  // textContent, never as HTML).
+  const FOUND_URL_SHAPE = /^http:\/\/\d{1,3}(\.\d{1,3}){3}:\d{1,5}$/;
+  // One calm sentence (code review of #20): what http means here, and that this is a different web address from
+  // any https one the person already uses, so the server will ask them to sign in again (with their second step,
+  // if they use one).
+  const NOTE_HTTP = 'Connects over your home network without encryption, at a different address from any https ' +
+    'one you use, so you will be asked to sign in again.';
+
+  let savedUrls = new Set();
+  const found = new Map(); // id -> { card, button, savedTag, url }
+  let handles = [];
+  let run = 0; // bumped on every start and stop: an event from an earlier run is ignored
+  let looking = false;
+  let starting = false;
+  let helpTimer = null;
+  let stopTimer = null;
+
+  // Feature detection: on this bundled page Capacitor exposes exactly the plugin's native methods, so on iOS (no
+  // startDiscovery yet) the section never appears. A rejected call also hides it (startLooking), which covers any
+  // platform where the method exists but is refused.
+  function canLook() {
+    const p = plugin();
+    return !!p && typeof p.startDiscovery === 'function' && typeof p.stopDiscovery === 'function' &&
+      typeof p.addListener === 'function';
+  }
+
+  function setStatus(text) {
+    findStatus.textContent = text;
+  }
+
+  function countText() {
+    const n = found.size;
+    return n === 1 ? 'Found 1 Nightlight' : 'Found ' + n + ' Nightlights';
+  }
+
+  function markSavedCards() {
+    for (const entry of found.values()) entry.savedTag.hidden = !savedUrls.has(entry.url);
+  }
+
+  function clearFound() {
+    found.clear();
+    foundList.textContent = '';
+  }
+
+  function addFound(e) {
+    if (!e || typeof e.id !== 'string' || !e.id || typeof e.url !== 'string' || !FOUND_URL_SHAPE.test(e.url)) return;
+    if (found.has(e.id)) return;
+    const name = typeof e.name === 'string' && e.name ? e.name : 'Nightlight';
+    const fingerprint = typeof e.fingerprint === 'string' ? e.fingerprint : '';
+    const address = e.url.slice('http://'.length);
+
+    const card = document.createElement('div');
+    card.className = 'found-card';
+    const title = document.createElement('p');
+    title.className = 'found-name';
+    title.textContent = name;
+    const meta = document.createElement('p');
+    meta.className = 'found-meta';
+    // The fingerprint is the START of the server's id (the same 8 characters as its network name), hence the
+    // ellipsis after it.
+    meta.textContent = address + (fingerprint ? ' · ID ' + fingerprint + '…' : '');
+    const savedTag = document.createElement('span');
+    savedTag.textContent = ' · Already saved';
+    savedTag.hidden = !savedUrls.has(e.url);
+    meta.append(savedTag);
+    const note = document.createElement('p');
+    note.className = 'found-note';
+    note.textContent = NOTE_HTTP;
+    const connectButton = document.createElement('button');
+    connectButton.type = 'button';
+    connectButton.textContent = 'Connect';
+    connectButton.setAttribute('aria-label', 'Connect to ' + name + ' at ' + address);
+    connectButton.addEventListener('click', () => connectFound(e.url, e.id));
+    card.append(title, meta, note, connectButton);
+    foundList.append(card);
+    found.set(e.id, { card, button: connectButton, savedTag, url: e.url });
+
+    findHelp.hidden = true;
+    setStatus(countText());
+  }
+
+  function removeFound(id) {
+    const entry = found.get(id);
+    if (!entry) return;
+    entry.card.remove();
+    found.delete(id);
+    if (found.size > 0) setStatus(countText());
+    else setStatus(looking ? 'Looking on your Wi-Fi…' : '');
+  }
+
+  async function connectFound(url, id) {
+    for (const entry of found.values()) entry.button.disabled = true;
+    const ok = await connect(url, id);
+    if (ok) return; // the app is restarting onto that server
+    for (const entry of found.values()) entry.button.disabled = false;
+    // The error is shown under the address box, which may be below the cards.
+    errorBox.scrollIntoView({ block: 'nearest' });
+  }
+
+  // Remove the listeners, then stop the native search. Safe to call at any time.
+  async function stopLooking() {
+    run++;
+    looking = false;
+    clearTimeout(helpTimer);
+    clearTimeout(stopTimer);
+    const old = handles;
+    handles = [];
+    for (const h of old) {
+      try { await h.remove(); } catch { /* already gone */ }
+    }
+    const p = plugin();
+    if (p && typeof p.stopDiscovery === 'function') {
+      try { await p.stopDiscovery(); } catch { /* not running, or refused: nothing to stop */ }
+    }
+  }
+
+  function showStopped(message) {
+    setStatus(message);
+    searchAgain.hidden = false;
+  }
+
+  // Native could not start looking (it can say so after startDiscovery has already answered { started: true }).
+  // Code review of #20: say it at once instead of "Looking…" for two minutes. Stopping first leaves things as after
+  // any other stop, so Search again simply starts over.
+  async function failLooking() {
+    await stopLooking();
+    findHelp.hidden = false;
+    showStopped("Couldn't start looking on this phone. Type your server's address below.");
+  }
+
+  async function startLooking() {
+    if (starting) return;
+    starting = true;
+    lookButton.disabled = true;
+    searchAgain.disabled = true;
+    try {
+      await stopLooking();
+      const thisRun = ++run;
+      clearFound();
+      findHelp.hidden = true;
+      searchAgain.hidden = true;
+      const p = plugin();
+      // If the page was hidden while this was starting, stopLooking ran in between and may have missed what was
+      // added after it: stop again, so no listener and no native search outlive the page.
+      const stale = async () => {
+        if (thisRun === run) return false;
+        await stopLooking();
+        return true;
+      };
+      // Listeners FIRST, and their handles awaited, before the search starts: native drops an event that has no
+      // listener yet (it does not hold events for a later one), and a server on the same Wi-Fi can be found
+      // within moments of starting.
+      handles.push(await p.addListener('serverFound', (e) => { if (thisRun === run) addFound(e); }));
+      handles.push(await p.addListener('serverLost', (e) => { if (thisRun === run) removeFound(e && e.id); }));
+      handles.push(await p.addListener('discoveryFailed', () => { if (thisRun === run) failLooking(); }));
+      if (await stale()) return;
+      const result = await p.startDiscovery();
+      if (await stale()) return;
+      if (!result || result.started !== true) {
+        await stopLooking();
+        if (result && result.onWifi === false) {
+          showStopped("Your phone isn't on Wi-Fi. Join your home Wi-Fi, then search again.");
+        } else {
+          findSection.hidden = true;
+        }
+        return;
+      }
+      looking = true;
+      setStatus('Looking on your Wi-Fi…');
+      helpTimer = setTimeout(() => {
+        if (thisRun !== run || found.size > 0) return;
+        findHelp.hidden = false;
+        searchAgain.hidden = false;
+        setStatus('Still looking…');
+      }, HELP_AFTER_MS);
+      stopTimer = setTimeout(async () => {
+        if (thisRun !== run) return;
+        await stopLooking();
+        if (found.size > 0) {
+          showStopped(countText() + '. Stopped looking.');
+        } else {
+          findHelp.hidden = false;
+          showStopped("We couldn't find a Nightlight. You can search again or enter the address below.");
+        }
+      }, STOP_AFTER_MS);
+    } catch {
+      // Not available here: iOS has no such method yet, or native refused the call. The typed address and the
+      // saved servers work exactly as before.
+      await stopLooking();
+      findSection.hidden = true;
+    } finally {
+      starting = false;
+      lookButton.disabled = false;
+      searchAgain.disabled = false;
+    }
+  }
+
+  // Leaving or hiding the page stops the search, so nothing keeps probing the network. (Native also stops when the
+  // app goes to the background and when any page starts loading; this is the first line.)
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && (looking || handles.length > 0)) {
+      stopLooking().then(() => showStopped(found.size > 0 ? countText() + '. Stopped looking.' : 'Stopped looking.'));
+    }
+  });
+  window.addEventListener('pagehide', () => { stopLooking(); });
+
+  if (canLook()) {
+    findSection.hidden = false;
+    lookButton.addEventListener('click', startLooking);
+    searchAgain.addEventListener('click', startLooking);
   }
 
   button.addEventListener('click', () => connect(input.value));
