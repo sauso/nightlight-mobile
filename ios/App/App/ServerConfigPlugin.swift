@@ -254,14 +254,43 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // thread (the launch choice holds it for up to 3 s) held Capacitor's plugin queue, and every plugin call behind it, for as
     // long. With the time limit the worst case is a refused call, never a frozen app. See THE RULE at ServerConfigStore.writes.
     private func shownPageURL() -> String? {
+        return readWebView { (webView: WKWebView?) -> String? in
+            return webView?.url?.absoluteString
+        }
+    }
+
+    // The URL of the page the web view has actually COMMITTED, for the session calls (Opus code review of PR #35, 2026-11-08, a
+    // suspicion about an Apple behaviour it was not sure of): `WKWebView.url` can already show the address of a navigation that
+    // has STARTED and not finished (the known address-bar spoofing shape), while Capacitor's reply goes to the page that is
+    // really showing. So the URL is returned only when the back-forward list's current item, which changes only once a new page
+    // has committed, has the same ORIGIN; anything else (no current item either) is nil = "not the server's page", which refuses.
+    // Fails closed, so if WebKit behaves otherwise than assumed the worst case is "sign in twice, as before", never a token for
+    // the wrong page. Used by saveSession and getSession (the two that hand something to or take something from a page); NOT by
+    // clearSession (a delete should not be refused by an odd page state) and not by phase 1's methods, which work on a device and
+    // are left as they are.
+    private func committedPageURL() -> String? {
+        return readWebView { (webView: WKWebView?) -> String? in
+            return ServerConfigPlugin.committedURL(of: webView)
+        }
+    }
+
+    private static func committedURL(of webView: WKWebView?) -> String? {
+        guard let view = webView, let shown = view.url?.absoluteString else { return nil }
+        guard let committed = view.backForwardList.currentItem?.url.absoluteString else { return nil }
+        return EndpointRules.sameOrigin(shown, committed) ? shown : nil
+    }
+
+    // Runs `read` on the main thread (WKWebView may only be touched there) and waits for it up to pageReadTimeout, as described
+    // at shownPageURL. Directly when already on the main thread.
+    private func readWebView(_ read: @escaping (WKWebView?) -> String?) -> String? {
         guard let b = bridge else { return nil }
         if Thread.isMainThread {
-            return b.webView?.url?.absoluteString
+            return read(b.webView)
         }
         let answer = ShownPageAnswer()
         let done = DispatchSemaphore(value: 0)
         DispatchQueue.main.async {
-            answer.set(b.webView?.url?.absoluteString)
+            answer.set(read(b.webView))
             done.signal()
         }
         if done.wait(timeout: .now() + ServerConfigPlugin.pageReadTimeout) == .timedOut {
@@ -452,7 +481,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func saveSession(_ call: CAPPluginCall) {
         let token: String? = call.getString("token")
         let checked: SessionRules.Bindings? = ServerConfigStore.currentBindings()
-        guard let before = checked, SessionRules.mayAct(before, bridgeUrl: pageServerURL(), webViewUrl: shownPageURL()) else {
+        guard let before = checked, SessionRules.mayAct(before, bridgeUrl: pageServerURL(), webViewUrl: committedPageURL()) else {
             call.reject("Not available on this page")
             return
         }
@@ -462,6 +491,12 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let claimed: String? = call.getString("tailscale")
         ServerConfigStore.writes.async {
+            // The first-start clean-up must have finished before any sign-in is read or written (Codex code review of PR #35): see
+            // KeychainSessionStore.ensureReady. A failed one refuses this save; the web app saves again at its next start.
+            guard KeychainSessionStore.ensureReady() else {
+                call.resolve(["saved": false])
+                return
+            }
             let now: SessionRules.Bindings? = ServerConfigStore.currentBindings()
             guard let stamp = SessionRules.stampOnQueue(checked: before, now: now, claimedTailscale: claimed) else {
                 call.resolve(["saved": false])
@@ -489,13 +524,18 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func getSession(_ call: CAPPluginCall) {
         let none: [String: Any] = ["token": NSNull()]
         let current: SessionRules.Bindings? = ServerConfigStore.currentBindings()
-        guard let page = pageServerURL(), SessionRules.isTailscalePage(current, bridgeUrl: page, webViewUrl: shownPageURL()) else {
+        guard let page = pageServerURL(), SessionRules.isTailscalePage(current, bridgeUrl: page, webViewUrl: committedPageURL()) else {
             call.resolve(none)
             return
         }
         DispatchQueue.global(qos: .userInitiated).async {
             let liveId: String? = EndpointProbe.fetchHealth(page, timeout: ServerConfigPlugin.sessionProbeTimeout)?.id
             ServerConfigStore.writes.async {
+                // Nothing is read before the first-start clean-up has finished (see saveSession): answer "no session".
+                guard KeychainSessionStore.ensureReady() else {
+                    call.resolve(none)
+                    return
+                }
                 let now: SessionRules.Bindings? = ServerConfigStore.currentBindings()
                 var entry: SessionRules.Entry? = nil
                 if let bindings = now, case .found(let stored) = KeychainSessionStore.vault.load(bindings.savedUrl) {
@@ -506,8 +546,11 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
                     call.resolve(none)
                     return
                 }
+                // Hopping to the main thread leaves the FIFO queue, as Android's resolve does not: a removeEndpoint, forget, clear or
+                // clearSession queued behind this one can finish before the token is delivered. The receiver is still the page that
+                // passed every check, and a token that was signed out is refused by the server anyway (Opus code review of PR #35).
                 DispatchQueue.main.async { [weak self] in
-                    let shown: String? = self?.bridge?.webView?.url?.absoluteString
+                    let shown: String? = ServerConfigPlugin.committedURL(of: self?.bridge?.webView)
                     if EndpointRules.sameOrigin(shown, page) {
                         call.resolve(["token": token])
                     } else {

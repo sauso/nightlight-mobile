@@ -49,9 +49,23 @@ enum KeychainSessionStore {
         delete: { account in KeychainSessionStore.deleteItem(account) }
     )
 
+    // True once the first-start clean-up has finished (or was not needed) in this launch. Read and written ONLY on
+    // ServerConfigStore.writes (AppDelegate's purge and every session call run there), so it needs no lock.
+    private static var ready: Bool = false
+
+    /// Whether the saved sign-ins may be used now. The session calls ask this on ServerConfigStore.writes before they read or write
+    /// anything: if the launch's clean-up failed (a locked phone, say) it is tried again here, and until one succeeds they refuse
+    /// ("no session"), so an earlier install's sign-in can never be read back in the same launch (Codex code review of PR #35).
+    static func ensureReady() -> Bool {
+        if ready { return true }
+        ready = purgeIfFreshInstall()
+        return ready
+    }
+
     /// Run the purge if this is the first start of an install. Call it on ServerConfigStore.writes (AppDelegate does, at launch),
-    /// so it runs before any session call queued after it. Logs what it did.
-    static func purgeIfFreshInstall() {
+    /// so it runs before any session call queued after it. Logs what it did. Returns whether the session store may be used.
+    @discardableResult
+    static func purgeIfFreshInstall() -> Bool {
         let defaults = UserDefaults.standard
         let outcome = KeychainLogic.purgeIfFreshInstall(
             markerPresent: { defaults.bool(forKey: KeychainSessionStore.freshInstallMarkerKey) },
@@ -64,8 +78,9 @@ enum KeychainSessionStore {
         case .purged(let removed):
             KeychainSessionStore.logLine("Nightlight session store: first start of this install, removed \(removed) saved sign-in item(s) left by an earlier install")
         case .failed(let status):
-            KeychainSessionStore.logLine("Nightlight session store: first-start clean-up failed, status \(status); it runs again at the next start")
+            KeychainSessionStore.logLine("Nightlight session store: first-start clean-up failed, status \(status); it runs again at the next sign-in call and at the next start")
         }
+        return KeychainLogic.isReady(outcome)
     }
 
     private static func logLine(_ text: String) {

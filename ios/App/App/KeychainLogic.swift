@@ -100,6 +100,14 @@ enum KeychainLogic {
         }
         return .failed(result.status)
     }
+
+    /// Whether the saved sign-ins may be read and written after this purge outcome: yes unless the purge FAILED. A failed purge
+    /// leaves an earlier install's items in place, and a later read in the same launch could hand one back (Codex code review of
+    /// PR #35), so the session calls refuse until a retry of the purge succeeds (KeychainSessionStore.ensureReady).
+    static func isReady(_ outcome: Purge) -> Bool {
+        if case .failed = outcome { return false }
+        return true
+    }
 }
 
 /// The vault's store over the Keychain calls. Every failure is logged with its raw status (never a token or an address: the

@@ -269,6 +269,15 @@ func runKeychainLogicTests() {
         check(recorder.marker, "the marker was not written once the purge finished")
     }
 
+    test("keychain: the session store is usable after a finished or unneeded purge and NOT after a failed one") {
+        check(KeychainLogic.isReady(KeychainLogic.Purge.notNeeded), "a start that needed no purge refused the store")
+        check(KeychainLogic.isReady(KeychainLogic.Purge.purged(0)), "a finished purge that found nothing refused the store")
+        check(KeychainLogic.isReady(KeychainLogic.Purge.purged(2)), "a finished purge refused the store")
+        for status in [KeychainStatus.interactionNotAllowed, KeychainStatus.missingEntitlement, KeychainStatus.authFailed] {
+            check(!KeychainLogic.isReady(KeychainLogic.Purge.failed(status)), "a failed purge (" + String(status) + ") let the store be used")
+        }
+    }
+
     test("keychain: with the marker present nothing is deleted") {
         let recorder = PurgeRecorder()
         recorder.marker = true

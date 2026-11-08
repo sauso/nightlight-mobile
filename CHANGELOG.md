@@ -16,7 +16,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   that address) the first time you open it there, so signing in once at home is enough, as on Android. It is kept for the
   Tailscale address only if your own server has just offered that same address. Signing out, or a sign-in the server refuses,
   removes it; a wrong password does not. It is never synced through iCloud Keychain and does not move to another phone through
-  a backup or a transfer, and deleting and reinstalling the app starts you signed out. The home address never receives it
+  a backup or a transfer, and the app also clears its saved sign-in on the first start of a new install (iOS keeps Keychain
+  items when an app is deleted). The home address never receives it
   (it is usually plain `http`), so signing in on the Tailscale address first still asks once at home. Moving between the
   addresses when the network changes is still Android only: on an iPhone, close and reopen the app after changing network.
   Like the Android version, it needs the Nightlight server release that goes with it; with an older server each address asks

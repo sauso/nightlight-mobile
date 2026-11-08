@@ -144,7 +144,11 @@ showing the origin the app opened. What is different on an iPhone:
 - **Reinstalling starts signed out.** iOS keeps Keychain items when an app is deleted, so the first start of a new install
   removes any saved sign-in under that service before a page can ask for one. A marker in the app's settings (which deleting
   the app does clear) records that this has run. It is written only after the removal finished, so a removal that failed runs
-  again at the next start. The first start after updating to this version runs it once too, with nothing to remove.
+  again at the next start; until it has finished, the sign-in calls answer "no session" and do not save, and they try it
+  again themselves (so an earlier install's sign-in can never be read back in the same launch). The first start after updating
+  to this version runs it once too, with nothing to remove. **Not yet confirmed on a phone:** deleting an app also clears its
+  settings, so a reinstall looks signed out either way and a phone test cannot tell this removal from that; the device log
+  says how many items it removed.
 - **A locked or busy Keychain changes nothing.** If the Keychain cannot be read right now, the page gets no saved sign-in this
   time and nothing is deleted. The same goes for a sign-out the Keychain refuses (not expected once the phone has been unlocked
   since it started): the copy stays, and the device log shows the Keychain's status code (never the token or the address).
@@ -153,7 +157,10 @@ showing the origin the app opened. What is different on an iPhone:
 - **Known limits.** As on Android: someone with an account on your server who controls a device at a plain-http saved address
   could store their own sign-in; two separate sign-ins stay separate. The frame limit above applies. One more, iOS only: the
   page is checked again on the main thread just before the sign-in is handed over, but Capacitor sends the reply as a separate
-  step, so a page that navigated in during that last instant would still receive it.
+  step, so a page that navigated in during that last instant would still receive it. The page checks for the sign-in calls use
+  the page the web view has finished loading (its back-forward list), not the address of a page that is still loading, which
+  `WKWebView.url` can already show; if WebKit behaves otherwise than assumed, the result is "sign in twice, as before", never a
+  sign-in handed to the wrong page. This is also unconfirmed on a phone.
 - **Tested**: the rules, the vault and the Keychain status handling (`KeychainLogic.swift`, against a fake Keychain that refuses
   a duplicate add as the real one does) run in CI with `swiftc`. The Keychain calls themselves (`KeychainSessionStore.swift`),
   the plugin glue and the clean-up after a reinstall need an iPhone.
