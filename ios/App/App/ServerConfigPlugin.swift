@@ -20,11 +20,15 @@ import WebKit
 ///   Capacitor.Plugins.ServerConfig.forget({ url })
 ///   Capacitor.Plugins.ServerConfig.clear()
 ///   Capacitor.Plugins.ServerConfig.restart()      -> reloads the bridge so the current choice takes effect
+///   Capacitor.Plugins.ServerConfig.saveSession({ token, tailscale })  -> { saved }; keeps the sign-in for the other address
+///   Capacitor.Plugins.ServerConfig.getSession()   -> { token }, or { token: null } for EVERY refusal
+///   Capacitor.Plugins.ServerConfig.clearSession({ token? })  -> { cleared }
 ///
 /// The shapes are exactly Android's: the web app turns its Tailscale features on by whether `addEndpoint` and
 /// `list().names` exist (nativeBridge.js), so the About card, the "Away from home" notice and the sync work here as
-/// they do on Android. NOT on iOS yet, deliberately absent so the web app skips them: saveSession / getSession /
-/// clearSession (one sign-in across both addresses; `saveNativeSession` is then a no-op) and startDiscovery /
+/// they do on Android. The same goes for one sign-in across both addresses (iOS phase 2, 2026-11-08): nativeBridge.js
+/// `sessionPlugin()` uses it only when ALL THREE of saveSession / getSession / clearSession exist, so registering them
+/// below is what switches it on. NOT on iOS yet, deliberately absent so the web app skips them: startDiscovery /
 /// stopDiscovery ("Look for my Nightlight").
 ///
 /// The launch-time "which address to open" lives in MainViewController.instanceDescriptor; this plugin owns the stored
@@ -43,7 +47,15 @@ enum ServerConfigStore {
     // ONE first-in-first-out queue for every write that reads, changes and writes back (the saved address, the known list,
     // the names, the Tailscale pair), the twin of Android's session executor: two saves finishing together cannot lose each
     // other's list entry, and a write cannot overtake the one queued before it. Reads (get, list, the launch) read directly:
-    // UserDefaults is safe to read from any thread.
+    // UserDefaults is safe to read from any thread. Every saved-sign-in call (SessionVault, the Keychain) and the fresh-install
+    // purge run here too, so a save, a clear and the purge cannot reorder or race, and getSession checks the entry against the
+    // bindings as they are at that moment, on the same queue that changes them.
+    //
+    // THE RULE (Codex and Opus plan review of iOS phase 2, 2026-11-08): the MAIN thread never `sync`s onto this queue or onto
+    // any worker queue, and nothing waits for the main thread without a time limit (ServerConfigPlugin.shownPageURL waits at
+    // most a second; getSession's last page check is handed to the main thread with `async` and waits for nothing). If the
+    // main thread ever waited on a queue that was itself waiting on the main thread, the app would freeze. Nothing in the app
+    // does: the launch choice reads UserDefaults directly, and every plugin method queues its work here with `async`.
     static let writes = DispatchQueue(label: "com.sauso.nightlight.server-config")
 
     static var savedURL: String? {
@@ -95,6 +107,19 @@ enum ServerConfigStore {
     /// The server id the saved Tailscale address was saved for (EndpointRules.idKey), or nil.
     static func tailscaleId(for primary: String) -> String? {
         return defaults.string(forKey: EndpointRules.idKey(primary))
+    }
+
+    /// The saved address and the Tailscale address and id saved for it, right now; nil when nothing is saved. What a saved
+    /// sign-in is stamped with and checked against (SessionRules.Bindings). The id is read only when an address is (a stray id
+    /// with no address binds nothing), as Android's currentBindings.
+    static func currentBindings() -> SessionRules.Bindings? {
+        guard let primary = savedURL else { return nil }
+        let tailscale: String? = tailscaleURL(for: primary)
+        var id: String? = nil
+        if tailscale != nil {
+            id = tailscaleId(for: primary)
+        }
+        return SessionRules.Bindings(savedUrl: primary, tailscaleUrl: tailscale, tailscaleId: id)
     }
 
     static func setTailscale(_ url: String, id: String, for primary: String) {
@@ -157,6 +182,10 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "restart", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "addEndpoint", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "removeEndpoint", returnType: CAPPluginReturnPromise),
+        // All three or none: the web app uses the saved sign-in only when every one exists (nativeBridge.js sessionPlugin).
+        CAPPluginMethod(name: "saveSession", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getSession", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "clearSession", returnType: CAPPluginReturnPromise),
     ]
 
     // The probe timeouts, in seconds, carried over from Android's ServerConfigPlugin (fetchHealth 4000 / 5000 / 3000 ms):
@@ -165,6 +194,15 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     private static let pageProbeTimeout: TimeInterval = 4
     private static let tailscaleProbeTimeout: TimeInterval = 5
     private static let pairCheckTimeout: TimeInterval = 3
+    // getSession's read of the Tailscale page's own live id: Android's 3000 ms. It has to fit, with the page reads and the
+    // Keychain read, inside the web app's 6 s wait (nativeBridge.js SESSION_ADOPT_DEADLINE_MS). A judgement, not a measurement.
+    private static let sessionProbeTimeout: TimeInterval = 3
+
+    // How long work off the main thread waits for the main thread to read the web view's URL (shownPageURL). Android's
+    // PAGE_CHECK_TIMEOUT_MS: the main thread answers in microseconds unless it is busy, and if it is busy for a whole second the
+    // call is refused (fails closed: no URL is "not the server's page"). The launch choice can hold the main thread for up to
+    // 3 s (MainViewController.chooseAddress), so a call that lands during a restart is refused rather than kept waiting.
+    private static let pageReadTimeout: TimeInterval = 1
 
     // The address the page calling us was loaded from, as far as iOS can say: the server URL this bridge was BUILT with
     // (MainViewController.instanceDescriptor sets it, and bridge.config keeps it), or nil for the bundled setup page, which is
@@ -204,20 +242,32 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         return EndpointRules.isOnBundledOrigin(shownPageURL(), local: localText)
     }
 
-    // The URL the web view's main frame is showing RIGHT NOW, or nil (no bridge, no web view, nothing loaded). WKWebView may
-    // only be read on the main thread. Plugin methods run on Capacitor's plugin queue and save's reconnect on a URLSession
-    // queue, so the read is handed to the main thread with a sync; when already on the main thread it is read directly, never
-    // through a sync from the main thread onto itself (that would deadlock). Nothing here waits on the plugin queue from the
-    // main thread, so the sync cannot deadlock; at worst it waits for a launch choice in progress (up to 3 s).
+    // The URL the web view's main frame is showing RIGHT NOW, or nil (no bridge, no web view, nothing loaded, or the main thread
+    // did not answer within pageReadTimeout). WKWebView may only be read on the main thread. Plugin methods (the session calls
+    // included) run on Capacitor's plugin queue and save's reconnect on a URLSession queue, so the read is handed to the main
+    // thread with `async` and waited for with a time limit. When already on the main thread it is read directly (waiting on the
+    // main thread for a block queued on the main thread would never end). Never called from ServerConfigStore.writes.
+    //
+    // WHY not `DispatchQueue.main.sync`, as phase 1 had (Codex and Opus plan review of iOS phase 2, 2026-11-08): a sync waits
+    // without limit. Nothing on the main thread waits for the queues that call this today, so it could not deadlock, but that
+    // would rest on every later change keeping it so (the network watcher planned next runs on its own queue); and a busy main
+    // thread (the launch choice holds it for up to 3 s) held Capacitor's plugin queue, and every plugin call behind it, for as
+    // long. With the time limit the worst case is a refused call, never a frozen app. See THE RULE at ServerConfigStore.writes.
     private func shownPageURL() -> String? {
         guard let b = bridge else { return nil }
         if Thread.isMainThread {
             return b.webView?.url?.absoluteString
         }
-        let read: String? = DispatchQueue.main.sync { () -> String? in
-            return b.webView?.url?.absoluteString
+        let answer = ShownPageAnswer()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            answer.set(b.webView?.url?.absoluteString)
+            done.signal()
         }
-        return read
+        if done.wait(timeout: .now() + ServerConfigPlugin.pageReadTimeout) == .timedOut {
+            return nil
+        }
+        return answer.get()
     }
 
     // `url` is the saved (primary) address; `tailscale` is the Tailscale address the server told this phone about, or null.
@@ -258,7 +308,8 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         ])
     }
 
-    // Drop a server from the remembered list (does not touch the active choice). Its name and Tailscale address go with it.
+    // Drop a server from the remembered list (does not touch the active choice). Its name and Tailscale address go with it, and
+    // so does the sign-in saved for that address (it was only ever meaningful for that server), as on Android.
     @objc func forget(_ call: CAPPluginCall) {
         guard let url = call.getString("url") else {
             call.resolve()
@@ -266,6 +317,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         ServerConfigStore.writes.async {
             ServerConfigStore.forget(url)
+            _ = KeychainSessionStore.vault.clear(url)
             call.resolve()
         }
     }
@@ -284,7 +336,14 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         // On the writes queue, so a save queued just before this one has landed first; resolved after, so the restart the
         // page asks for next starts from the cleared state.
         ServerConfigStore.writes.async {
+            // Read here, on the queue: a save queued just before this one has landed by now, so the right address is cleared.
+            let leaving: String? = ServerConfigStore.savedURL
             ServerConfigStore.savedURL = nil
+            // The sign-in saved for the server being left goes too, as on Android: "Change server" leaves that server, and the
+            // next sign-in there saves it again.
+            if let address = leaving {
+                _ = KeychainSessionStore.vault.clear(address)
+            }
             call.resolve()
         }
     }
@@ -355,8 +414,126 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         ServerConfigStore.writes.async {
             if hadOne {
                 ServerConfigStore.forgetTailscale(for: home)
+                // The saved sign-in was stamped with that address. It could never be handed out without it, but if the server
+                // offers the same address again later it would match again, and a sign-out in between that could not reach the
+                // server would be undone (agy review of Android phase D). So it goes with the address, as on Android.
+                _ = KeychainSessionStore.vault.clear(home)
             }
             call.resolve(["removed": hadOne])
+        }
+    }
+
+    // ---- One sign-in across the two addresses (iOS phase 2, 2026-11-08; a port of Android's plan phase D) ----
+    //
+    // The saved address and the Tailscale address are different web origins with separate storage, so the web app would ask for
+    // a sign-in on each. The session token is therefore also kept in the iOS Keychain (SessionVault over KeychainSessionStore),
+    // one entry per SAVED address, so the page on the server's Tailscale address can sign in without asking again. The rules are
+    // in SessionRules (pure, run by ios/Tests); this is the glue. What the glue must keep (Android's reviews, and the Codex and
+    // Opus plan review of this port):
+    //  - a server's id is PUBLIC and proves nothing, so a session is handed ONLY to the page that IS the saved Tailscale address,
+    //    never to the saved address or any other page, and only while everything the entry was stamped with still matches
+    //    (SessionRules.checkDelivery);
+    //  - the page cannot choose an id or an address: the bindings come from what the app itself saved;
+    //  - save, clear, the purge and getSession's final check run on ONE first-in-first-out queue (ServerConfigStore.writes), so
+    //    they cannot reorder or race;
+    //  - every call is refused unless the web view is really showing the origin the bridge was built for (SessionRules.mayAct,
+    //    mayClear, isTailscalePage), because Capacitor iOS lets the web view wander to a URL that merely starts with it.
+    // The refusal shapes are Android's exactly: save and clear reject with "Not available on this page" / "Not a session token";
+    // getSession answers { token: null } for EVERY refusal, so a page learns nothing about why.
+
+    // saveSession({ token, tailscale }): the web app signed in (or confirmed its sign-in) and asks the app to keep the token. From
+    // the saved address or its Tailscale address only, and only from the page the web view is really showing (SessionRules.mayAct);
+    // the token must look like a session token. `tailscale` is the address this page's own server just offered (nil when not
+    // known): the stamp keeps the Tailscale binding only when it equals the one saved (SessionRules.stampFor), so an address
+    // planted by another page never gets a token. On the queue, the bindings must still be the ones the page was checked against
+    // (SessionRules.stampOnQueue), else nothing is written and it resolves { saved: false }: a server switch in between must not
+    // put this server's token in the other server's slot. The web app saves again after it has learned the Tailscale address
+    // (App.jsx, after syncTailscaleEndpoint), so a refused or unbound first save is put right by the second. Resolves { saved }.
+    @objc func saveSession(_ call: CAPPluginCall) {
+        let token: String? = call.getString("token")
+        let checked: SessionRules.Bindings? = ServerConfigStore.currentBindings()
+        guard let before = checked, SessionRules.mayAct(before, bridgeUrl: pageServerURL(), webViewUrl: shownPageURL()) else {
+            call.reject("Not available on this page")
+            return
+        }
+        guard let accepted = token, SessionRules.isPlausibleToken(accepted) else {
+            call.reject("Not a session token")
+            return
+        }
+        let claimed: String? = call.getString("tailscale")
+        ServerConfigStore.writes.async {
+            let now: SessionRules.Bindings? = ServerConfigStore.currentBindings()
+            guard let stamp = SessionRules.stampOnQueue(checked: before, now: now, claimedTailscale: claimed) else {
+                call.resolve(["saved": false])
+                return
+            }
+            let saved: Bool = KeychainSessionStore.vault.save(SessionRules.Entry(token: accepted, bindings: stamp))
+            call.resolve(["saved": saved])
+        }
+    }
+
+    // getSession(): the page asks for a saved session. Resolves { token } with the token, or { token: null } for EVERY refusal.
+    // Only the page that is the saved Tailscale address, and is really showing it, can get one (SessionRules.isTailscalePage).
+    // Its own live /api/health id is read first, OFF the queue (a slow network must not hold up saves and clears), then, on the
+    // queue, the entry is read and checked against the bindings as they are at that moment (SessionRules.checkDelivery).
+    //
+    // Then one last look, on the main thread, immediately before the token is handed over (Opus plan review of iOS phase 2,
+    // 2026-11-08): the web view must still be showing the bridge's origin. Capacitor delivers a reply to whatever page the web
+    // view has loaded when the reply arrives, and the id check takes up to 3 s, long enough for a page at a lookalike address
+    // (one that merely starts with the Tailscale address, which Capacitor iOS lets the web view open) to have navigated in. The
+    // check and the resolve run in the SAME main-thread block, which leaves less room than reading the URL with shownPageURL and
+    // resolving from another queue, and needs no time limit because nothing waits for it.
+    // Remaining gap, stated: Capacitor's resolve itself queues the reply to the web view as another main-thread block, so a
+    // navigation that commits in between those two main-thread blocks would still receive it. That is one turn of the main
+    // thread after a 3 s window that is now checked at both ends; it is not closed. The frame limit at pageServerURL also applies.
+    @objc func getSession(_ call: CAPPluginCall) {
+        let none: [String: Any] = ["token": NSNull()]
+        let current: SessionRules.Bindings? = ServerConfigStore.currentBindings()
+        guard let page = pageServerURL(), SessionRules.isTailscalePage(current, bridgeUrl: page, webViewUrl: shownPageURL()) else {
+            call.resolve(none)
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let liveId: String? = EndpointProbe.fetchHealth(page, timeout: ServerConfigPlugin.sessionProbeTimeout)?.id
+            ServerConfigStore.writes.async {
+                let now: SessionRules.Bindings? = ServerConfigStore.currentBindings()
+                var entry: SessionRules.Entry? = nil
+                if let bindings = now, case .found(let stored) = KeychainSessionStore.vault.load(bindings.savedUrl) {
+                    entry = stored
+                }
+                let verdict: SessionRules.Delivery = SessionRules.checkDelivery(page: page, current: now, entry: entry, liveId: liveId)
+                guard verdict == .ok, let token = entry?.token else {
+                    call.resolve(none)
+                    return
+                }
+                DispatchQueue.main.async { [weak self] in
+                    let shown: String? = self?.bridge?.webView?.url?.absoluteString
+                    if EndpointRules.sameOrigin(shown, page) {
+                        call.resolve(["token": token])
+                    } else {
+                        call.resolve(none)
+                    }
+                }
+            }
+        }
+    }
+
+    // clearSession({ token? }): the web app signed out, or the server rejected a token. Needs no network. With a token, only if it
+    // is the one stored (a rejection of an old token must not delete a newer sign-in). Allowed from any page that is really the
+    // server's (SessionRules.mayClear), including a Tailscale page whose address was removed or replaced while it was open: a
+    // sign-out there must still delete the entry. A Keychain that is busy deletes nothing and answers { cleared: false } (the
+    // store logs its status); it is never mistaken for "nothing to clear" inside the vault. Resolves { cleared }.
+    @objc func clearSession(_ call: CAPPluginCall) {
+        let current: SessionRules.Bindings? = ServerConfigStore.currentBindings()
+        guard let now = current, SessionRules.mayClear(now, bridgeUrl: pageServerURL(), webViewUrl: shownPageURL()) else {
+            call.reject("Not available on this page")
+            return
+        }
+        let token: String? = call.getString("token")
+        ServerConfigStore.writes.async {
+            let result: SessionVault.Clear = KeychainSessionStore.vault.clear(now.savedUrl, onlyIfToken: token)
+            let cleared: Bool = (result == .cleared)
+            call.resolve(["cleared": cleared])
         }
     }
 
@@ -425,8 +602,11 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         let name: String? = EndpointProbe.parseHealth(body)?.name
         ServerConfigStore.writes.async {
             ServerConfigStore.savedURL = url
+            // The iOS twin of Android's dropTailscaleIfAnotherServer: the stale pair goes, and with it the sign-in saved for this
+            // address, which was bound to that pair.
             if !EndpointRules.pairStillValid(wantedId: ServerConfigStore.tailscaleId(for: url), liveId: liveId) {
                 ServerConfigStore.forgetTailscale(for: url)
+                _ = KeychainSessionStore.vault.clear(url)
             }
             ServerConfigStore.remember(url)
             ServerConfigStore.rememberName(url, name)
@@ -477,5 +657,24 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
             let storyboard = UIStoryboard(name: "Main", bundle: nil)
             window.rootViewController = storyboard.instantiateInitialViewController()
         }
+    }
+}
+
+/// The web view's URL as the main thread read it for shownPageURL: written on the main thread and read on the waiting one, so
+/// it is locked. A read that lands after the wait gave up writes into a box nobody reads any more, which is harmless.
+private final class ShownPageAnswer {
+    private let lock = NSLock()
+    private var value: String? = nil
+
+    func set(_ newValue: String?) {
+        lock.lock()
+        value = newValue
+        lock.unlock()
+    }
+
+    func get() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }

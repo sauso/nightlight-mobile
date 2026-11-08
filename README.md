@@ -85,6 +85,9 @@ refuses that exact token (`clearSession`). The rules are in `SessionRules` and a
   so a child frame under an accepted page could call `saveSession`; Nightlight's own pages use none and its CSP forbids a
   cross-origin one, so this is a conditional gap, stated.
 
+The iPhone app does the same, keeping the copy in the iOS Keychain: see
+[One sign-in across the two addresses (iOS)](#one-sign-in-across-the-two-addresses-ios).
+
 ## Two addresses for one server (iOS)
 
 The iPhone app uses your server's Tailscale address too: at home it opens the address you set it up with, and away from home
@@ -109,8 +112,6 @@ Tailscale address saved, the launch is exactly as before: no probe, no wait. The
 from Android as judgements, not measurements.
 
 Known limits on iOS:
-- **Each address has its own sign-in.** Signing in at home does not sign you in on the Tailscale address, so the first time the
-  app opens through Tailscale it asks you to sign in there too. The one-sign-in copy above is Android only for now.
 - **No switch when the network changes.** The address is chosen when the app starts. After leaving home or coming back, close the
   app and open it again to change address.
 - **When neither address answers**, the app opens the saved address and shows the "Can't reach your server" screen, as it always
@@ -121,6 +122,41 @@ Known limits on iOS:
 - **Tested**: the rules (`EndpointRules.swift`, the reply parsing in `EndpointProbe.swift`, `EndpointChooser.swift`) are compiled
   on their own with `swiftc` and run in CI (`ios/Tests`, the first step of `build-ios.yml`), with no network. The plugin glue,
   the launch choice and the network reading need an iPhone. Background audio is unchanged.
+
+## One sign-in across the two addresses (iOS)
+
+Sign in once at home, and the iPhone app opens the Tailscale address already signed in, as the Android app does. The two
+addresses then share that one sign-in, so signing out on either ends it on both (the server stops accepting it) and removes the
+saved copy. The web app's calls are the same three (`ServerConfig.saveSession`, `getSession`, `clearSession`), and so are the
+rules, ported case for case from Android
+(`SessionRules.swift`, `SessionVault.swift`; see the Android section above for why each one exists): the saved sign-in is handed
+ONLY to the page that is the saved Tailscale address, only while the saved address, the Tailscale address and its id are the
+ones it was saved under and that page's live `/api/health` id still equals them, and the Tailscale address is bound to it only
+when the web app says its own server has just offered that same address. Every call is refused unless the web view is really
+showing the origin the app opened. What is different on an iPhone:
+
+- **Where it is kept.** In the iOS Keychain, one item per saved address (service `com.sauso.nightlight.session`). The item is
+  readable once the phone has been unlocked after it started, so a page that reloads with the screen locked (audio playing) can
+  still sign in. It is never synced through iCloud Keychain, and it is marked "this device only", which Apple documents as not
+  moving to a new phone through a backup or a transfer. Android's extra encryption layer (a key in the Android Keystore) has no
+  iOS counterpart: the Keychain item is the protection. The app does not change how iOS backs up the web view's own storage,
+  where each address keeps its own sign-in as before.
+- **Reinstalling starts signed out.** iOS keeps Keychain items when an app is deleted, so the first start of a new install
+  removes any saved sign-in under that service before a page can ask for one. A marker in the app's settings (which deleting
+  the app does clear) records that this has run. It is written only after the removal finished, so a removal that failed runs
+  again at the next start. The first start after updating to this version runs it once too, with nothing to remove.
+- **A locked or busy Keychain changes nothing.** If the Keychain cannot be read right now, the page gets no saved sign-in this
+  time and nothing is deleted. The same goes for a sign-out the Keychain refuses (not expected once the phone has been unlocked
+  since it started): the copy stays, and the device log shows the Keychain's status code (never the token or the address).
+- **Moving between the addresses when the network changes is still Android only.** After leaving home or coming back, close
+  the app and open it again.
+- **Known limits.** As on Android: someone with an account on your server who controls a device at a plain-http saved address
+  could store their own sign-in; two separate sign-ins stay separate. The frame limit above applies. One more, iOS only: the
+  page is checked again on the main thread just before the sign-in is handed over, but Capacitor sends the reply as a separate
+  step, so a page that navigated in during that last instant would still receive it.
+- **Tested**: the rules, the vault and the Keychain status handling (`KeychainLogic.swift`, against a fake Keychain that refuses
+  a duplicate add as the real one does) run in CI with `swiftc`. The Keychain calls themselves (`KeychainSessionStore.swift`),
+  the plugin glue and the clean-up after a reinstall need an iPhone.
 
 ## Branding
 
