@@ -5,16 +5,17 @@ package com.sauso.nightlight
  * house and Wi-Fi turns to mobile data, and the page sat on a dead home address until the app was restarted).
  *
  * The idea is deliberately small: when the network changes, the app runs the SAME choice the launch runs
- * (MainActivity.chooseAddress: the saved address first, the Tailscale one as the fallback), and if that picks a different
- * address from the one on screen, the activity is recreated, which re-runs the launch gate. No new way of choosing.
- * What is new is WHEN a switch may happen and how often, which is all here.
+ * (MainActivity.chooseAddress: the Tailscale address first, the saved one when Tailscale does not answer; owner decision
+ * 2026-11-09), and if that picks a different address from the one on screen, and [target] allows the move, the activity is
+ * recreated, which re-runs the launch gate. No new way of choosing. What is new is WHEN a switch may happen and how often,
+ * which is all here.
  *
  * Pure Kotlin with no Android imports, so the JVM unit tests (RoamRulesTest) run exactly this code. The glue that feeds it
  * (the network callback, the main-thread reads, the recreate) is NetworkRoamWatcher, which only a phone can test.
  */
 object RoamRules {
 
-    /** Why an address check runs. Only a foreground start may move the app back home (see [target]). */
+    /** Why an address check runs. Only a foreground start may UPGRADE a working page to Tailscale (see [target]). */
     enum class Trigger { NETWORK_CHANGE, FOREGROUND_START }
 
     // How long a network event waits before the check runs, and how long after the app comes to the front the start check
@@ -38,24 +39,47 @@ object RoamRules {
     }
 
     /**
-     * The address to switch to, or null to stay.
+     * The move to make, or null to stay. Under Tailscale first (owner decision 2026-11-09) the launch's choice alone cannot say
+     * whether a move is urgent: the choice can pick the saved address because Tailscale was a little slow, while the Tailscale
+     * page on screen works perfectly. So the watcher takes a SECOND LOOK at the page on screen first, and this decides on both
+     * (Codex plan review of Tailscale first, 2026-11-09):
      *  - [current] is [currentAddress]'s answer for the page on screen; [chosen] is what the launch's choice picked just now
-     *    (null when neither address answered).
-     *  - FAIL-OVER (the saved address is on screen and only Tailscale answers now) is allowed at once, for either trigger and
-     *    even in Picture-in-Picture: the page on screen is already dead, so a reload loses nothing that still works.
-     *  - FAIL-BACK (Tailscale is on screen and the saved address answers again) is allowed ONLY at a foreground start, and not
-     *    in Picture-in-Picture (owner, 2026-11-06, refined after the Codex plan review). Tailscale keeps working over Wi-Fi, so
-     *    there is no hurry, and a reload while someone is looking at the app would cut a form, an upload or a video. A start
-     *    (the app opened again, or the screen turned back on with the app in front) is the moment nothing is lost.
-     *  - Anything else stays: nothing chosen, the same address, a page on neither address, no Tailscale address saved.
-     * (The null checks below are also implied by the two direction rules; they are written out so the rule reads as stated.
-     * The same-address check is not: it is what stops a saved address that equals its own Tailscale address from "switching"
-     * to itself.)
+     *    (null when neither address answered); [currentAnswers] is the second look at [current]: true = it answers, false =
+     *    it is DEAD (a completed failed probe, including its timeout), null = the look could not be taken.
+     *  - ESCAPE (the page on screen is dead): move to [chosen] at once, in either direction, for either trigger and even in
+     *    Picture-in-Picture: the page is already dead, so a reload loses nothing that still works. Only to one of the two
+     *    addresses.
+     *  - UPGRADE (the saved address is on screen and works, and Tailscale answers): allowed ONLY at a foreground start, and not
+     *    in Picture-in-Picture (owner, 2026-11-06, refined after the Codex plan review of the roaming plan; unchanged by Tailscale
+     *    first). The saved page keeps working, so there is no hurry, and a reload while someone is looking at the app would cut a
+     *    form, an upload or a video. A start (the app opened again, or the screen turned back on with the app in front) is the
+     *    moment nothing is lost.
+     *  - A WORKING Tailscale page is never moved to the saved address, and a working saved page is not moved on a network
+     *    change. "Not known" (null) counts as working: a doubt never reloads a page.
+     *  - Anything else stays: nothing chosen, the same address, a page on neither address, no Tailscale address saved, a chosen
+     *    address that is neither of the two.
+     * (The null checks below are also implied by the rules after them; they are written out so the rule reads as stated. The
+     * same-address check is not: it is what stops a saved address that equals its own Tailscale address from "moving" to
+     * itself. Neither is the check that the page is on one of the two addresses: [currentAddress] only ever gives one of them
+     * or null, and this keeps it so if a caller passes anything else.)
      */
-    fun target(trigger: Trigger, saved: String, tailscale: String?, current: String?, chosen: String?, inPip: Boolean): String? {
+    fun target(
+        trigger: Trigger,
+        saved: String,
+        tailscale: String?,
+        current: String?,
+        chosen: String?,
+        inPip: Boolean,
+        currentAnswers: Boolean?,
+    ): RoamMove? {
         if (tailscale == null || current == null || chosen == null || chosen == current) return null
-        if (current == saved && chosen == tailscale) return chosen
-        if (current == tailscale && chosen == saved && trigger == Trigger.FOREGROUND_START && !inPip) return chosen
+        if (current != saved && current != tailscale) return null
+        if (currentAnswers == false) {
+            return if (chosen == saved || chosen == tailscale) RoamMove(chosen, escape = true) else null
+        }
+        if (current == saved && chosen == tailscale && trigger == Trigger.FOREGROUND_START && !inPip) {
+            return RoamMove(tailscale, escape = false)
+        }
         return null
     }
 
@@ -78,6 +102,14 @@ object RoamRules {
         return RETRY_OFFSETS_MS[attempt] - previous
     }
 }
+
+/**
+ * A move RoamRules.target allows: the [address] to open, and whether it is an [escape] from a page that stopped answering
+ * (true, either direction) or the optional UPGRADE from a working saved page to Tailscale (false). The watcher's last checks on
+ * the main thread hold back UPGRADES only (Codex plan review of Tailscale first, 2026-11-09): applied to every move, its
+ * Picture-in-Picture check would trap a person on a dead Tailscale page.
+ */
+data class RoamMove(val address: String, val escape: Boolean)
 
 /**
  * Every recreate() the app makes ON ITS OWN, so that two reasons to recreate cannot add up to a loop (Codex review of the plan:
@@ -156,7 +188,7 @@ class RecreateLog {
 /**
  * Which default-network callbacks are a real change. Registering a callback makes Android report the CURRENT network at
  * once (onAvailable, then onCapabilitiesChanged), and that echo is not a change: counted as one, it would turn every
- * foreground-start check into a network-change check and the app would never move back home.
+ * foreground-start check into a network-change check and the app would never upgrade a working saved page to Tailscale.
  *  - onAvailable: the echo is the first one, for the network that was the default when the callback was registered
  *    ([atRegistration], read just before registering). When there was NO network then (airplane mode), there is no echo, so
  *    the first network to arrive IS a change (a plain "skip the first call" would miss exactly that one).

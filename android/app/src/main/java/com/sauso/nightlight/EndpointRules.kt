@@ -1,8 +1,9 @@
 package com.sauso.nightlight
 
 /**
- * The rules for a server's second address, the one the phone uses away from home (owner, 2026-11-06: the phone tries the
- * local address first and falls back to the server's Tailscale address, which the server tells it about).
+ * The rules for a server's second address: its secure Tailscale address, which the server tells the phone about (owner,
+ * 2026-11-06). Since the owner decision of 2026-11-09 ("we go Tailscale first") the phone opens that address first when it
+ * answers and uses the saved address when it does not (EndpointChooser); before that, the saved address came first.
  *
  * Pure Kotlin with no Android imports, so the JVM unit tests run exactly this code.
  *
@@ -35,7 +36,9 @@ object EndpointRules {
     /**
      * True when [url]'s host can only be reached from a local network: a private IPv4 address (10/8, 172.16/12, 192.168/16) or
      * a `.local` name. A public name or address (a domain with HTTPS, say) is NOT local-only: it answers on mobile data too.
-     * Anything that does not parse is not local-only (so the ordinary wait applies).
+     * Anything that does not parse is not local-only.
+     * Nothing on Android calls this since the launch went Tailscale first (its short off-Wi-Fi wait for the saved address went);
+     * it stays, with its tests, for the planned iPhone "Find server" port (Codex plan review of Tailscale first, 2026-11-09).
      */
     fun isLocalOnlyAddress(url: String?): Boolean {
         if (url == null) return false
@@ -47,21 +50,24 @@ object EndpointRules {
         return DiscoveryRules.isPrivateIpv4(host) || host.lowercase().endsWith(".local")
     }
 
-    // How long a launch waits for a saved address that says nothing, when the phone cannot be on its network (below). A
-    // judgement, not a measurement: a reachable home server answers in milliseconds and even a slow Wi-Fi in well under a
-    // second, so this is generous for a phone that merely just joined Wi-Fi, and short enough that the Tailscale fallback
-    // opens in about a second instead of three.
-    const val OFF_NETWORK_WAIT_MS = 1_000L
+    // How long a saved address that has ANSWERED waits for the Tailscale one at launch (EndpointChooser's grace), counted from
+    // the start of the decision. A judgement, not a measurement (owner decision 2026-11-09, Tailscale first): Tailscale switched
+    // on and healthy answers in well under a second, so a second is enough for it to win; a Tailscale path that is cold (relayed,
+    // or the first request after a while idle) can take longer, and then the launch opens the saved address and the next
+    // foreground start moves it to Tailscale (RoamRules.target, the upgrade).
+    const val TAILSCALE_GRACE_MS = 1_000L
+
+    // The same grace when the phone positively has no VPN at all (VpnPresent), so a Tailscale answer is not expected. A judgement,
+    // not a measurement: with Tailscale off, opening the saved address should not be held up by more than a quarter of a second.
+    const val TAILSCALE_GRACE_NO_VPN_MS = 250L
 
     /**
-     * How long the launch gate waits for the saved address before it uses the Tailscale one. The short wait applies only when
-     * ALL of: a Tailscale address is saved (otherwise there is nothing to switch to, so the saved address keeps its whole
-     * chance), the phone is not on Wi-Fi or Ethernet, and the saved address is one only a local network can answer. Every other
-     * case waits the full [fullMs]. Away from home on mobile data, a home address cannot answer: waiting three seconds for it
-     * was the pause the owner saw on the first phone test (2026-11-06).
+     * The grace for this launch. The VPN reading is a hint that can only SHORTEN the wait (its failure reads as "present", the
+     * full grace): if it is wrong, the worst case is that a slower but valid Tailscale answer loses to the saved address, which
+     * is the saved-first behaviour the app had before; the app never opens an unverified Tailscale address because of it
+     * (Codex plan review of Tailscale first, 2026-11-09).
      */
-    fun localWaitMs(saved: String?, tailscale: String?, onLocalNetwork: Boolean, fullMs: Long): Long =
-        if (tailscale != null && !onLocalNetwork && isLocalOnlyAddress(saved)) minOf(OFF_NETWORK_WAIT_MS, fullMs) else fullMs
+    fun tailscaleGraceMs(vpnPresent: Boolean): Long = if (vpnPresent) TAILSCALE_GRACE_MS else TAILSCALE_GRACE_NO_VPN_MS
 
     /**
      * Whether `save` may take a REMEMBERED server whose own address did not answer, because the Tailscale address saved for it
@@ -123,8 +129,10 @@ object EndpointRules {
      * The check that needs the network's answers: the server the page is on ([reference]) and the offered address
      * ([candidate]) both reported an id, and it is the same one. This is an identity CLAIM, not proof: /api/health is public, so
      * a page that is itself hostile can name an address that repeats the id. That page is the server the person chose to use,
-     * so it could already show anything; what it cannot do is change the saved address, and the address is opened only when
-     * the saved one is not answering.
+     * so it could already show anything; what it cannot do is change the saved address. Since Tailscale first (owner decision
+     * 2026-11-09) an accepted address is opened AHEAD of the saved one whenever it answers with that id, at home too, where
+     * before it was opened only when the saved address did not answer: such a page's address therefore wins more launches
+     * than it used to. A known limit, unchanged in kind: the page could already show anything at the saved address.
      */
     fun checkIdentity(reference: DiscoveryRules.Health?, candidate: DiscoveryRules.Health?): AddCheck {
         if (reference == null) return AddCheck.UNREADABLE_SERVER

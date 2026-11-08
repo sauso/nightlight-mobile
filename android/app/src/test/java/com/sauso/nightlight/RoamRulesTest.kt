@@ -11,8 +11,9 @@ import org.junit.Test
  * its own test, so a dropped or flipped rule fails the test named for it.
  *
  * Not reachable here (Android glue, phone checks only): registering and unregistering the network callback, the generation
- * check that makes a late check dead on arrival, the main-thread reads of the page URL and Picture-in-Picture, the debounce
- * and retry timing on the worker thread, and the recreate itself (NetworkRoamWatcher, MainActivity).
+ * check that makes a late check dead on arrival, the main-thread reads of the page URL and Picture-in-Picture, the second look's
+ * probe of the page on screen, the final main-thread check that holds back upgrades only, the debounce and retry timing on the
+ * worker thread, and the recreate itself (NetworkRoamWatcher, MainActivity).
  */
 class RoamRulesTest {
 
@@ -63,82 +64,127 @@ class RoamRulesTest {
         assertNull(RoamRules.currentAddress(null, saved, tailscale))
     }
 
-    // ---- target: whether to switch, and in which direction ----
+    // ---- target: whether to move, and how (owner decision 2026-11-09, Tailscale first; Codex plan review the same day) ----
+    // currentAnswers is the watcher's second look at the page on screen: true = it answers, false = it is dead, null = the look
+    // could not be taken.
+
+    // Every trigger with and without Picture-in-Picture, for the rows that must hold in all of them.
+    private val everyCase = listOf(start to false, start to true, change to false, change to true)
+    private val answersOrUnknown = listOf<Boolean?>(true, null)
 
     @Test
-    fun `fail-over happens on a network change`() {
-        assertEquals(tailscale, RoamRules.target(change, saved, tailscale, current = saved, chosen = tailscale, inPip = false))
+    fun `a dead saved page escapes to tailscale on either trigger, even in picture-in-picture`() {
+        // The page on screen already stopped answering: a reload loses nothing that still works.
+        for ((trigger, inPip) in everyCase) {
+            assertEquals("$trigger, in PiP $inPip", RoamMove(tailscale, escape = true),
+                RoamRules.target(trigger, saved, tailscale, current = saved, chosen = tailscale, inPip = inPip, currentAnswers = false))
+        }
     }
 
     @Test
-    fun `fail-over happens at a foreground start`() {
-        assertEquals(tailscale, RoamRules.target(start, saved, tailscale, current = saved, chosen = tailscale, inPip = false))
+    fun `a dead tailscale page escapes to the saved address on either trigger, even in picture-in-picture`() {
+        // Tailscale switched off while its page is open: the page is dead, so the saved address that just answered is used.
+        for ((trigger, inPip) in everyCase) {
+            assertEquals("$trigger, in PiP $inPip", RoamMove(saved, escape = true),
+                RoamRules.target(trigger, saved, tailscale, current = tailscale, chosen = saved, inPip = inPip, currentAnswers = false))
+        }
     }
 
     @Test
-    fun `fail-over happens in picture-in-picture too`() {
-        // The page on screen is already dead: the PiP restriction is for fail-back only.
-        assertEquals(tailscale, RoamRules.target(change, saved, tailscale, current = saved, chosen = tailscale, inPip = true))
+    fun `a working saved page is upgraded to tailscale at a foreground start`() {
+        assertEquals(RoamMove(tailscale, escape = false),
+            RoamRules.target(start, saved, tailscale, current = saved, chosen = tailscale, inPip = false, currentAnswers = true))
     }
 
     @Test
-    fun `fail-back happens at a foreground start`() {
-        assertEquals(saved, RoamRules.target(start, saved, tailscale, current = tailscale, chosen = saved, inPip = false))
+    fun `a working saved page is not upgraded on a network change`() {
+        // The saved page keeps working, so there is no hurry: a reload while someone is using the app would cut what they do.
+        assertNull(RoamRules.target(change, saved, tailscale, current = saved, chosen = tailscale, inPip = false, currentAnswers = true))
     }
 
     @Test
-    fun `fail-back does not happen on a network change`() {
-        assertNull(RoamRules.target(change, saved, tailscale, current = tailscale, chosen = saved, inPip = false))
+    fun `a working saved page is not upgraded in picture-in-picture`() {
+        assertNull(RoamRules.target(start, saved, tailscale, current = saved, chosen = tailscale, inPip = true, currentAnswers = true))
     }
 
     @Test
-    fun `fail-back does not happen in picture-in-picture`() {
-        assertNull(RoamRules.target(start, saved, tailscale, current = tailscale, chosen = saved, inPip = true))
+    fun `a second look that could not be taken counts as working`() {
+        // A doubt never reloads a page: the unknown case moves only where a working page would.
+        assertEquals(RoamMove(tailscale, escape = false),
+            RoamRules.target(start, saved, tailscale, current = saved, chosen = tailscale, inPip = false, currentAnswers = null))
+        assertNull(RoamRules.target(change, saved, tailscale, current = saved, chosen = tailscale, inPip = false, currentAnswers = null))
+        assertNull(RoamRules.target(start, saved, tailscale, current = saved, chosen = tailscale, inPip = true, currentAnswers = null))
+        for ((trigger, inPip) in everyCase) {
+            assertNull("$trigger, in PiP $inPip",
+                RoamRules.target(trigger, saved, tailscale, current = tailscale, chosen = saved, inPip = inPip, currentAnswers = null))
+        }
+    }
+
+    @Test
+    fun `a working tailscale page is never moved to the saved address`() {
+        // The old fail-back at a foreground start is gone: Tailscale first means a working Tailscale page stays.
+        for ((trigger, inPip) in everyCase) {
+            assertNull("$trigger, in PiP $inPip",
+                RoamRules.target(trigger, saved, tailscale, current = tailscale, chosen = saved, inPip = inPip, currentAnswers = true))
+        }
     }
 
     @Test
     fun `nothing happens without a tailscale address`() {
-        // Implied by the direction rules as well (with no Tailscale address there is nothing to fail over to): this pins the
-        // behaviour, and a mutant that drops only the explicit null check is equivalent.
-        assertNull(RoamRules.target(change, saved, null, current = saved, chosen = tailscale, inPip = false))
+        // Implied by the rules after it as well (the chosen address is then neither of the two): this pins the behaviour, and a
+        // mutant that drops only the explicit null check is equivalent.
+        for (answers in listOf<Boolean?>(false, true, null)) {
+            assertNull("second look $answers", RoamRules.target(start, saved, null, current = saved, chosen = tailscale, inPip = false, currentAnswers = answers))
+        }
     }
 
     @Test
-    fun `nothing happens when the page is on neither address`() {
-        assertNull(RoamRules.target(change, saved, tailscale, current = null, chosen = tailscale, inPip = false))
-        assertNull(RoamRules.target(start, saved, tailscale, current = null, chosen = saved, inPip = false))
-    }
-
-    @Test
-    fun `nothing happens when nothing answered`() {
-        assertNull(RoamRules.target(change, saved, tailscale, current = saved, chosen = null, inPip = false))
-        assertNull(RoamRules.target(start, saved, tailscale, current = tailscale, chosen = null, inPip = false))
-    }
-
-    @Test
-    fun `nothing happens when the choice is the address already on screen`() {
-        assertNull(RoamRules.target(change, saved, tailscale, current = saved, chosen = saved, inPip = false))
-        assertNull(RoamRules.target(start, saved, tailscale, current = tailscale, chosen = tailscale, inPip = false))
-    }
-
-    @Test
-    fun `a saved address that is its own tailscale address never switches to itself`() {
-        // The one case where only the same-address check stops a "fail-over" (saved == tailscale == current == chosen).
-        assertNull(RoamRules.target(change, tailscale, tailscale, current = tailscale, chosen = tailscale, inPip = false))
-    }
-
-    @Test
-    fun `an unrelated page address never switches`() {
+    fun `nothing happens when the page is on neither address, even when it is dead`() {
         val other = "https://other.example"
-        assertNull(RoamRules.target(change, saved, tailscale, current = other, chosen = tailscale, inPip = false))
-        assertNull(RoamRules.target(start, saved, tailscale, current = other, chosen = saved, inPip = false))
+        for (answers in listOf<Boolean?>(false, true, null)) {
+            assertNull(RoamRules.target(change, saved, tailscale, current = null, chosen = tailscale, inPip = false, currentAnswers = answers))
+            assertNull(RoamRules.target(start, saved, tailscale, current = null, chosen = saved, inPip = false, currentAnswers = answers))
+            assertNull(RoamRules.target(change, saved, tailscale, current = other, chosen = tailscale, inPip = false, currentAnswers = answers))
+            assertNull(RoamRules.target(start, saved, tailscale, current = other, chosen = saved, inPip = false, currentAnswers = answers))
+        }
     }
 
     @Test
-    fun `an unrelated chosen address is never switched to`() {
+    fun `nothing happens when nothing answered, even from a dead page`() {
+        // (The watcher retries on its own schedule in that case: RoamRules.retryDelayAfter.)
+        for (answers in listOf<Boolean?>(false, true, null)) {
+            assertNull(RoamRules.target(change, saved, tailscale, current = saved, chosen = null, inPip = false, currentAnswers = answers))
+            assertNull(RoamRules.target(start, saved, tailscale, current = tailscale, chosen = null, inPip = false, currentAnswers = answers))
+        }
+    }
+
+    @Test
+    fun `nothing happens when the choice is the address already on screen, even a dead one`() {
+        for (answers in listOf<Boolean?>(false, true, null)) {
+            assertNull(RoamRules.target(change, saved, tailscale, current = saved, chosen = saved, inPip = false, currentAnswers = answers))
+            assertNull(RoamRules.target(start, saved, tailscale, current = tailscale, chosen = tailscale, inPip = false, currentAnswers = answers))
+        }
+    }
+
+    @Test
+    fun `a saved address that is its own tailscale address never moves to itself`() {
+        // The case where only the same-address check stops a move (saved == tailscale == current == chosen): as an escape from
+        // a dead page, and as an upgrade at a start.
+        assertNull(RoamRules.target(change, tailscale, tailscale, current = tailscale, chosen = tailscale, inPip = false, currentAnswers = false))
+        for (answers in answersOrUnknown) {
+            assertNull(RoamRules.target(start, tailscale, tailscale, current = tailscale, chosen = tailscale, inPip = false, currentAnswers = answers))
+        }
+    }
+
+    @Test
+    fun `an unrelated chosen address is never moved to, even from a dead page`() {
         val other = "https://other.example"
-        assertNull(RoamRules.target(change, saved, tailscale, current = saved, chosen = other, inPip = false))
-        assertNull(RoamRules.target(start, saved, tailscale, current = tailscale, chosen = other, inPip = false))
+        for (answers in listOf<Boolean?>(false, true, null)) {
+            for ((trigger, inPip) in everyCase) {
+                assertNull(RoamRules.target(trigger, saved, tailscale, current = saved, chosen = other, inPip = inPip, currentAnswers = answers))
+                assertNull(RoamRules.target(trigger, saved, tailscale, current = tailscale, chosen = other, inPip = inPip, currentAnswers = answers))
+            }
+        }
     }
 
     // ---- RecreateLog: the shared loop guard ----

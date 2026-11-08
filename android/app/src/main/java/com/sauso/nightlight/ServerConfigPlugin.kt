@@ -592,7 +592,8 @@ class ServerConfigPlugin : Plugin() {
             }
             // None answered. A REMEMBERED server that has a Tailscale address can still be reached through it: this is how "Change
             // server" gets back in from cellular, where the home address cannot answer (owner, 2026-11-06). The saved address stays
-            // the one the person picked; the launch gate then opens the Tailscale address because the saved one is not answering.
+            // the one the person picked; the launch gate then opens the Tailscale address (it is tried first anyway since the owner
+            // decision of 2026-11-09, and here the saved one is not answering).
             // ONLY from the bundled setup page, where Change server lands: any page can call save, and this path lets a call switch the
             // active server to a remembered one it could not reach before, so a page on the current server must not have it (Codex
             // review). Such a page could already switch to a remembered server that answers; this does not widen that.

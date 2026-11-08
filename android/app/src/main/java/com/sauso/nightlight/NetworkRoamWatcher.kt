@@ -26,9 +26,10 @@ import java.util.concurrent.atomic.AtomicInteger
  *    schedules one FOREGROUND_START check, so an app brought back to the front after roaming in the background re-chooses
  *    too. Each waits RoamRules.SETTLE_MS, and a newer request replaces a waiting one;
  *  - the check, off the main thread: the page the WebView is really showing must be on the saved address or its Tailscale
- *    address (RoamRules.currentAddress), then the launch's own choice runs (MainActivity.chooseAddress, so the two cannot
- *    drift), RoamRules.target says whether to switch, and the shared loop guard (MainActivity.recreateLog) says whether a
- *    recreate is allowed now;
+ *    address (RoamRules.currentAddress), then the launch's own choice runs (MainActivity.chooseAddress, Tailscale first, so
+ *    the two cannot drift); when it picks the other address, the page on screen gets a SECOND LOOK (does it still answer?),
+ *    RoamRules.target says whether to move (an escape from a dead page, or the upgrade from the saved address to Tailscale),
+ *    and the shared loop guard (MainActivity.recreateLog) says whether a recreate is allowed now;
  *  - when nothing answered, it checks again a few times (RoamRules.retryDelayAfter) and then waits for the next event.
  *
  * Every request carries the GENERATION it was made under. [stop] moves the generation on (onStop runs before every recreate,
@@ -46,11 +47,14 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
 
         // How long a check waits for the main thread to read the page's URL or the Picture-in-Picture state. The same bound,
         // and the same reasoning, as ServerConfigPlugin's PAGE_CHECK_TIMEOUT_MS: the main thread answers in microseconds
-        // unless it is busy, and an answer that does not come counts as "not known" (which never switches anything).
+        // unless it is busy, and an answer that does not come counts as "not known": an unknown page is never moved, and an
+        // unknown Picture-in-Picture state holds back an upgrade (never an escape from a dead page).
         private const val MAIN_THREAD_TIMEOUT_MS = 1_000L
 
-        // The second look at the saved address before a fail-over (see evaluate). Shorter than the launch's 2.5 s probe: the first
-        // probe already waited, this one only has to catch a blip. A judgement, not a measurement.
+        // The second look at the page on screen before any move (see evaluate), as the connect and the read timeout of one probe.
+        // Shorter than the launch's 2.5 s probe: the choice already waited, this one only has to tell a page that works from one
+        // that stopped answering. A judgement, not a measurement. Known limit: a page that is merely slow past this counts as
+        // dead and is left for the address that has just answered, the same risk the old fail-over took.
         private const val STILL_ANSWERING_MS = 1_500
 
         // The transports NetworkEventFilter compares. Wi-Fi to mobile data is the case this is for; Ethernet and VPN are
@@ -70,8 +74,9 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
         }
 
         // ONE thread for every watcher's waits and checks, for the life of the process (like ServerConfigPlugin's
-        // sessionExecutor), so starting and stopping the app does not make and drop threads. A check blocks it for up to
-        // about 4 s (the main-thread read and the 3 s choice), which only delays the next one. A daemon thread.
+        // sessionExecutor), so starting and stopping the app does not make and drop threads. A check blocks it for a few
+        // seconds (the main-thread reads, the 3 s choice and, when the choice picked the other address, the second look), which
+        // only delays the next one. A daemon thread.
         private val worker: Handler by lazy {
             val thread = HandlerThread("nightlight-roam")
             thread.isDaemon = true
@@ -149,8 +154,8 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
     // On the ConnectivityThread: touch nothing here, hand it to the worker.
     private fun networkChanged(gen: Int) {
         // A start check still waiting keeps its trigger: waking the phone usually brings a network event with it (Wi-Fi coming
-        // back), and letting that replace the start check would turn it into a network-change check, which may never move the
-        // app back home, so the person would stay on Tailscale until the next time they opened the app.
+        // back), and letting that replace the start check would turn it into a network-change check, which never upgrades a
+        // working saved page to Tailscale, so the person would stay on the saved address until the next time they opened the app.
         worker.post { schedule(gen, if (startPending) RoamRules.Trigger.FOREGROUND_START else RoamRules.Trigger.NETWORK_CHANGE, 0, RoamRules.SETTLE_MS) }
     }
 
@@ -177,48 +182,70 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
         val current = RoamRules.currentAddress(onMainThread { activity.shownPageUrl() }, saved, tailscale) ?: return
         val chosen = MainActivity.chooseAddress(context, saved, tailscale)
         if (generation.get() != gen) return
-        // Not known (the main thread did not answer in time) counts as in Picture-in-Picture: that only ever holds back a
-        // fail-back, never a fail-over.
+        // The SECOND LOOK at the page on screen (Codex plan review of Tailscale first, 2026-11-09). Under Tailscale first the
+        // choice alone cannot say whether a move is urgent: it can pick the saved address only because Tailscale was a little
+        // slower than its grace, while the Tailscale page on screen works perfectly. Taken only when the choice picked the OTHER
+        // address, so a check that changes nothing probes nothing more, and here on the worker, never on the main thread. It
+        // replaces the old "second look at the saved address before a fail-over" (a sign-in or MFA code half typed is still what
+        // a wrong move costs; a page that works is now never left for anything but the upgrade at a start).
+        val currentAnswers = if (chosen != null && chosen != current) stillAnswers(context, saved, tailscale, current) else null
+        if (generation.get() != gen) return
+        // Not known (the main thread did not answer in time) counts as in Picture-in-Picture: that only ever holds back an
+        // upgrade, never an escape from a dead page.
         val inPip = onMainThread { activity.isInPictureInPictureMode } ?: true
-        val target = RoamRules.target(trigger, saved, tailscale, current, chosen, inPip)
-        if (target == null) {
+        val move = RoamRules.target(trigger, saved, tailscale, current, chosen, inPip, currentAnswers)
+        if (move == null) {
+            // Retries only when NOTHING answered (unchanged). A working page that is not upgraded now needs none: the next
+            // foreground start checks again.
             if (chosen == null) {
                 val wait = RoamRules.retryDelayAfter(attempt)
                 if (wait != null) schedule(gen, trigger, attempt + 1, wait)
             }
             return
         }
-        // A fail-over off a page that is still working is the one wrong move that costs something (a sign-in or an MFA code half
-        // typed): the saved address's probe above can fail for a moment while the page is fine. Ask it once more before leaving it
-        // (Codex review of the code). A saved address that really is gone fails this too, and the switch goes ahead.
-        if (target == tailscale && ServerConfigPlugin.isReachable(saved, STILL_ANSWERING_MS)) {
-            Log.i(TAG, "The saved address still answers: staying on it")
-            return
-        }
-        if (generation.get() != gen) return
-        val which = if (target == tailscale) "the Tailscale address" else "the saved address"
+        val which = if (move.address == tailscale) "the Tailscale address" else "the saved address"
+        val why = if (move.escape) "escape from a page that stopped answering" else "upgrade"
         if (!MainActivity.recreateLog.mayRoam(MainActivity.recreateClockMs())) {
             // No retry: the next network event or the next start checks again.
-            Log.i(TAG, "Would move to $which ($trigger), held back by the reload limit")
+            Log.i(TAG, "Would move to $which ($why), held back by the reload limit")
             return
         }
         activity.runOnUiThread {
             if (generation.get() != gen || activity.isFinishing || activity.isDestroyed) return@runOnUiThread
             // The page may have moved while the probes ran: only switch away from the page the decision was about.
             if (RoamRules.currentAddress(activity.shownPageUrl(), saved, tailscale) != current) return@runOnUiThread
-            // Picture-in-Picture can start between the check and here (the activity stays started in PiP, so the generation does
-            // not move): a fail-back must never recreate a floating video (Codex review of the code). Read on the main thread.
-            if (target == saved && activity.isInPictureInPictureMode) return@runOnUiThread
-            // Asked again HERE: the load-error recreate also runs on the main thread, so this check and the note below cannot
-            // interleave with it.
+            // UPGRADES ONLY: Picture-in-Picture can start between the check and here (the activity stays started in PiP, so the
+            // generation does not move), and an upgrade must never recreate a floating video (Codex review of the code). Read on
+            // the main thread. An ESCAPE is never held back here: the floating video is already dead, and holding it back would
+            // trap the person on a dead page (Codex plan review of Tailscale first, 2026-11-09).
+            if (!move.escape && activity.isInPictureInPictureMode) return@runOnUiThread
+            // Asked again HERE, for every move: the load-error recreate also runs on the main thread, so this check and the note
+            // below cannot interleave with it.
             val now = MainActivity.recreateClockMs()
             if (!MainActivity.recreateLog.mayRoam(now)) return@runOnUiThread
             MainActivity.recreateLog.noteRoam(now)
-            Log.i(TAG, "Moving to $which ($trigger)")
+            // One line per move, with no address and no token in it.
+            Log.i(TAG, "Moving to $which ($why)")
             // recreate() re-runs onCreate's launch gate, which makes the same choice and points the bridge at it. The saved
             // address is never rewritten: only the address the bridge opens differs.
             activity.recreate()
         }
+    }
+
+    // On the worker: the second look at the page on screen. True = it answers; false = it is DEAD (a completed probe that did
+    // not succeed, its timeout included: EndpointProbe and isReachable catch their own errors and say "no"); null = the look
+    // could not be taken (something threw around the call), which RoamRules.target treats as "works": a doubt never reloads a
+    // page. The Tailscale page is judged as the launch judges it, by the id it was saved for, so "answers" means the same in
+    // both places; with no saved id it cannot pass (fails closed: the page is left only for an address that has just answered).
+    private fun stillAnswers(context: Context, saved: String, tailscale: String, current: String): Boolean? = try {
+        if (current == tailscale) {
+            val wantedId = ServerConfigPlugin.getTailscaleId(context, saved)
+            wantedId != null && EndpointProbe.fetchHealth(current, STILL_ANSWERING_MS)?.id == wantedId
+        } else {
+            ServerConfigPlugin.isReachable(current, STILL_ANSWERING_MS)
+        }
+    } catch (e: Exception) {
+        null
     }
 
     // Reads something that may only be read on the main thread, from the worker: the same shape as ServerConfigPlugin's

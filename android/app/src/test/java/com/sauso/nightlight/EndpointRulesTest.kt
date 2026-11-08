@@ -141,20 +141,26 @@ class EndpointRulesTest {
         }
     }
 
+    // ---- The launch's grace for the Tailscale address (owner decision 2026-11-09, Tailscale first) ----
+
     @Test
-    fun `the short wait applies only when a tailscale address is saved, the phone is off the local network and the address is local-only`() {
-        val full = 3_000L
-        val saved = "http://192.168.1.50:4000"
-        assertEquals(EndpointRules.OFF_NETWORK_WAIT_MS, EndpointRules.localWaitMs(saved, ts, false, full))
-        assertEquals("on Wi-Fi: the whole wait", full, EndpointRules.localWaitMs(saved, ts, true, full))
-        assertEquals("no Tailscale address: nothing to switch to, so the saved address keeps its whole chance", full, EndpointRules.localWaitMs(saved, null, false, full))
-        assertEquals("a public saved address answers on mobile data too", full, EndpointRules.localWaitMs("https://nightlight.example.com", ts, false, full))
-        assertEquals("an unparseable saved address", full, EndpointRules.localWaitMs("nonsense", ts, false, full))
+    fun `the grace is a second, or a quarter second when the phone has no VPN`() {
+        // Literal values, so the numbers the README states are what is pinned.
+        assertEquals(1_000L, EndpointRules.TAILSCALE_GRACE_MS)
+        assertEquals(250L, EndpointRules.TAILSCALE_GRACE_NO_VPN_MS)
     }
 
     @Test
-    fun `the short wait is never longer than the full wait`() {
-        assertEquals(500L, EndpointRules.localWaitMs("http://192.168.1.50:4000", ts, false, 500L))
+    fun `a VPN on the phone keeps the full grace, and only no VPN at all shortens it`() {
+        assertEquals("a VPN is up (or the reading failed, which reads as present)", 1_000L, EndpointRules.tailscaleGraceMs(vpnPresent = true))
+        assertEquals("positively no VPN", 250L, EndpointRules.tailscaleGraceMs(vpnPresent = false))
+    }
+
+    @Test
+    fun `the grace is shorter than the whole launch decision`() {
+        // Otherwise a saved address that answered would wait the whole deadline for Tailscale, as if there were no grace.
+        assertTrue(EndpointRules.TAILSCALE_GRACE_MS < EndpointChooser.DEADLINE_MS)
+        assertTrue(EndpointRules.TAILSCALE_GRACE_NO_VPN_MS < EndpointRules.TAILSCALE_GRACE_MS)
     }
 
     // ---- Change server from the Tailscale address (owner, 2026-11-06) ----
