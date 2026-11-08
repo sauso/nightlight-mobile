@@ -57,7 +57,7 @@ left alone, since they already offer a retry and your saved servers.
   stopped working is not rescued; the app chooses again when you next bring it to the front. All the numbers above are
   judgements, not measurements.
 - **Tested**: the rules are unit-tested on the JVM (`RoamRulesTest`). The watcher and the `MainActivity` glue need a phone (see
-  the PR's checklist). iOS does not do this yet: after changing network, restart the app.
+  the PR's checklist). The iPhone app does the same: see [When you change network (iOS)](#when-you-change-network-ios).
 
 ## One sign-in across the two addresses (Android)
 
@@ -112,8 +112,6 @@ Tailscale address saved, the launch is exactly as before: no probe, no wait. The
 from Android as judgements, not measurements.
 
 Known limits on iOS:
-- **No switch when the network changes.** The address is chosen when the app starts. After leaving home or coming back, close the
-  app and open it again to change address.
 - **When neither address answers**, the app opens the saved address and shows the "Can't reach your server" screen, as it always
   has on iOS (Android shows the setup screen instead).
 - **Capacitor iOS cannot tell which frame called a plugin method.** "The page asking" is judged from the address the app opened and
@@ -122,6 +120,47 @@ Known limits on iOS:
 - **Tested**: the rules (`EndpointRules.swift`, the reply parsing in `EndpointProbe.swift`, `EndpointChooser.swift`) are compiled
   on their own with `swiftc` and run in CI (`ios/Tests`, the first step of `build-ios.yml`), with no network. The plugin glue,
   the launch choice and the network reading need an iPhone. Background audio is unchanged.
+
+### When you change network (iOS)
+
+The iPhone app moves between the two addresses by itself, as the Android app does. Leave home with the app open and, when Wi-Fi
+turns to mobile data, it moves to the Tailscale address within a few seconds, with no restart (when a Tailscale address is saved,
+as above, and the Tailscale app on the phone is connected). Coming home, it does not move back while you are using it (the
+Tailscale address keeps working on Wi-Fi). It moves back the next time the app comes to the front (opened again, or the phone
+unlocked with the app in front), a few seconds after it appears, so something typed in those first seconds can be lost, and
+never while a video floats in Picture-in-Picture. Either move reloads the app onto its home screen, so a video you were watching
+starts again, and the screen can freeze for up to about 3 seconds while the app picks the address, as it does when it starts.
+Sign-in carries across as described in [One sign-in across the two addresses (iOS)](#one-sign-in-across-the-two-addresses-ios).
+
+How it works: while the app is in the foreground, `NetworkRoamWatcher` watches the phone's network (`NWPathMonitor`). A change is
+a different connection state, a different set of network types (Wi-Fi, mobile data, Ethernet, VPN and so on, in use or
+available) or a different router, so moving to another Wi-Fi network counts too. It waits about 2 seconds for the network to
+settle, then makes the same choice the launch makes (`MainViewController.chooseAnswer`). If that picks the other address from the
+page on screen, the app rebuilds its main screen, which re-runs the launch choice, the same rebuild **Connect** and **Change
+server** use (`AppRestart.rebuildRoot`). Coming back from the background runs the same check once; pulling down Control Center,
+a call banner or the app switcher does not. The saved address is never rewritten. Only a page on one of the two addresses is
+moved: the setup page and the "Can't reach your server" page are left alone, since they already offer a retry and your saved
+servers. With no Tailscale address saved, nothing is probed and nothing changes.
+
+- **Leaving home happens at once**, on a network change or when the app comes to the front, even with a video in
+  Picture-in-Picture (the page on screen has already stopped working). Before it leaves the home address, the app asks that
+  address once more (for up to 1.5 seconds) and stays if it answers.
+- **Coming home waits** until the app comes to the front, and never happens while a video floats in Picture-in-Picture. If the
+  app cannot tell whether one is floating, it counts as floating.
+- **Nothing answering yet** (Tailscale still reconnecting, say): it checks again at about 3, 6, 12 and 25 seconds, then waits
+  for the next network change or the next time the app comes to the front.
+- **No reload loops**: a move needs at least 20 seconds since the last move, and at most 3 moves happen in any 5 minutes. That
+  limit lifts by itself as the 5 minutes roll on; a move it holds back waits for the next network change or the next time the
+  app comes to the front. A reload you ask for (Connect, Change server) does not count. The iPhone app has no automatic reload
+  after a page fails to load (Android's 8-second gap), so only moves are counted (`RecreateLog`).
+- **Not covered**: the watcher runs only while the app is in the foreground. With audio playing in the background (screen off) on
+  a network that has stopped working, nothing is rescued until you bring the app to the front. All the numbers above are
+  judgements carried over from Android, not measurements.
+- **Not yet confirmed on a phone**: how an iPhone reports its network while Tailscale's VPN is on (the app compares the network
+  types in use and the ones available, so leaving Wi-Fi should still count), and whether a floating video shows as
+  `document.pictureInPictureElement` or only as WebKit's own Picture-in-Picture mode (the app checks both).
+- **Tested**: the rules (`RoamRules.swift`, ported case for case from Android's `RoamRulesTest`) run in CI with `swiftc`
+  (`ios/Tests`). The watcher, the lifecycle calls and the rebuild need an iPhone.
 
 ## One sign-in across the two addresses (iOS)
 
@@ -152,8 +191,6 @@ showing the origin the app opened. What is different on an iPhone:
 - **A locked or busy Keychain changes nothing.** If the Keychain cannot be read right now, the page gets no saved sign-in this
   time and nothing is deleted. The same goes for a sign-out the Keychain refuses (not expected once the phone has been unlocked
   since it started): the copy stays, and the device log shows the Keychain's status code (never the token or the address).
-- **Moving between the addresses when the network changes is still Android only.** After leaving home or coming back, close
-  the app and open it again.
 - **Known limits.** As on Android: someone with an account on your server who controls a device at a plain-http saved address
   could store their own sign-in; two separate sign-ins stay separate. The frame limit above applies. One more, iOS only: the
   page is checked again on the main thread just before the sign-in is handed over, but Capacitor sends the reply as a separate

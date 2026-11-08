@@ -18,10 +18,19 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   removes it; a wrong password does not. It is never synced through iCloud Keychain and does not move to another phone through
   a backup or a transfer, and the app also clears its saved sign-in on the first start of a new install (iOS keeps Keychain
   items when an app is deleted). The home address never receives it
-  (it is usually plain `http`), so signing in on the Tailscale address first still asks once at home. Moving between the
-  addresses when the network changes is still Android only: on an iPhone, close and reopen the app after changing network.
+  (it is usually plain `http`), so signing in on the Tailscale address first still asks once at home.
   Like the Android version, it needs the Nightlight server release that goes with it; with an older server each address asks
   you to sign in, as before.
+- **iOS: the app moves to your server's other address when you change network.** Leave home with the iPhone app open and,
+  when Wi-Fi turns to mobile data, it now switches to your server's Tailscale address by itself within a few seconds,
+  instead of staying on a home address that cannot answer until you close and reopen the app. Coming home, it does not
+  switch back while you are using it: it moves back to the home address the next time you open the app or unlock the phone
+  with the app in front (a few seconds after it appears, so something typed in those first seconds can be lost), and never
+  while a video floats in Picture-in-Picture. Each switch reloads the app onto its home screen, so a video you were
+  watching starts again, and the screen can pause for up to about 3 seconds while it picks the address. If the network
+  keeps dropping in and out, the app switches at most 3 times in 5 minutes. It works while the app is on screen: with audio
+  playing in the background on a network that has stopped working, nothing is rescued until you next open the app. Needs
+  the Tailscale address the iPhone app learned in 0.9.0; with none saved, nothing changes.
 
 ## [0.9.0] - 2026-11-08
 

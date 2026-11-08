@@ -250,7 +250,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     //
     // WHY not `DispatchQueue.main.sync`, as phase 1 had (Codex and Opus plan review of iOS phase 2, 2026-11-08): a sync waits
     // without limit. Nothing on the main thread waits for the queues that call this today, so it could not deadlock, but that
-    // would rest on every later change keeping it so (the network watcher planned next runs on its own queue); and a busy main
+    // would rest on every later change keeping it so (the network watcher, NetworkRoamWatcher, runs on its own queue); and a busy main
     // thread (the launch choice holds it for up to 3 s) held Capacitor's plugin queue, and every plugin call behind it, for as
     // long. With the time limit the worst case is a refused call, never a frozen app. See THE RULE at ServerConfigStore.writes.
     private func shownPageURL() -> String? {
@@ -692,13 +692,15 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // Reloads the app so the current saved choice takes effect - the iOS equivalent
     // of Android recreating the activity. Rebuilding the root view controller re-runs
     // the bridge's server-URL selection (MainViewController.instanceDescriptor, which
-    // may wait up to 3 s for the server's addresses, as at launch).
+    // may wait up to 3 s for the server's addresses, as at launch). The rebuild is
+    // AppRestart.rebuildRoot (NetworkRoamWatcher.swift), the one function a move between
+    // the addresses uses too, so the two cannot drift; it also tells the network watcher,
+    // so a check in flight cannot act on the page being replaced. Not counted towards the
+    // watcher's reload limit: the person asked for this one (as on Android).
     @objc func restart(_ call: CAPPluginCall) {
         call.resolve()
         DispatchQueue.main.async { [weak self] in
-            guard let window = self?.bridge?.viewController?.view.window else { return }
-            let storyboard = UIStoryboard(name: "Main", bundle: nil)
-            window.rootViewController = storyboard.instantiateInitialViewController()
+            AppRestart.rebuildRoot(window: self?.bridge?.viewController?.view.window)
         }
     }
 }
