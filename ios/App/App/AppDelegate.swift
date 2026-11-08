@@ -16,6 +16,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // it). On/off vs. background is handled by the web app muting the audio element,
         // so the native side only needs to keep the session category correct.
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        // A saved sign-in is kept in the Keychain, which SURVIVES deleting the app, so the first start of a new install removes
+        // whatever an earlier install left there (KeychainSessionStore). Queued here, on the FIFO writes queue, so it runs
+        // before any session call, which only a web page can make and only once the bridge has loaded one (after this method);
+        // off the main thread, so the launch never waits for the Keychain.
+        ServerConfigStore.writes.async {
+            KeychainSessionStore.purgeIfFreshInstall()
+        }
         return true
     }
 
