@@ -51,10 +51,12 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
         // unknown Picture-in-Picture state holds back an upgrade (never an escape from a dead page).
         private const val MAIN_THREAD_TIMEOUT_MS = 1_000L
 
-        // The second look at the page on screen before any move (see evaluate), as the connect and the read timeout of one probe.
-        // Shorter than the launch's 2.5 s probe: the choice already waited, this one only has to tell a page that works from one
-        // that stopped answering. A judgement, not a measurement. Known limit: a page that is merely slow past this counts as
-        // dead and is left for the address that has just answered, the same risk the old fail-over took.
+        // The second look at the page on screen before any move (see evaluate): the bound on the WHOLE look
+        // (RoamRules.boundedLook; Codex code review of Tailscale first, 2026-11-09), and also its probe's connect and read
+        // timeouts, so an abandoned probe ends by itself. Shorter than the launch's 2.5 s probe: the choice already waited, this
+        // one only has to tell a page that works from one that stopped answering. A judgement, not a measurement. Known limit:
+        // a page that is merely slower than this counts as dead and is left for the address that has just answered, the same
+        // risk the old fail-over took.
         private const val STILL_ANSWERING_MS = 1_500
 
         // The transports NetworkEventFilter compares. Wi-Fi to mobile data is the case this is for; Ethernet and VPN are
@@ -214,11 +216,11 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
             if (generation.get() != gen || activity.isFinishing || activity.isDestroyed) return@runOnUiThread
             // The page may have moved while the probes ran: only switch away from the page the decision was about.
             if (RoamRules.currentAddress(activity.shownPageUrl(), saved, tailscale) != current) return@runOnUiThread
-            // UPGRADES ONLY: Picture-in-Picture can start between the check and here (the activity stays started in PiP, so the
-            // generation does not move), and an upgrade must never recreate a floating video (Codex review of the code). Read on
+            // UPGRADES ONLY (RoamRules.heldBackAtLastStep): Picture-in-Picture can start between the check and here (the activity
+            // stays started in PiP, so the generation does not move), and an upgrade must never recreate a floating video. Read on
             // the main thread. An ESCAPE is never held back here: the floating video is already dead, and holding it back would
             // trap the person on a dead page (Codex plan review of Tailscale first, 2026-11-09).
-            if (!move.escape && activity.isInPictureInPictureMode) return@runOnUiThread
+            if (RoamRules.heldBackAtLastStep(move, activity.isInPictureInPictureMode)) return@runOnUiThread
             // Asked again HERE, for every move: the load-error recreate also runs on the main thread, so this check and the note
             // below cannot interleave with it.
             val now = MainActivity.recreateClockMs()
@@ -233,19 +235,26 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
     }
 
     // On the worker: the second look at the page on screen. True = it answers; false = it is DEAD (a completed probe that did
-    // not succeed, its timeout included: EndpointProbe and isReachable catch their own errors and say "no"); null = the look
-    // could not be taken (something threw around the call), which RoamRules.target treats as "works": a doubt never reloads a
-    // page. The Tailscale page is judged as the launch judges it, by the id it was saved for, so "answers" means the same in
-    // both places; with no saved id it cannot pass (fails closed: the page is left only for an address that has just answered).
-    private fun stillAnswers(context: Context, saved: String, tailscale: String, current: String): Boolean? = try {
-        if (current == tailscale) {
-            val wantedId = ServerConfigPlugin.getTailscaleId(context, saved)
-            wantedId != null && EndpointProbe.fetchHealth(current, STILL_ANSWERING_MS)?.id == wantedId
-        } else {
-            ServerConfigPlugin.isReachable(current, STILL_ANSWERING_MS)
+    // not succeed, or no answer within STILL_ANSWERING_MS for the whole look: RoamRules.boundedLook); null = the look could not
+    // be taken (the saved id could not be read, or the look threw), which RoamRules.target treats as "works": a doubt never
+    // reloads a page. "Answers" is EndpointRules.addressAnswers, the same rule the launch's choice uses: the Tailscale page
+    // counts only with the id it was saved for, so with no saved id it cannot pass (fails closed: the page is then left only
+    // for an address that has just answered).
+    private fun stillAnswers(context: Context, saved: String, tailscale: String, current: String): Boolean? {
+        val wantedId = try {
+            ServerConfigPlugin.getTailscaleId(context, saved)
+        } catch (e: Exception) {
+            return null
         }
-    } catch (e: Exception) {
-        null
+        return RoamRules.boundedLook(STILL_ANSWERING_MS.toLong()) {
+            EndpointRules.addressAnswers(
+                current,
+                tailscale,
+                wantedId,
+                fetchId = { EndpointProbe.fetchHealth(it, STILL_ANSWERING_MS)?.id },
+                reachable = { ServerConfigPlugin.isReachable(it, STILL_ANSWERING_MS) },
+            )
+        }
     }
 
     // Reads something that may only be read on the main thread, from the worker: the same shape as ServerConfigPlugin's

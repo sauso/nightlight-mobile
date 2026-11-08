@@ -70,6 +70,24 @@ object EndpointRules {
     fun tailscaleGraceMs(vpnPresent: Boolean): Long = if (vpnPresent) TAILSCALE_GRACE_MS else TAILSCALE_GRACE_NO_VPN_MS
 
     /**
+     * Whether [url] answers as this server: the ONE rule the launch's choice (MainActivity.chooseAddress) and the network
+     * watcher's second look (NetworkRoamWatcher) both use, so "answers" cannot mean two things (Codex code review of Tailscale
+     * first, 2026-11-09). For the saved server's Tailscale address ([tailscale]) an answer counts only with the id that address
+     * was saved for: [wantedId] must exist and [fetchId] must report exactly it. A different id, no id, or no saved id all say
+     * no (fails closed), so an address saved for one server never opens another, and [reachable] is never asked about it. Any
+     * other address counts when [reachable] says so. The two network reads are injected (production: EndpointProbe.fetchHealth's
+     * id and ServerConfigPlugin.isReachable), so this stays pure and the JVM tests run it.
+     */
+    fun addressAnswers(
+        url: String,
+        tailscale: String?,
+        wantedId: String?,
+        fetchId: (String) -> String?,
+        reachable: (String) -> Boolean,
+    ): Boolean =
+        if (url == tailscale) wantedId != null && fetchId(url) == wantedId else reachable(url)
+
+    /**
      * Whether `save` may take a REMEMBERED server whose own address did not answer, because the Tailscale address saved for it
      * did, and that address reported the id it was saved for. This is what lets "Change server" get back in from cellular
      * (owner, 2026-11-06): the setup page lists only the saved home address, which cannot answer there, so without this the only

@@ -163,6 +163,39 @@ class EndpointRulesTest {
         assertTrue(EndpointRules.TAILSCALE_GRACE_NO_VPN_MS < EndpointRules.TAILSCALE_GRACE_MS)
     }
 
+    // ---- addressAnswers: what "answers" means, for the launch's choice and the watcher's second look alike ----
+
+    // Network reads that must not happen: each fails the test if it is called.
+    private val reachableNeverAsked: (String) -> Boolean = { throw AssertionError("reachable was asked about $it") }
+    private val idNeverRead: (String) -> String? = { throw AssertionError("an id was read for $it") }
+
+    @Test
+    fun `the tailscale address answers when it reports the id it was saved for`() {
+        assertTrue(EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { sameId }, reachable = reachableNeverAsked))
+    }
+
+    @Test
+    fun `a wrong id, no id or no saved id is not an answer from the tailscale address`() {
+        assertFalse("another server's id", EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { otherId }, reachable = reachableNeverAsked))
+        assertFalse("no id read", EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { null }, reachable = reachableNeverAsked))
+        assertFalse("no saved id, the address reports one", EndpointRules.addressAnswers(ts, ts, null, fetchId = { sameId }, reachable = reachableNeverAsked))
+        // The one a dropped "wantedId != null" would let through: null equals null.
+        assertFalse("no saved id and none read", EndpointRules.addressAnswers(ts, ts, null, fetchId = { null }, reachable = reachableNeverAsked))
+    }
+
+    @Test
+    fun `the tailscale address is never judged by reachability`() {
+        // Up, but another server: reachable would say yes, and the rule must not fall back to it.
+        assertFalse(EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { otherId }, reachable = { true }))
+    }
+
+    @Test
+    fun `the saved address answers when it is reachable, and no id is read for it`() {
+        assertTrue(EndpointRules.addressAnswers(home, ts, sameId, fetchId = idNeverRead, reachable = { it == home }))
+        assertFalse(EndpointRules.addressAnswers(home, ts, sameId, fetchId = idNeverRead, reachable = { false }))
+        assertTrue("no Tailscale address saved", EndpointRules.addressAnswers(home, null, null, fetchId = idNeverRead, reachable = { true }))
+    }
+
     // ---- Change server from the Tailscale address (owner, 2026-11-06) ----
 
     private val known = listOf(home, "https://nightlight.example.com")

@@ -12,8 +12,9 @@ import org.junit.Test
  *
  * Not reachable here (Android glue, phone checks only): registering and unregistering the network callback, the generation
  * check that makes a late check dead on arrival, the main-thread reads of the page URL and Picture-in-Picture, the second look's
- * probe of the page on screen, the final main-thread check that holds back upgrades only, the debounce and retry timing on the
- * worker thread, and the recreate itself (NetworkRoamWatcher, MainActivity).
+ * real network probe (its bound is tested here: boundedLook; its id rule in EndpointRulesTest: addressAnswers), the wiring of
+ * the final main-thread check (its rule is tested here: heldBackAtLastStep), the debounce and retry timing on the worker
+ * thread, and the recreate itself (NetworkRoamWatcher, MainActivity).
  */
 class RoamRulesTest {
 
@@ -185,6 +186,59 @@ class RoamRulesTest {
                 assertNull(RoamRules.target(trigger, saved, tailscale, current = tailscale, chosen = other, inPip = inPip, currentAnswers = answers))
             }
         }
+    }
+
+    // ---- heldBackAtLastStep: the watcher's last check on the main thread (Codex code review of Tailscale first, 2026-11-09) ----
+
+    @Test
+    fun `an escape is never held back by picture-in-picture, in either direction`() {
+        assertFalse("escape to Tailscale", RoamRules.heldBackAtLastStep(RoamMove(tailscale, escape = true), inPip = true))
+        assertFalse("escape to the saved address", RoamRules.heldBackAtLastStep(RoamMove(saved, escape = true), inPip = true))
+        assertFalse("escape, not in PiP", RoamRules.heldBackAtLastStep(RoamMove(saved, escape = true), inPip = false))
+    }
+
+    @Test
+    fun `an upgrade is held back in picture-in-picture`() {
+        assertTrue(RoamRules.heldBackAtLastStep(RoamMove(tailscale, escape = false), inPip = true))
+    }
+
+    @Test
+    fun `an upgrade outside picture-in-picture is not held back`() {
+        assertFalse(RoamRules.heldBackAtLastStep(RoamMove(tailscale, escape = false), inPip = false))
+    }
+
+    // ---- boundedLook: the second look's overall bound (Codex code review of Tailscale first, 2026-11-09) ----
+
+    private inline fun <T> timed(block: () -> T): Pair<T, Long> {
+        val start = System.nanoTime()
+        val result = block()
+        return result to (System.nanoTime() - start) / 1_000_000L
+    }
+
+    @Test
+    fun `a second look that answers in time gives its own answer`() {
+        assertEquals(true, RoamRules.boundedLook(2_000L) { true })
+        assertEquals(false, RoamRules.boundedLook(2_000L) { false })
+    }
+
+    @Test
+    fun `a second look with no answer by the bound counts as dead, at the bound`() {
+        // Window: the 500 ms bound against the look's own answer (5 s, and a "yes"), which an unbounded look would wait for.
+        // The lower bound holds by construction: a timed-out wait has waited at least the bound.
+        val (answer, ms) = timed {
+            RoamRules.boundedLook(500L) {
+                Thread.sleep(5_000)
+                true
+            }
+        }
+        assertEquals(false, answer)
+        assertTrue("took $ms ms, not the 500 ms bound", ms in 490L..2_500L)
+    }
+
+    @Test
+    fun `a second look that throws could not be taken`() {
+        // Null, not false: a look that could not be taken never makes a move an escape.
+        assertNull(RoamRules.boundedLook(2_000L) { throw IllegalStateException("boom") })
     }
 
     // ---- RecreateLog: the shared loop guard ----

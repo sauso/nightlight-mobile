@@ -58,14 +58,17 @@ class MainActivity : BridgeActivity() {
          */
         fun chooseAddress(context: Context, saved: String, tailscale: String?): String? {
             // The Tailscale address only counts if the server answering there still has the id it was saved for, so an address
-            // saved for one server can never open another (a saved address handed to a different machine, say).
+            // saved for one server can never open another (a saved address handed to a different machine, say). The rule is
+            // EndpointRules.addressAnswers, shared with the network watcher's second look so the two cannot drift.
             val wantedId = ServerConfigPlugin.getTailscaleId(context, saved)
             val probe = { url: String ->
-                if (url == tailscale) {
-                    wantedId != null && EndpointProbe.fetchHealth(url, 2500)?.id == wantedId
-                } else {
-                    ServerConfigPlugin.isReachable(url, 2500)
-                }
+                EndpointRules.addressAnswers(
+                    url,
+                    tailscale,
+                    wantedId,
+                    fetchId = { EndpointProbe.fetchHealth(it, 2500)?.id },
+                    reachable = { ServerConfigPlugin.isReachable(it, 2500) },
+                )
             }
             // How long a saved answer waits for Tailscale: 1 s, or a quarter second when the phone positively has no VPN, so a
             // Tailscale that is switched off costs a launch at most that (EndpointRules.tailscaleGraceMs). VpnPresent fails

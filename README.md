@@ -85,8 +85,9 @@ retry and your saved servers.
 - **Not covered**: the watcher runs only while the app is in the foreground. Listening with the screen off on a network that has
   stopped working is not rescued; the app chooses again when you next bring it to the front. All the numbers above are
   judgements, not measurements.
-- **Tested**: the rules are unit-tested on the JVM (`RoamRulesTest`). The watcher (including the second look and its
-  Picture-in-Picture check) and the `MainActivity` glue need a phone (see the PR's checklist). The iPhone app does the same: see
+- **Tested**: the rules are unit-tested on the JVM (`RoamRulesTest`, including the second look's time limit and the last
+  Picture-in-Picture check; `EndpointRulesTest` for what counts as an answer). The watcher's wiring and the `MainActivity` glue
+  need a phone (see the PR's checklist). The iPhone app does the same: see
   [When you change network (iOS)](#when-you-change-network-ios).
 
 ## One sign-in across the two addresses (Android)

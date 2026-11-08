@@ -1,5 +1,10 @@
 package com.sauso.nightlight
 
+import java.util.concurrent.Callable
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+
 /**
  * The rules for moving the app to the server's other address when the network changes (owner, 2026-11-06: walk out of the
  * house and Wi-Fi turns to mobile data, and the page sat on a dead home address until the app was restarted).
@@ -81,6 +86,45 @@ object RoamRules {
             return RoamMove(tailscale, escape = false)
         }
         return null
+    }
+
+    /**
+     * The watcher's LAST check, on the main thread just before the recreate: whether [move] is held back because the app is in
+     * Picture-in-Picture now ([inPip], read there; it can start after [target] ran, while the activity stays started). Only an
+     * UPGRADE is held back: it must never recreate a floating video that still plays (Codex review of the roaming code). An
+     * ESCAPE never is: the floating video is already dead, and holding it back would trap the person on a dead page (Codex plan
+     * review of Tailscale first, 2026-11-09). A pure rule so the JVM tests pin it (Codex code review, the same day).
+     */
+    fun heldBackAtLastStep(move: RoamMove, inPip: Boolean): Boolean = !move.escape && inPip
+
+    /**
+     * Runs the watcher's SECOND LOOK ([look]: does the page on screen still answer?) on its own daemon thread, with an OVERALL
+     * bound of [timeoutMs] for the whole look (Codex code review of Tailscale first, 2026-11-09: the probes' own connect and
+     * read timeouts do not bound a whole request, since a name lookup or a slowly arriving body can run past them, and the
+     * watcher's single worker waits for the look). Returns:
+     *  - the look's own answer when it comes in time (true = answers, false = a completed probe that failed);
+     *  - false (DEAD) when no answer has come by [timeoutMs]: a page that cannot answer within the bound is treated as stopped,
+     *    the known limit stated at NetworkRoamWatcher.STILL_ANSWERING_MS and in the README;
+     *  - null (the look could not be taken) when the look threw or its thread could not be started: never a reason to move.
+     * A look still running at the bound is abandoned: its thread is a daemon, its probe's own timeouts normally end it (a name
+     * lookup is not bounded by them), and its answer is ignored. Pure Kotlin (java.util.concurrent only), so the JVM tests run
+     * exactly this.
+     */
+    fun boundedLook(timeoutMs: Long, look: () -> Boolean): Boolean? {
+        return try {
+            val task = FutureTask(Callable { look() })
+            val thread = Thread(task, "nightlight-roam-look")
+            thread.isDaemon = true
+            thread.start()
+            try {
+                task.get(timeoutMs, TimeUnit.MILLISECONDS)
+            } catch (e: TimeoutException) {
+                false
+            }
+        } catch (e: Exception) {
+            // ExecutionException (the look threw), InterruptedException, or the thread could not start.
+            null
+        }
     }
 
     // When the check finds NOTHING answering (the tunnel is not routing yet, the new network has no internet yet), it runs again
