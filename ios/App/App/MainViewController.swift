@@ -11,8 +11,10 @@ import Network
 ///     first-run setup page (public/index.html) loads instead.
 ///
 /// `ServerConfigPlugin.restart()` rebuilds this controller so a newly saved choice
-/// takes effect. `errorPath` (error.html) comes from capacitor.config.json and covers
-/// the case where a saved server is unreachable at launch.
+/// takes effect, and so does NetworkRoamWatcher when the network changes and the choice
+/// would now open the other address (both through AppRestart.rebuildRoot). `errorPath`
+/// (error.html) comes from capacitor.config.json and covers the case where a saved
+/// server is unreachable at launch.
 class MainViewController: CAPBridgeViewController {
     // Local app-target plugins aren't auto-discovered on iOS (unlike npm-package
     // plugins, and unlike Android's @CapacitorPlugin annotation) - they must be
@@ -45,9 +47,24 @@ class MainViewController: CAPBridgeViewController {
     /// Runs on the main thread, from instanceDescriptor, and BLOCKS for up to EndpointChooser.defaultDeadlineMs (3 s) behind
     /// the launch screen, as Android's launch gate does behind its splash screen. Only when a Tailscale address is saved for
     /// the saved server: with none there is nothing to choose between, and the launch is exactly as before (no probe, no wait).
-    /// Chosen once per launch (or restart): moving between the addresses when the network changes is Android only for now.
+    /// Chosen at each launch and each rebuild (ServerConfig.restart(), or a move between the addresses when the network
+    /// changes: NetworkRoamWatcher, which runs the same choice through chooseAnswer below first).
     static func chooseAddress(saved: String) -> String {
-        guard let tailscale = ServerConfigStore.tailscaleURL(for: saved) else { return saved }
+        return MainViewController.chooseAnswer(saved: saved) ?? saved
+    }
+
+    /// The choice itself: the address that answered (`saved` first, then the Tailscale address with the id it was saved for),
+    /// or nil when NEITHER answered or no Tailscale address is saved for `saved` (then nothing is probed and it returns at
+    /// once). Split out of chooseAddress (Codex and Opus plan review of iOS phase 2, 2026-11-08) because the network watcher
+    /// must tell "nothing answered" (it checks again a few times, RoamRules.retryDelayAfter) from "the saved address answered",
+    /// which chooseAddress's fallback to `saved` hides. The twin of Android's MainActivity.chooseAddress, which returns null in
+    /// the same case.
+    ///
+    /// Blocks its caller for up to EndpointChooser.defaultDeadlineMs (3 s): on the main thread only from the launch
+    /// (chooseAddress); NetworkRoamWatcher calls it on its own queue. It touches no view and no instance state (UserDefaults,
+    /// the Network framework reading and the probes are safe from any thread).
+    static func chooseAnswer(saved: String) -> String? {
+        guard let tailscale = ServerConfigStore.tailscaleURL(for: saved) else { return nil }
         // The Tailscale address only counts if the server answering there still has the id it was saved for, so an address
         // saved for one server can never open another (a saved address handed to a different machine, say).
         let wantedId: String? = ServerConfigStore.tailscaleId(for: saved)
@@ -65,11 +82,12 @@ class MainViewController: CAPBridgeViewController {
         let onLocalNetwork = LocalNetworkSnapshot.isOnLocalNetwork()
         let localWait = EndpointRules.localWaitMs(saved: saved, tailscale: tailscale, onLocalNetwork: onLocalNetwork, fullMs: EndpointChooser.defaultDeadlineMs)
         let chooser = EndpointChooser(probe: probe, deadlineMs: EndpointChooser.defaultDeadlineMs, localDeadlineMs: localWait)
-        return chooser.choose(local: saved, tailscale: tailscale) ?? saved
+        return chooser.choose(local: saved, tailscale: tailscale)
     }
 }
 
-/// Whether this phone is on a local network at all: Wi-Fi or Ethernet, read once at launch. The iOS twin of Android's
+/// Whether this phone is on a local network at all: Wi-Fi or Ethernet, read once per choice (at launch, and in each of the
+/// network watcher's checks, which run the same choice; it is not the watcher's own long-running monitor). The iOS twin of Android's
 /// LocalNetwork.isOn, and like it, it FAILS OPEN (true) when the reading cannot be had: it only chooses how long the launch
 /// waits for the saved address (EndpointRules.localWaitMs), and the ordinary rules stand either way.
 ///
