@@ -128,7 +128,7 @@ turns to mobile data, it moves to the Tailscale address within a few seconds, wi
 as above, and the Tailscale app on the phone is connected). Coming home, it does not move back while you are using it (the
 Tailscale address keeps working on Wi-Fi). It moves back the next time the app comes to the front (opened again, or the phone
 unlocked with the app in front), a few seconds after it appears, so something typed in those first seconds can be lost, and
-never while a video floats in Picture-in-Picture. Either move reloads the app onto its home screen, so a video you were watching
+not while a video is already floating in Picture-in-Picture or while the app is inactive (Control Center, a call banner). Either move reloads the app onto its home screen, so a video you were watching
 starts again, and the screen can freeze for up to about 3 seconds while the app picks the address, as it does when it starts.
 Sign-in carries across as described in [One sign-in across the two addresses (iOS)](#one-sign-in-across-the-two-addresses-ios).
 
@@ -145,8 +145,10 @@ servers. With no Tailscale address saved, nothing is probed and nothing changes.
 - **Leaving home happens at once**, on a network change or when the app comes to the front, even with a video in
   Picture-in-Picture (the page on screen has already stopped working). Before it leaves the home address, the app asks that
   address once more (for up to 1.5 seconds) and stays if it answers.
-- **Coming home waits** until the app comes to the front, and never happens while a video floats in Picture-in-Picture. If the
-  app cannot tell whether one is floating, it counts as floating.
+- **Coming home waits** until the app comes to the front, and does not happen while a video is already floating in
+  Picture-in-Picture or while the app is inactive. If the app cannot tell whether one is floating, it counts as floating. Known
+  gap: the floating state is read once, a moment before the reload, and iOS gives no safe way to read it again at the last
+  instant, so a video that starts floating in that instant is not caught (unconfirmed on a phone).
 - **Nothing answering yet** (Tailscale still reconnecting, say): it checks again at about 3, 6, 12 and 25 seconds, then waits
   for the next network change or the next time the app comes to the front.
 - **No reload loops**: a move needs at least 20 seconds since the last move, and at most 3 moves happen in any 5 minutes. That

@@ -300,6 +300,15 @@ final class NetworkRoamWatcher {
         let window: UIWindow? = NetworkRoamWatcher.appWindow()
         let shown: String? = NetworkRoamWatcher.webView(in: window)?.url?.absoluteString
         if RoamRules.currentAddress(webViewUrl: shown, saved: saved, tailscale: tailscale) != current { return }
+        // A FAIL-BACK (the person is on the Tailscale address and the saved address answers again) waits for the app to be active
+        // (Codex code review of PR #36): Control Center, a call banner or the app switcher make the app inactive without a trip to
+        // the background, so no lifecycle call has stopped this check, and a reload under them is not wanted. A fail-over is NOT
+        // held back: its page is already dead, so a reload loses nothing, and skipping it would leave the person on a dead page
+        // until the next event. A held fail-back is not retried: the next start or network change checks again.
+        if current == tailscale && UIApplication.shared.applicationState != .active {
+            NetworkRoamWatcher.logLine("Nightlight roam: would move to \(which) (\(why)), held back because the app is not active")
+            return
+        }
         // Asked again where it is noted, so the check and the note are one step.
         let now: Int64 = NetworkRoamWatcher.clockMs()
         if !roamLog.mayRoam(nowMs: now) { return }

@@ -26,7 +26,7 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   instead of staying on a home address that cannot answer until you close and reopen the app. Coming home, it does not
   switch back while you are using it: it moves back to the home address the next time you open the app or unlock the phone
   with the app in front (a few seconds after it appears, so something typed in those first seconds can be lost), and never
-  while a video floats in Picture-in-Picture. Each switch reloads the app onto its home screen, so a video you were
+  while a video is already floating in Picture-in-Picture. Each switch reloads the app onto its home screen, so a video you were
   watching starts again, and the screen can pause for up to about 3 seconds while it picks the address. If the network
   keeps dropping in and out, the app switches at most 3 times in 5 minutes. It works while the app is on screen: with audio
   playing in the background on a network that has stopped working, nothing is rescued until you next open the app. Needs
