@@ -44,8 +44,9 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   address may ask you to sign in once.
 - **iOS: the app asks once before it uses a new secure address.** The first time it learns your server's secure address from
   a plain `http` address, or when that address changes, it asks "Use this secure address?" and shows the name. Only accept it
-  if you just turned it on in your server's Settings → Remote Access. If you choose "Don't use it", the app keeps using your
-  saved address and does not ask about that address again for 7 days.
+  if you just turned it on in your server's Settings → Remote Access. If you choose "Don't use it", nothing changes: the app
+  keeps the addresses it already had, and does not ask about that address again for 7 days. It asks at most once every 10
+  minutes while it is open, so a question can wait for the next time you open the app.
 
 ## [0.9.0] - 2026-11-08
 

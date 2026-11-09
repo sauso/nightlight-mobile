@@ -191,6 +191,20 @@ func runEndpointRulesTests() {
         check(!EndpointRules.isOnBundledOrigin("capacitor://localhost/", local: nil), "no bundled origin")
     }
 
+    test("isBundledPage: a bundled bridge showing the bundled origin, and nothing else (save's reconnect and forget)") {
+        // forget is allowed only here since the Codex code review of the PR #38 prompt delta: it clears a stored decline.
+        let local = "capacitor://localhost"
+        check(EndpointRules.isBundledPage(bridgeServerUrl: local, bridgeLocalUrl: local, shown: "capacitor://localhost/"), "the setup page")
+        check(EndpointRules.isBundledPage(bridgeServerUrl: local, bridgeLocalUrl: local, shown: "capacitor://localhost/index.html"), "with a path")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: "http://192.168.1.50:4000", bridgeLocalUrl: local, shown: "capacitor://localhost/"),
+              "a bridge built for a server, even showing the bundled origin")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: local, bridgeLocalUrl: local, shown: "http://192.168.1.50:4000/"), "a bundled bridge showing a server page")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: local, bridgeLocalUrl: local, shown: nil), "the page URL could not be read")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: nil, bridgeLocalUrl: local, shown: "capacitor://localhost/"), "no server URL read")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: local, bridgeLocalUrl: nil, shown: "capacitor://localhost/"), "no bundled URL read")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: nil, bridgeLocalUrl: nil, shown: nil), "nothing at all")
+    }
+
     test("isActivePage, the bridge half of isTrustedPage") {
         check(EndpointRules.isActivePage(primary: home, savedTailscale: nil, page: home), "the saved address")
         check(EndpointRules.isActivePage(primary: home, savedTailscale: ts, page: ts), "the saved Tailscale address")

@@ -6,7 +6,8 @@ import Foundation
 // stores, and which refusal each refusal path gives). Every row is a table entry with made-up times: no clock, no UIKit.
 //
 // Not reachable here (glue, iPhone checks only): the alert itself, its 120 s timer, the cancel from a rebuild, the main-thread
-// read of the shown page, the last check before the write and the stores (AddressPrompt and addEndpoint, ServerConfigPlugin.swift).
+// read of the committed page, the last check before the write (the rule it applies, mayWrite, IS tested here) and the stores
+// (AddressPrompt and addEndpoint, ServerConfigPlugin.swift).
 
 // The made-up "now" of the gate tests: a wall clock in 2027 and an uptime of about 14 hours. File-level, so the helper's default
 // arguments can name them (a local function's defaults are kept to constants that need no capture).
@@ -132,6 +133,28 @@ func runPromptGateTests() {
 
     test("prompt outcome: an accept clears the decline") {
         checkEqual(PromptGate.declineChange(after: .accepted, candidate: changed, nowWallMs: wallNow), PromptGate.DeclineChange.clear)
+    }
+
+    // ---- mayWrite: the decision repeated at the write (Codex code review of the PR #38 prompt delta, High) ----
+
+    test("prompt write: an accepted prompt writes, whether or not it needs confirming now") {
+        check(PromptGate.mayWrite(acceptedInPrompt: true, needsConfirmationNow: true), "accepted, and it still needs confirming")
+        check(PromptGate.mayWrite(acceptedInPrompt: true, needsConfirmationNow: false), "accepted, and it no longer needs confirming")
+    }
+
+    test("prompt write: an offer that was not asked about writes only if it does not need confirming now") {
+        check(PromptGate.mayWrite(acceptedInPrompt: false, needsConfirmationNow: false), "not asked and not needed, but refused")
+        check(!PromptGate.mayWrite(acceptedInPrompt: false, needsConfirmationNow: true), "not asked but needed now: written without a prompt")
+    }
+
+    test("prompt write: the repeated decision, end to end, refuses a skipped prompt once the committed page is plain http") {
+        // The first look saw https (a navigation that had only started); at the write the committed page is the http one.
+        let needsNow = EndpointRules.needsConfirmation(shownPageUrl: home + "/", savedTailscale: nil, candidate: saved)
+        check(!PromptGate.mayWrite(acceptedInPrompt: false, needsConfirmationNow: needsNow), "a new address from an http page was written unasked")
+        let unreadable = EndpointRules.needsConfirmation(shownPageUrl: nil, savedTailscale: nil, candidate: saved)
+        check(!PromptGate.mayWrite(acceptedInPrompt: false, needsConfirmationNow: unreadable), "an unreadable committed page let it through")
+        let sameAgain = EndpointRules.needsConfirmation(shownPageUrl: home + "/", savedTailscale: saved, candidate: saved)
+        check(PromptGate.mayWrite(acceptedInPrompt: false, needsConfirmationNow: sameAgain), "the saved address, offered again, was refused")
     }
 
     // ---- Which refusal each path gives, and that the web app files both under "refused" ----

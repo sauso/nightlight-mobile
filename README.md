@@ -96,9 +96,10 @@ home, and the saved list shows each server's name. The rules are the Android one
 `ServerConfig.addEndpoint` saves the address only if it is exactly `https://<name>.ts.net`, the page asking is the saved server
 or its Tailscale address, and both
 report the same server id (UserDefaults keys `tailscale_for:<saved address>` and `tailscale_id:<saved address>`, names in
-`server_names`). `clear` (Change server) keeps the address; the ✕ on the setup page (`forget`) removes it. Only the bundled setup
-page can reconnect a remembered server through it, and the address is dropped when another server answers at the home address on
-the next save from the setup screen.
+`server_names`). `clear` (Change server) keeps the address; the ✕ on the setup page (`forget`) removes it. `forget` is accepted
+only from the bundled setup page (a server's page is refused, "Not available on this page"), because it also clears a
+remembered "Don't use it" (below). Only the bundled setup page can reconnect a remembered server through it, and the address is
+dropped when another server answers at the home address on the next save from the setup screen.
 
 "The page asking" means both the address the app opened and the origin the web view is showing right now
 (`EndpointRules.isTrustedPage`, for `addEndpoint` and `removeEndpoint`; the reconnect also checks the web view is on the bundled
@@ -111,17 +112,22 @@ secure name, with **Use it** / **Don't use it**. Only accept it if you have just
 Settings → Remote Access and the name matches. Why: the server id the app compares is public, so a device on your network that
 answers at a plain-`http` address could offer its own secure address, and since the app now opens the secure address first,
 that address would be opened first. The rules (`EndpointRules.needsConfirmation`, `PromptGate`):
-- **Asked only** when the offered address differs from the one already saved AND the page on screen is not `https` (a page that
-  cannot be read counts as plain `http`). The same address, offered again at every start, is never asked about; nor is an offer
-  from an `https` page, the secure page itself included. Removing the address (`removeEndpoint`) is never asked: it only returns
-  the app to the saved address.
-- **Use it** saves the address as before. **Don't use it** keeps only the saved address, and the app does not ask about that same
-  address again for **7 days** (then it asks once more); a different address is asked about. Forgetting the server (✕) clears it.
+- **Asked only** when the offered address differs from the one already saved AND the page is not `https`. "The page" is the one
+  the web view has actually finished loading, not one it has only started to load; a page that cannot be read counts as plain
+  `http`. The same address, offered again at every start, is never asked about; nor is an offer from an `https` page, the secure
+  page itself included. Removing the address (`removeEndpoint`) is never asked: it only returns the app to the saved address.
+- **Use it** saves the address as before. **Don't use it** saves nothing: the app keeps what it had (the saved address, and the
+  secure address it already had if the offer was a change), and it does not ask about that same address again for **7 days**
+  (then it asks once more). A different address is asked about, subject to the 10-minute wait below. Forgetting the server (the ✕
+  on the setup page) clears the remembered "no".
 - **No answer is not a "no".** A prompt that cannot be shown (another screen on top, the app not active), that is not answered
-  within **120 seconds**, or that is withdrawn because the app rebuilds its screen, saves nothing and remembers nothing; the next
-  start asks again. One prompt at a time, and at most one every **10 minutes** while the app runs. All four numbers are
-  judgements, not measurements.
-- Before the address is written, the page on screen is checked once more; if it moved, nothing is saved.
+  within **120 seconds**, or that is withdrawn because the app rebuilds its screen, saves nothing and remembers nothing; a later
+  start asks again. One prompt at a time, and at most one every **10 minutes** while the app runs: within those 10 minutes an
+  offer is refused without asking, whether it is the same address at the next start (a rebuild after a network change, say) or a
+  different one. Closing and reopening the app starts the count again. All four numbers are judgements, not measurements.
+- **Checked again at the write.** Just before the address is written, the saved server, the page and the "does this need
+  asking" decision are all checked again; if the page moved, or the offer needs asking now but was not accepted in a prompt,
+  nothing is saved.
 
 At launch, when a Tailscale address is saved, `MainViewController` probes both addresses at once behind the launch screen, under
 one 3-second deadline (`EndpointChooser`), and opens **the Tailscale address first**: if it answers with the id it was saved for,

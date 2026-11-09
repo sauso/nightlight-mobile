@@ -18,7 +18,7 @@ import WebKit
 ///   Capacitor.Plugins.ServerConfig.addEndpoint({ url })  -> { added }; saves the server's Tailscale address (asking the
 ///                                                          person first when it is new and the page is plain http)
 ///   Capacitor.Plugins.ServerConfig.removeEndpoint()      -> { removed }
-///   Capacitor.Plugins.ServerConfig.forget({ url })
+///   Capacitor.Plugins.ServerConfig.forget({ url })        -> from the bundled setup page only
 ///   Capacitor.Plugins.ServerConfig.clear()
 ///   Capacitor.Plugins.ServerConfig.restart()      -> reloads the bridge so the current choice takes effect
 ///   Capacitor.Plugins.ServerConfig.saveSession({ token, tailscale })  -> { saved }; keeps the sign-in for the other address
@@ -256,24 +256,24 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // DiscoveryRules.isBundledPage: (1) the bridge was built with no server URL, a fact about the whole bridge that nothing a
     // page does can fake; (2) the web view is really showing the bundled origin (EndpointRules.isOnBundledOrigin), so the
     // prefix navigation described at pageServerURL cannot lend this path to another page either. Fails closed: no bridge, an
-    // unreadable config or an unreadable page URL is "not the bundled page".
+    // unreadable config or an unreadable page URL is "not the bundled page". The rule itself is EndpointRules.isBundledPage
+    // (pure, run by ios/Tests); the page URL is read only when the bridge is the bundled one.
     private func callerIsBundledPage() -> Bool {
         guard let config = bridge?.config else { return false }
         let server: URL? = config.serverURL
         let local: URL? = config.localURL
-        guard let serverText = server?.absoluteString, let localText = local?.absoluteString else { return false }
-        if serverText != localText { return false }
-        return EndpointRules.isOnBundledOrigin(shownPageURL(), local: localText)
+        let serverText: String? = server?.absoluteString
+        let localText: String? = local?.absoluteString
+        if serverText == nil || serverText != localText { return false }
+        return EndpointRules.isBundledPage(bridgeServerUrl: serverText, bridgeLocalUrl: localText, shown: shownPageURL())
     }
 
     // The URL the web view's main frame is showing RIGHT NOW, or nil (no bridge, no web view, nothing loaded, or the main thread
     // did not answer within pageReadTimeout). WKWebView may only be read on the main thread. Plugin methods (the session calls
     // included) run on Capacitor's plugin queue and save's reconnect on a URLSession queue, so the read is handed to the main
     // thread with `async` and waited for with a time limit. When already on the main thread it is read directly (waiting on the
-    // main thread for a block queued on the main thread would never end). Called from ServerConfigStore.writes in ONE place only,
-    // addEndpoint's last look just before its write (writeEndpoint; addendum review of 2026-11-09: a prompt can stay up for two
-    // minutes, so the page must be checked again where the write happens). That cannot deadlock because of THE RULE (the main
-    // thread never waits for the writes queue); its cost is that other writes can wait up to pageReadTimeout behind it.
+    // main thread for a block queued on the main thread would never end). Never called from ServerConfigStore.writes (the one
+    // read from there is committedPageURL, in addEndpoint's write: see readWebView).
     //
     // WHY not `DispatchQueue.main.sync`, as phase 1 had (Codex and Opus plan review of iOS phase 2, 2026-11-08): a sync waits
     // without limit. Nothing on the main thread waits for the queues that call this today, so it could not deadlock, but that
@@ -292,9 +292,11 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // really showing. So the URL is returned only when the back-forward list's current item, which changes only once a new page
     // has committed, has the same ORIGIN; anything else (no current item either) is nil = "not the server's page", which refuses.
     // Fails closed, so if WebKit behaves otherwise than assumed the worst case is "sign in twice, as before", never a token for
-    // the wrong page. Used by saveSession and getSession (the two that hand something to or take something from a page); NOT by
-    // clearSession (a delete should not be refused by an odd page state) and not by phase 1's methods, which work on a device and
-    // are left as they are.
+    // the wrong page. Used by saveSession and getSession (the two that hand something to or take something from a page), and by
+    // addEndpoint's "ask once" decision and its last check before the write (Codex code review of the PR #38 prompt delta, High:
+    // a hostile plain-http page could start a navigation to an https URL, so WKWebView.url read https and the prompt was skipped;
+    // an unreadable or uncommitted page is nil here, which ASKS). NOT by clearSession (a delete should not be refused by an odd
+    // page state) and not by phase 1's checkPage, which works on a device and is left as it is.
     private func committedPageURL() -> String? {
         return readWebView { (webView: WKWebView?) -> String? in
             return ServerConfigPlugin.committedURL(of: webView)
@@ -308,7 +310,10 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     // Runs `read` on the main thread (WKWebView may only be touched there) and waits for it up to pageReadTimeout, as described
-    // at shownPageURL. Directly when already on the main thread.
+    // at shownPageURL. Directly when already on the main thread. Called from ServerConfigStore.writes in ONE place only:
+    // addEndpoint's last check just before its write (writeEndpoint, through committedPageURL; addendum review of 2026-11-09: a
+    // prompt can stay up for two minutes, so the page must be checked where the write happens). That cannot deadlock because of
+    // THE RULE (the main thread never waits for the writes queue); its cost is that other writes can wait up to pageReadTimeout.
     private func readWebView(_ read: @escaping (WKWebView?) -> String?) -> String? {
         guard let b = bridge else { return nil }
         if Thread.isMainThread {
@@ -366,7 +371,16 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
 
     // Drop a server from the remembered list (does not touch the active choice). Its name and Tailscale address go with it, and
     // so does the sign-in saved for that address (it was only ever meaningful for that server), as on Android.
+    //
+    // ONLY from the bundled setup page (its ✕ is the one caller, www/index.html), checked before anything else (Codex code review of
+    // the PR #38 prompt delta, Medium): forget also clears the remembered "Don't use it" for that server, so a plain-http page
+    // that could call it on the active server and then offer the same secure address again would defeat the 7-day quiet period.
+    // Refused elsewhere with the sentence the other page checks use.
     @objc func forget(_ call: CAPPluginCall) {
+        if !callerIsBundledPage() {
+            call.reject(EndpointRules.refusal(.notThisPage))
+            return
+        }
         guard let url = call.getString("url") else {
             call.resolve()
             return
@@ -451,11 +465,14 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
             // names were kept get theirs without any action (the page's server and the saved address are the same server).
             let pageName: String? = reference?.name
             // Every check above has passed; only now is the prompt considered, so a refused offer never asks. The page is read
-            // again (the identity check took seconds) and the saved secure address as it is now.
-            let shownNow: String? = self.shownPageURL()
+            // again (the identity check took seconds) and the saved secure address as it is now. The COMMITTED page, not
+            // WKWebView.url (Codex code review of the PR #38 prompt delta, High): a hostile plain-http page could start a
+            // navigation to an https URL so that the URL read https while the http page still runs; committedPageURL is nil
+            // then, which asks. The write repeats this decision (writeEndpoint), so a skipped prompt cannot be written anyway.
+            let shownNow: String? = self.committedPageURL()
             let savedNow: String? = ServerConfigStore.tailscaleURL(for: home)
             if !EndpointRules.needsConfirmation(shownPageUrl: shownNow, savedTailscale: savedNow, candidate: offered) {
-                self.writeEndpoint(reply, offered: offered, id: confirmed.id, home: home, pageName: pageName, clearDecline: false)
+                self.writeEndpoint(reply, offered: offered, id: confirmed.id, home: home, pageName: pageName, acceptedInPrompt: false)
                 return
             }
             self.askThenWrite(reply, offered: offered, id: confirmed.id, home: home, pageName: pageName)
@@ -497,26 +514,38 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             return
         }
-        writeEndpoint(reply, offered: offered, id: id, home: home, pageName: pageName, clearDecline: change == .clear)
+        // Here only an accept is left (refusal(after:) is nil for nothing else). The write also clears the decline, as
+        // PromptGate.declineChange says an accept does.
+        writeEndpoint(reply, offered: offered, id: id, home: home, pageName: pageName, acceptedInPrompt: outcome == .accepted)
     }
 
-    // The write, on the writes queue. FIRST, the page is checked once more right where the write happens (addendum review of
-    // 2026-11-09): the prompt can stay up for two minutes, and the identity check takes seconds, so the saved server must still
-    // be `home` and the web view must still be showing a trusted page of it (EndpointRules.isTrustedPage, as checkPage). Fails
-    // closed: a page that moved, an unreadable page or a changed saved server refuses, and nothing is written. Reading the page
-    // from this queue is the one exception noted at shownPageURL (bounded at a second; THE RULE keeps it deadlock-free).
-    private func writeEndpoint(_ reply: OnceReply, offered: String, id: String, home: String, pageName: String?, clearDecline: Bool) {
+    // The write, on the writes queue. FIRST, everything is checked once more right where the write happens (addendum review of
+    // 2026-11-09; Codex code review of the PR #38 prompt delta): the prompt can stay up for two minutes and the identity check
+    // takes seconds. The saved server must still be `home`; the web view's COMMITTED page must still be a trusted page of it
+    // (EndpointRules.isTrustedPage, as checkPage); and the "ask once" decision is made AGAIN from that page and the saved secure
+    // address as they are now (PromptGate.mayWrite): an offer that needs asking now but was not accepted in a prompt is refused
+    // as not confirmed, with nothing written and no decline stored. Fails closed: an unreadable page refuses. Reading the page
+    // from this queue is the one exception noted at readWebView (bounded at a second; THE RULE keeps it deadlock-free).
+    private func writeEndpoint(_ reply: OnceReply, offered: String, id: String, home: String, pageName: String?, acceptedInPrompt: Bool) {
         ServerConfigStore.writes.async {
             let primaryNow: String? = ServerConfigStore.savedURL
             let savedTailscaleNow: String? = ServerConfigStore.tailscaleURL(for: home)
-            let trusted: Bool = EndpointRules.isTrustedPage(primary: primaryNow, savedTailscale: savedTailscaleNow, page: self.pageServerURL(), shown: self.shownPageURL())
+            // ONE read of the committed page, used for both checks below, so they judge the same page.
+            let committedNow: String? = self.committedPageURL()
+            let trusted: Bool = EndpointRules.isTrustedPage(primary: primaryNow, savedTailscale: savedTailscaleNow, page: self.pageServerURL(), shown: committedNow)
             guard primaryNow == home, trusted else {
                 reply.reject(EndpointRules.refusal(.notThisPage))
                 return
             }
+            let needsNow: Bool = EndpointRules.needsConfirmation(shownPageUrl: committedNow, savedTailscale: savedTailscaleNow, candidate: offered)
+            if !PromptGate.mayWrite(acceptedInPrompt: acceptedInPrompt, needsConfirmationNow: needsNow) {
+                AddressPrompt.log("not written: it needs confirming now and was not accepted in a prompt")
+                reply.reject(EndpointRules.refusal(.notConfirmed))
+                return
+            }
             let previous = ServerConfigStore.tailscaleURL(for: home)
             ServerConfigStore.setTailscale(offered, id: id, for: home)
-            if clearDecline {
+            if acceptedInPrompt {
                 ServerConfigStore.clearDeclinedTailscale(for: home)
             }
             ServerConfigStore.rememberName(home, pageName)

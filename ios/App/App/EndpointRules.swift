@@ -320,10 +320,21 @@ enum EndpointRules {
         return left == right
     }
 
+    /// Whether the page calling is the bundled setup page (public/index.html), from what the plugin can read: the bridge was
+    /// built with NO server URL (Capacitor then reports the bundled URL, `bridgeLocalUrl`, as its server URL too: a fact about
+    /// the whole bridge that nothing a page does can fake) AND the web view is really showing the bundled origin (`shown`, see
+    /// isOnBundledOrigin). Anything missing is "not the bundled page". The pure half of ServerConfigPlugin.callerIsBundledPage,
+    /// used by save's reconnect and, since the Codex code review of the PR #38 prompt delta, by forget.
+    static func isBundledPage(bridgeServerUrl: String?, bridgeLocalUrl: String?, shown: String?) -> Bool {
+        guard let server = bridgeServerUrl, let local = bridgeLocalUrl else { return false }
+        if server != local { return false }
+        return isOnBundledOrigin(shown, local: local)
+    }
+
     /// Whether `shown` (the web view's current URL) is on the bundled origin `local` (Capacitor's `capacitor://localhost` by
     /// default): the same scheme and host, no port, no user info. The second half of Android's DiscoveryRules.isBundledPage,
-    /// used for the one bundled-page-only path (save's reconnect through the Tailscale address), so a page the bundled bridge
-    /// might show anywhere else cannot use it either. nil or unparseable is "not the bundled page".
+    /// used for the bundled-page-only paths (save's reconnect through the Tailscale address, and forget), so a page the bundled
+    /// bridge might show anywhere else cannot use them either. nil or unparseable is "not the bundled page".
     static func isOnBundledOrigin(_ shown: String?, local: String?) -> Bool {
         guard let shownText = shown, let localText = local else { return false }
         guard let page = URLComponents(string: shownText), let bundled = URLComponents(string: localText) else { return false }
@@ -478,6 +489,15 @@ enum PromptGate {
         case .notAnswered:
             return .keep
         }
+    }
+
+    /// The decision REPEATED at the write, on the writes queue, against the committed page and the saved secure address as they
+    /// are then (Codex code review of the PR #38 prompt delta, High: the first decision could be made from a page the web view
+    /// had only started to load, and the write re-checked the page's origin but not whether the offer needed asking). The write
+    /// may go ahead when the person accepted it in a prompt, or when it does not need asking now. An offer that needs asking now
+    /// but went through no accepted prompt is refused (notConfirmed: nothing written, no decline stored).
+    static func mayWrite(acceptedInPrompt: Bool, needsConfirmationNow: Bool) -> Bool {
+        return acceptedInPrompt || !needsConfirmationNow
     }
 
     /// The refusal for a gate decision, or nil when the prompt is to be shown.
