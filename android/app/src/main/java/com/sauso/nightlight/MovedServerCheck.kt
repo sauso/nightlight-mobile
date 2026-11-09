@@ -144,6 +144,7 @@ class MovedServerCheck(private val activity: MainActivity) {
                     if (moved) activity.runOnUiThread {
                         if (current(gen)) {
                             MainActivity.recreateLog.noteRecreate(MainActivity.recreateClockMs())
+                            AudioService.stopForServerChange(activity)
                             activity.recreate()
                         }
                     }

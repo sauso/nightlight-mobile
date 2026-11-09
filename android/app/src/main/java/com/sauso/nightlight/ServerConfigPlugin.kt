@@ -914,7 +914,10 @@ class ServerConfigPlugin : Plugin() {
     @PluginMethod
     fun restart(call: PluginCall) {
         call.resolve()
-        activity?.runOnUiThread { activity.recreate() }
+        activity?.runOnUiThread {
+            AudioService.stopForServerChange(activity)
+            activity.recreate()
+        }
     }
 
     // "Look for my Nightlight" (#20). Starts a search and resolves { started, onWifi } at once; found servers

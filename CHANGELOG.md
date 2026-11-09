@@ -14,6 +14,7 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 - **Android: find your server after its local address changes.** When a saved private IPv4 address stops answering,
   the app searches Wi-Fi for the same server id and asks before saving a new address. Existing saved servers learn
   their id when they next answer. Accepting the move requires one sign-in at the new address.
+  Switching to another server now also stops background listening that was running for the old one.
 - **iOS: Look for my Nightlight.** The setup screen can find a server on your Wi-Fi and check it again when you tap
   Connect. Search needs Local Network access and finds private IPv4 addresses only. Networks that isolate devices or
   block multicast may find nothing; you can still type the address, but a local address also needs Local Network

@@ -37,6 +37,12 @@ class AudioService : Service() {
         const val ACTION_PAUSE = "com.sauso.nightlight.action.PAUSE"
         const val ACTION_PLAY = "com.sauso.nightlight.action.PLAY"
         const val EXTRA_LABEL = "label"
+
+        // A server change replaces the page before it can stop background listening itself.
+        // Same-server recreates (roaming and load-error recovery) leave listening in place.
+        fun stopForServerChange(context: Context) {
+            context.stopService(Intent(context, AudioService::class.java))
+        }
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
