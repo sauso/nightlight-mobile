@@ -78,6 +78,7 @@ enum MovedServerRules {
     }
 
     enum MoveStep: Equatable {
+        case clearNew(String)
         case addKnown(String)
         case setName(String, String)
         case setServerId(String, String)
@@ -86,11 +87,15 @@ enum MovedServerRules {
         case removeOld(String)
     }
 
-    /// Write the new address's data first, flip the saved URL only when it can be opened, then forget the old address and
-    /// its per-address data. A Tailscale pair belongs to the new entry only when it names the same server id.
-    static func movePlan(oldUrl: String, newUrl: String, id: String, name: String?, knownServers: [String], pairUrl: String?, pairId: String?) -> [MoveStep] {
+    /// An address reused by another remembered server must lose all of its old per-address data before the new entry is
+    /// written. Flip the saved URL after the new entry is ready; carry a pair only when it names the same server id.
+    static func movePlan(oldUrl: String, newUrl: String, id: String, name: String?, knownServers: [String],
+                         hasNewUrlLeftovers: Bool, pairUrl: String?, pairId: String?) -> [MoveStep] {
         var steps: [MoveStep] = []
-        if !knownServers.contains(newUrl) { steps.append(.addKnown(newUrl)) }
+        let clearNew = knownServers.contains(newUrl) || hasNewUrlLeftovers
+        if clearNew { steps.append(.clearNew(newUrl)) }
+        // Clearing a remembered destination removes its list entry, so it must be added again.
+        steps.append(.addKnown(newUrl))
         if let name = name, !name.isEmpty { steps.append(.setName(newUrl, name)) }
         steps.append(.setServerId(newUrl, id))
         if let pairUrl = pairUrl, pairId == id { steps.append(.carryPair(newUrl, pairUrl, id)) }

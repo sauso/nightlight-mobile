@@ -108,6 +108,28 @@ enum ServerConfigStore {
         _ = KeychainSessionStore.vault.clear(url)
     }
 
+    /// A move may land on a URL that belonged to another server. Check raw keys so even a stale or invalid pair/decline
+    /// cannot survive the saved-URL flip; a matching stored id alone is safe to leave in place.
+    static func hasMoveDestinationLeftovers(_ url: String, wantedId: String) -> Bool {
+        if knownServers.contains(url) || storedNames[url] != nil ||
+            defaults.object(forKey: EndpointRules.key(url)) != nil ||
+            defaults.object(forKey: EndpointRules.idKey(url)) != nil ||
+            defaults.object(forKey: EndpointRules.declinedKey(url)) != nil ||
+            defaults.object(forKey: EndpointRules.declinedAtKey(url)) != nil ||
+            defaults.object(forKey: keyMovedDeclines + url) != nil ||
+            serverId(for: url).map({ $0 != wantedId }) == true { return true }
+        // An unavailable Keychain read must still cause a clear attempt before the move can commit.
+        return KeychainSessionStore.vault.load(url) != .nothing
+    }
+
+    /// Clear the destination before writing it. If its vault slot cannot be removed, keep the saved URL at the old
+    /// address so launch cannot reuse the other server's sign-in.
+    static func clearMoveDestination(_ url: String) -> Bool {
+        guard KeychainSessionStore.vault.clear(url) != .unavailable else { return false }
+        forget(url)
+        return true
+    }
+
     /// The id belongs to the exact address that answered a strict health probe. A later occupant must not replace it.
     /// Call setServerId only on writes, after that probe; reads may use UserDefaults from a worker thread.
     static func serverId(for url: String) -> String? {
@@ -1174,8 +1196,8 @@ final class AddressPrompt {
     }
 
     /// The moved-address flow has its own cooldown and decline map, but reserves the same on-screen slot.
-    func reserveMoved(onShown: @escaping () -> Void, completion: @escaping (PromptGate.Outcome) -> Void) -> Reservation {
-        return reserve(kind: .moved, candidate: "", decline: nil, onShown: onShown, completion: completion)
+    func reserveMoved(completion: @escaping (PromptGate.Outcome) -> Void) -> Reservation {
+        return reserve(kind: .moved, candidate: "", decline: nil, onShown: nil, completion: completion)
     }
 
     private func reserve(kind: Kind, candidate: String, decline: PromptGate.DeclineRecord?, onShown: (() -> Void)?, completion: @escaping (PromptGate.Outcome) -> Void) -> Reservation {

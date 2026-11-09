@@ -37,10 +37,12 @@ error codes only, with no address or name.
 
 ## If your server's address changes (iOS)
 
-On Wi-Fi, the app makes one background health request when it starts or returns to the foreground. If the saved local
-address no longer answers, it searches for the same server for up to 10 seconds. When it finds a different private IPv4
-address, a native prompt shows the saved and new addresses, the server name and an eight-character code. The id, name and
-code are public identifiers, not proof that the server is yours: check the new address against your server or router
+At most once every five minutes while the app is active, it checks a saved private IPv4 `http://ip:port` address on
+Wi-Fi or Ethernet. If that address answers, the check makes one background health request and stops. Only if it does
+not answer and the server's id is known does the app search for the same server for up to 10 seconds. When it finds a
+different private IPv4 address, a native prompt shows the saved and new addresses, the server name and an eight-character
+code. The id, name and code are public identifiers, not proof that the server is yours: check the new address against
+your server or router
 before choosing **Use new address**. **Not now** leaves the saved address alone and quiets that candidate for seven days.
 A server saved before this release learns its id on the first start when its saved address still answers. After a move,
 sign in once at the new address.

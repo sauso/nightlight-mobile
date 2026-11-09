@@ -121,26 +121,43 @@ func runMovedServerRulesTests() {
             .setSavedUrl(new), .removeOld(old)
         ]
         checkEqual(MovedServerRules.movePlan(oldUrl: old, newUrl: new, id: id, name: "Garden",
-                                             knownServers: [old], pairUrl: pair, pairId: id), expected)
+                                             knownServers: [old], hasNewUrlLeftovers: false,
+                                             pairUrl: pair, pairId: id), expected)
     }
     test("movePlan: CarryPair is absent without a pair URL") {
         let plan = MovedServerRules.movePlan(oldUrl: old, newUrl: new, id: id, name: nil,
-                                             knownServers: [], pairUrl: nil, pairId: id)
+                                             knownServers: [], hasNewUrlLeftovers: false, pairUrl: nil, pairId: id)
         check(!plan.contains(.carryPair(new, pair, id)), "carried a missing pair")
         checkEqual(plan, [.addKnown(new), .setServerId(new, id), .setSavedUrl(new), .removeOld(old)])
     }
     test("movePlan: CarryPair is absent when pair id differs") {
         let plan = MovedServerRules.movePlan(oldUrl: old, newUrl: new, id: id, name: nil,
-                                             knownServers: [], pairUrl: pair, pairId: otherId)
+                                             knownServers: [], hasNewUrlLeftovers: false, pairUrl: pair, pairId: otherId)
         checkEqual(plan, [.addKnown(new), .setServerId(new, id), .setSavedUrl(new), .removeOld(old)])
         let noId = MovedServerRules.movePlan(oldUrl: old, newUrl: new, id: id, name: nil,
-                                              knownServers: [], pairUrl: pair, pairId: nil)
+                                              knownServers: [], hasNewUrlLeftovers: false, pairUrl: pair, pairId: nil)
         checkEqual(noId, plan)
     }
-    test("movePlan: empty name omits SetName and known address omits AddKnown") {
+    test("movePlan: known destination is cleared then added again, with no empty name") {
         let plan = MovedServerRules.movePlan(oldUrl: old, newUrl: new, id: id, name: "",
-                                             knownServers: [old, new], pairUrl: nil, pairId: nil)
-        checkEqual(plan, [.setServerId(new, id), .setSavedUrl(new), .removeOld(old)])
+                                             knownServers: [old, new], hasNewUrlLeftovers: false,
+                                             pairUrl: nil, pairId: nil)
+        checkEqual(plan, [.clearNew(new), .addKnown(new), .setServerId(new, id),
+                          .setSavedUrl(new), .removeOld(old)])
+    }
+    test("movePlan: unlisted destination with leftovers is cleared before adding") {
+        let plan = MovedServerRules.movePlan(oldUrl: old, newUrl: new, id: id, name: nil,
+                                             knownServers: [old], hasNewUrlLeftovers: true,
+                                             pairUrl: nil, pairId: nil)
+        check(plan.first == MovedServerRules.MoveStep.clearNew(new), "did not clear the destination first")
+        checkEqual(plan, [.clearNew(new), .addKnown(new), .setServerId(new, id),
+                          .setSavedUrl(new), .removeOld(old)])
+    }
+    test("movePlan: fresh destination has no clear step") {
+        let plan = MovedServerRules.movePlan(oldUrl: old, newUrl: new, id: id, name: nil,
+                                             knownServers: [old], hasNewUrlLeftovers: false,
+                                             pairUrl: nil, pairId: nil)
+        check(!plan.contains(.clearNew(new)), "cleared an unused destination")
     }
 
     test("MoveGuard: matching old URL and id are still valid") {

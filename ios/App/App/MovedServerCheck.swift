@@ -24,7 +24,6 @@ final class MovedServerCheck {
     // Everything below is touched only by queue, except the lock-protected ticket above.
     private var running = false
     private var lastRunMs: Int64?
-    private var shownCandidates = Set<String>()
     private var monitor: NWPathMonitor?
     private var discovery: ServerDiscovery?
 
@@ -143,7 +142,7 @@ final class MovedServerCheck {
             // Discovery publishes one verified card per id. A declined first card ends this attempt quietly.
             let declines = ServerConfigStore.movedDeclines(for: old)
             if MovedServerRules.Declines.isDeclined(declines, candidateUrl: card.url,
-                                                    nowMs: AddressPrompt.wallClockMs()) || shownCandidates.contains(card.url) {
+                                                    nowMs: AddressPrompt.wallClockMs()) {
                 end()
                 return
             }
@@ -165,12 +164,7 @@ final class MovedServerCheck {
                                                      offeredName: offer.name,
                                                      storedName: ServerConfigStore.storedNames[offer.old],
                                                      fingerprint: offer.fingerprint)
-        let reservation = AddressPrompt.shared.reserveMoved(onShown: { [weak self] in
-            self?.queue.async { [weak self] in
-                guard let self = self else { return }
-                _ = self.shownCandidates.insert(offer.newUrl)
-            }
-        }, completion: { [weak self] outcome in
+        let reservation = AddressPrompt.shared.reserveMoved(completion: { [weak self] outcome in
             self?.queue.async { [weak self] in self?.answered(outcome, offer: offer, ticket: ticket) }
         })
         guard reservation.decision == .ask else { end(); return }
@@ -216,16 +210,21 @@ final class MovedServerCheck {
             let effectiveId = currentId ?? (pairStillSaved ? offer.verifiedPairId : nil)
             guard MovedServerRules.MoveGuard.stillValid(currentSavedUrl: ServerConfigStore.savedURL,
                     currentStoredId: effectiveId, expectedOldUrl: offer.old, expectedId: offer.wanted),
-                  self?.isCurrent(ticket) == true,
-                  ServerConfigStore.serverId(for: offer.newUrl).map({ $0 == offer.wanted }) ?? true else {
+                   self?.isCurrent(ticket) == true else {
                 self?.queue.async { [weak self] in self?.end() }
                 return
             }
             let plan = MovedServerRules.movePlan(oldUrl: offer.old, newUrl: offer.newUrl, id: offer.wanted,
                 name: health.name, knownServers: ServerConfigStore.knownServers,
+                hasNewUrlLeftovers: ServerConfigStore.hasMoveDestinationLeftovers(offer.newUrl, wantedId: offer.wanted),
                 pairUrl: ServerConfigStore.tailscaleURL(for: offer.old), pairId: ServerConfigStore.tailscaleId(for: offer.old))
             for step in plan {
                 switch step {
+                case .clearNew(let url):
+                    guard ServerConfigStore.clearMoveDestination(url) else {
+                        self?.queue.async { [weak self] in self?.end() }
+                        return
+                    }
                 case .addKnown(let url): ServerConfigStore.remember(url)
                 case .setName(let url, let name): ServerConfigStore.rememberName(url, name)
                 case .setServerId(let url, let id): ServerConfigStore.setServerId(id, for: url)
