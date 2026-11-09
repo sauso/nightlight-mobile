@@ -21,7 +21,7 @@ final class MovedServerCheck {
     private let lifecycleLock = NSLock()
     private var active = false
     private var generation = 0
-    private var launchRefusalRequested = false
+    private var refusedUrl: String?
     private var suppressNextLaunchRefusalForUrl: String?
     // Everything below is touched only by queue, except the lock-protected ticket above.
     private var running = false
@@ -33,18 +33,19 @@ final class MovedServerCheck {
 
     /// The launch gate reports its final choice on the main thread. An accepted move rebuilds through this same gate;
     /// its tap-time strict probe already verified the new address, so that rebuild must not create another urgent search.
-    func launchChoiceFinished(saved: String, requestsCheck: Bool) {
+    func launchChoiceFinished(saved: String?, requestsCheck: Bool) {
         lifecycleLock.lock()
-        let suppressed = suppressNextLaunchRefusalForUrl == saved
-        if suppressed { suppressNextLaunchRefusalForUrl = nil }
-        if requestsCheck && !suppressed { launchRefusalRequested = true }
+        let suppressed = saved != nil && suppressNextLaunchRefusalForUrl == saved
+        // Every gate result replaces the previous refusal, including a launch with no saved address.
+        suppressNextLaunchRefusalForUrl = nil
+        refusedUrl = requestsCheck && !suppressed ? saved : nil
         lifecycleLock.unlock()
     }
 
     var hasLaunchRefusalRequest: Bool {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
-        return launchRefusalRequested
+        return MovedServerRules.Throttle.skipOnceFor(refusedUrl: refusedUrl, savedUrl: ServerConfigStore.savedURL)
     }
 
     private func suppressRefusalFromAcceptedMove(to url: String) {
@@ -89,8 +90,10 @@ final class MovedServerCheck {
               let parsed = DiscoveryRules.parseFoundUrl(old), EndpointRules.isPrivateIpv4(parsed.host) else { return }
         let now = AddressPrompt.monotonicMs()
         lifecycleLock.lock()
-        let skipOnce = launchRefusalRequested
-        launchRefusalRequested = false
+        let skipOnce = MovedServerRules.Throttle.skipOnceFor(refusedUrl: refusedUrl, savedUrl: old)
+        // A cheap early exit before this point (for example, another prompt showing) leaves this URL's refusal pending.
+        // Once a run starts, discard it even if the saved URL changed; another server must not inherit its bypass.
+        refusedUrl = nil
         lifecycleLock.unlock()
         // Consume as this run starts, even if the path is not Wi-Fi or the subsequent probe finds nothing.
         guard MovedServerRules.Throttle.mayRun(nowMs: now, lastRunMs: lastRunMs,

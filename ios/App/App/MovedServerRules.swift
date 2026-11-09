@@ -114,6 +114,12 @@ enum MovedServerRules {
     }
 
     enum Throttle {
+        /// A refusal belongs only to the saved URL that the launch gate rejected.
+        static func skipOnceFor(refusedUrl: String?, savedUrl: String?) -> Bool {
+            guard let refusedUrl = refusedUrl, let savedUrl = savedUrl else { return false }
+            return refusedUrl == savedUrl
+        }
+
         /// A process runs one check at most every five minutes. Exactly five minutes is allowed; a missing first run is too.
         static func mayRun(nowMs: Int64, lastRunMs: Int64?, skipOnce: Bool = false) -> Bool {
             // A fresh launch refusal is stronger evidence than the routine foreground cadence; the caller consumes it once.

@@ -35,6 +35,9 @@ class MainViewController: CAPBridgeViewController {
                 // Capacitor's nil serverURL uses bundled assets, as on the existing no-saved-address path.
                 descriptor.serverURL = nil
             }
+        } else {
+            // A launch without a saved address is still a gate result; clear any refusal from the previous server.
+            MovedServerCheck.shared.launchChoiceFinished(saved: nil, requestsCheck: false)
         }
         return descriptor
     }

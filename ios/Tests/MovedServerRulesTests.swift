@@ -190,6 +190,22 @@ func runMovedServerRulesTests() {
     test("Throttle: no last run allows a check") {
         check(MovedServerRules.Throttle.mayRun(nowMs: 0, lastRunMs: nil), "blocked first check")
     }
+    test("Throttle: matching refused and saved URLs skip once") {
+        check(MovedServerRules.Throttle.skipOnceFor(refusedUrl: old, savedUrl: old),
+              "matching refusal did not skip")
+    }
+    test("Throttle: a different saved URL cannot use another server's refusal") {
+        check(!MovedServerRules.Throttle.skipOnceFor(refusedUrl: old, savedUrl: new),
+              "different server inherited the bypass")
+    }
+    test("Throttle: no refused URL cannot skip") {
+        check(!MovedServerRules.Throttle.skipOnceFor(refusedUrl: nil, savedUrl: old),
+              "routine check bypassed the interval")
+    }
+    test("Throttle: no saved URL cannot skip") {
+        check(!MovedServerRules.Throttle.skipOnceFor(refusedUrl: old, savedUrl: nil),
+              "missing server inherited the bypass")
+    }
     test("Throttle: just under five minutes blocks a check") {
         check(!MovedServerRules.Throttle.mayRun(nowMs: MovedServerRules.CHECK_INTERVAL_MS - 1,
                                                 lastRunMs: 0), "ran early")
