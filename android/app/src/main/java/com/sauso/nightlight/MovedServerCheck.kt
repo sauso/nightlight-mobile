@@ -21,13 +21,13 @@ class MovedServerCheck(private val activity: MainActivity) {
         private val runLock = Any()
         private var lastRunMs: Long? = null
         private var inFlight = false
-        private val prompted = HashSet<String>()
     }
 
     private val generation = AtomicInteger()
     @Volatile private var started = false
     @Volatile private var pendingPrompt: SecureAddressPrompt? = null
     private var discovery: ServerDiscovery? = null // worker thread only
+    private val healthProbe = HealthProbe(totalDeadlineMs = MovedServerRules.PROBE_TIMEOUT_MS)
     private var running = false // worker thread only
     private var searchTimeout: Runnable? = null // worker thread only
 
@@ -65,7 +65,7 @@ class MovedServerCheck(private val activity: MainActivity) {
         running = true
         discovery = d
         // The saved URL is probed strictly once. A different answering id ends the check without learning it.
-        val health = EndpointProbe.fetchHealth(old, MovedServerRules.PROBE_TIMEOUT_MS.toInt())
+        val health = healthProbe.fetchUrl(old)
         if (!current(gen)) { endRun(); return }
         val stored = ServerConfigPlugin.getServerId(context, old)
         val pairUrl = ServerConfigPlugin.getTailscaleUrl(context, old)
@@ -110,13 +110,11 @@ class MovedServerCheck(private val activity: MainActivity) {
         val context = activity.applicationContext
         if (MovedServerRules.Declines.isDeclined(ServerConfigPlugin.getMovedDeclines(context, old), card.url,
                 System.currentTimeMillis())) return
-        synchronized(runLock) { if (card.url in prompted) return }
         stopSearch()
         if (gate.reserve(card.url, null, null, System.currentTimeMillis(), SystemClock.elapsedRealtime()) != PromptGate.Decision.ASK) {
             endRun()
             return
         }
-        synchronized(runLock) { prompted.add(card.url) }
         val message = MovedServerRules.promptMessage(old, card.url, card.name,
             ServerConfigPlugin.getStoredName(context, old), card.fingerprint)
         val prompt = SecureAddressPrompt(onShown = { gate.shown(SystemClock.elapsedRealtime()) }) { result ->
@@ -139,7 +137,7 @@ class MovedServerCheck(private val activity: MainActivity) {
             }
             PromptGate.Outcome.USE_IT -> {
                 // Re-check at the tap. Discovery's earlier card is only a suggestion, and its address may have changed hands.
-                val live = EndpointProbe.fetchHealth(card.url, MovedServerRules.PROBE_TIMEOUT_MS.toInt())
+                val live = healthProbe.fetchUrl(card.url)
                 if (!current(gen) || live?.id != wanted) { endRun(); return }
                 ServerConfigPlugin.moveServer(activity.applicationContext, old, card.url, wanted, live.name,
                     verifiedPairUrl, mayCommit = { current(gen) }) { moved ->

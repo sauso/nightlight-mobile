@@ -131,7 +131,7 @@ class MovedServerRulesTest {
     }
 
     @Test fun `move plan writes new data before saved URL and removes old last`() {
-        val plan = MovedServerRules.movePlan(old, moved, id, "Demo Server", listOf(old), "https://server.example.invalid", id)
+        val plan = MovedServerRules.movePlan(old, moved, id, "Demo Server", listOf(old), false, "https://server.example.invalid", id)
         assertEquals(listOf(
             MovedServerRules.MoveStep.AddKnown(moved), MovedServerRules.MoveStep.SetName(moved, "Demo Server"),
             MovedServerRules.MoveStep.SetServerId(moved, id), MovedServerRules.MoveStep.CarryPair(moved, "https://server.example.invalid", id),
@@ -141,17 +141,31 @@ class MovedServerRulesTest {
 
     @Test fun `carry pair is absent without pair URL or when pair id differs`() {
         for ((pairUrl, pairId) in listOf(null to id, "https://server.example.invalid" to otherId, "https://server.example.invalid" to null)) {
-            val plan = MovedServerRules.movePlan(old, moved, id, "Demo", listOf(old), pairUrl, pairId)
+            val plan = MovedServerRules.movePlan(old, moved, id, "Demo", listOf(old), false, pairUrl, pairId)
             assertFalse(plan.toString(), plan.any { it is MovedServerRules.MoveStep.CarryPair })
         }
     }
 
-    @Test fun `empty name omits set name and known URL is not added twice`() {
-        val plan = MovedServerRules.movePlan(old, moved, id, "", listOf(old, moved), null, null)
-        assertEquals(listOf(MovedServerRules.MoveStep.SetServerId(moved, id),
+    @Test fun `empty name omits set name and remembered destination is cleared then added once`() {
+        val plan = MovedServerRules.movePlan(old, moved, id, "", listOf(old, moved), false, null, null)
+        assertEquals(listOf(MovedServerRules.MoveStep.ClearNew(moved), MovedServerRules.MoveStep.AddKnown(moved),
+            MovedServerRules.MoveStep.SetServerId(moved, id),
             MovedServerRules.MoveStep.SetSavedUrl(moved), MovedServerRules.MoveStep.RemoveOld(old)), plan)
-        assertFalse(MovedServerRules.movePlan(old, moved, id, null, listOf(old), null, null)
+        assertFalse(MovedServerRules.movePlan(old, moved, id, null, listOf(old), false, null, null)
             .any { it is MovedServerRules.MoveStep.SetName })
+    }
+
+    @Test fun `remembered destination starts with clear then add`() {
+        val plan = MovedServerRules.movePlan(old, moved, id, "Demo", listOf(old, moved), false, null, null)
+        assertEquals(listOf(MovedServerRules.MoveStep.ClearNew(moved), MovedServerRules.MoveStep.AddKnown(moved)),
+            plan.take(2))
+    }
+
+    @Test fun `fresh destination has no clear step but leftover data requires one`() {
+        val fresh = MovedServerRules.movePlan(old, moved, id, null, listOf(old), false, null, null)
+        assertFalse(fresh.any { it is MovedServerRules.MoveStep.ClearNew })
+        val leftover = MovedServerRules.movePlan(old, moved, id, null, listOf(old), true, null, null)
+        assertEquals(MovedServerRules.MoveStep.ClearNew(moved), leftover.first())
     }
 
     @Test fun `move guard requires both the old URL and expected id`() {

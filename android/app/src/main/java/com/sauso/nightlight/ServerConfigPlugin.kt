@@ -115,8 +115,7 @@ class ServerConfigPlugin : Plugin() {
             }
         }
 
-        private fun removeAddress(context: Context, url: String) {
-            val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        private fun removeAddressData(p: SharedPreferences, url: String) {
             val list = knownServersOf(p)
             list.remove(url)
             val names = try { JSONObject(p.getString(KEY_NAMES, "{}")) } catch (e: Exception) { JSONObject() }
@@ -125,8 +124,36 @@ class ServerConfigPlugin : Plugin() {
                 .remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url))
                 .remove(EndpointRules.declinedKey(url)).remove(EndpointRules.declinedAtKey(url))
                 .remove(serverIdKey(url)).remove(movedDeclinesKey(url)).apply()
+        }
+
+        private fun removeAddress(context: Context, url: String) {
+            removeAddressData(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE), url)
             SessionVault(PrefsKeyValueStore(context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)),
                 KeystoreSessionCipher()).clear(url)
+        }
+
+        private fun hasMoveDestinationLeftovers(context: Context, p: SharedPreferences, url: String): Boolean {
+            val names = try { JSONObject(p.getString(KEY_NAMES, "{}")) } catch (e: Exception) { JSONObject() }
+            val session = context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)
+            return names.has(url) || session.contains("s:$url") ||
+                listOf(EndpointRules.key(url), EndpointRules.idKey(url), EndpointRules.declinedKey(url),
+                    EndpointRules.declinedAtKey(url), serverIdKey(url), movedDeclinesKey(url)).any { p.contains(it) }
+        }
+
+        private fun clearMoveDestination(context: Context, p: SharedPreferences, url: String): Boolean {
+            return try {
+                val session = context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)
+                // A reused URL must not expose the previous server's encrypted login. Abort before the saved-URL flip
+                // if that slot exists but cannot be removed; SessionVault.clear returns false for an absent slot too.
+                if (session.contains("s:$url")) {
+                    val vault = SessionVault(PrefsKeyValueStore(session), KeystoreSessionCipher())
+                    if (!vault.clear(url) || session.contains("s:$url")) return false
+                }
+                removeAddressData(p, url)
+                true
+            } catch (e: Exception) {
+                false
+            }
         }
 
         // Called only after the new address answered with the wanted id. One executor task checks the current
@@ -139,13 +166,19 @@ class ServerConfigPlugin : Plugin() {
                 val pairUrl = getTailscaleUrl(context, oldUrl)
                 val pairId = getTailscaleId(context, oldUrl)
                 val guardId = stored ?: if (pairUrl == verifiedPairUrl) pairId else null
-                if (!mayCommit() || !MovedServerRules.MoveGuard.stillValid(getSavedUrl(context), guardId, oldUrl, id) ||
-                    (getServerId(context, newUrl)?.let { it != id } == true)) {
+                if (!mayCommit() || !MovedServerRules.MoveGuard.stillValid(getSavedUrl(context), guardId, oldUrl, id)) {
                     onMoved(false)
                     return@execute
                 }
-                val plan = MovedServerRules.movePlan(oldUrl, newUrl, id, name, knownServersOf(p), pairUrl, pairId)
+                val plan = MovedServerRules.movePlan(oldUrl, newUrl, id, name, knownServersOf(p),
+                    hasMoveDestinationLeftovers(context, p, newUrl), pairUrl, pairId)
                 for (step in plan) when (step) {
+                    is MovedServerRules.MoveStep.ClearNew -> {
+                        if (!clearMoveDestination(context, p, step.url)) {
+                            onMoved(false)
+                            return@execute
+                        }
+                    }
                     is MovedServerRules.MoveStep.AddKnown -> {
                         val list = knownServersOf(p)
                         list.remove(step.url)

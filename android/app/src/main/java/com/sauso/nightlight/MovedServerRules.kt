@@ -77,6 +77,7 @@ object MovedServerRules {
     }
 
     sealed class MoveStep {
+        data class ClearNew(val url: String) : MoveStep()
         data class AddKnown(val url: String) : MoveStep()
         data class SetName(val url: String, val name: String) : MoveStep()
         data class SetServerId(val url: String, val id: String) : MoveStep()
@@ -86,8 +87,9 @@ object MovedServerRules {
     }
 
     /**
-     * Prepare all new-address data before the saved URL changes; only then remove the old list entry, name,
-     * decline, pair, id and sign-in vault slot. This order leaves a usable address if a write is interrupted.
+     * Clear a reused destination before writing its new identity, so its prior server's pair, decline and sign-in
+     * cannot follow the move. Prepare all new-address data before the saved URL changes; only then remove the old
+     * address. This order leaves a usable address if a write is interrupted.
      */
     fun movePlan(
         oldUrl: String,
@@ -95,11 +97,14 @@ object MovedServerRules {
         id: String,
         name: String?,
         knownServers: Collection<String>,
+        hasNewUrlLeftovers: Boolean,
         pairUrl: String?,
         pairId: String?,
     ): List<MoveStep> {
         val steps = ArrayList<MoveStep>()
-        if (newUrl !in knownServers) steps.add(MoveStep.AddKnown(newUrl))
+        if (newUrl in knownServers || hasNewUrlLeftovers) steps.add(MoveStep.ClearNew(newUrl))
+        // ClearNew removes a remembered list entry, so the destination must always be added again.
+        steps.add(MoveStep.AddKnown(newUrl))
         if (name != null && name.isNotEmpty()) steps.add(MoveStep.SetName(newUrl, name))
         steps.add(MoveStep.SetServerId(newUrl, id))
         if (pairUrl != null && pairId != null && pairId == id) steps.add(MoveStep.CarryPair(newUrl, pairUrl, pairId))
