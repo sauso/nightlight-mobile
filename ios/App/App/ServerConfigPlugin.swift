@@ -95,6 +95,7 @@ enum ServerConfigStore {
     /// Drop every per-address item, including the sign-in slot. Used on the writes queue by both the bundled-page forget
     /// and the native move; the latter cannot call the page-gated plugin method.
     static func forget(_ url: String) {
+        if EndpointRules.forgetClearsActive(saved: savedURL, forgotten: url) { savedURL = nil }
         var list = knownServers
         list.removeAll { $0 == url }
         knownServers = list
@@ -134,6 +135,12 @@ enum ServerConfigStore {
     /// Call setServerId only on writes, after that probe; reads may use UserDefaults from a worker thread.
     static func serverId(for url: String) -> String? {
         return defaults.string(forKey: keyServerId + url)
+    }
+
+    /// The per-address id wins; a stored Tailscale pair also identifies this saved address when it has not yet learned
+    /// its own strict health id. Only canonical private IPv4 addresses use either id for launch, roam and save checks.
+    static func expectedId(for url: String) -> String? {
+        return EndpointRules.expectedId(for: url, storedId: serverId(for: url), pairId: tailscaleId(for: url))
     }
 
     static func setServerId(_ id: String, for url: String) {
@@ -599,7 +606,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         ])
     }
 
-    // Drop a server from the remembered list (does not touch the active choice). Its name and Tailscale address go with it, and
+    // Drop a server from the remembered list (and the active choice if it is that server). Its name and Tailscale address go with it, and
     // so does the sign-in saved for that address (it was only ever meaningful for that server), as on Android.
     //
     // ONLY from the bundled setup page (its ✕ is the one caller, www/index.html), checked before anything else (Codex code review of
@@ -626,11 +633,9 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     //
     // The Tailscale address is KEPT (owner, 2026-11-06, as on Android). Change server, used while on the Tailscale address
     // (away from home), would otherwise throw away the only way back in: the setup page lists the saved HOME address, which
-    // cannot answer on cellular. The stale-address risk is closed where it arises instead: save() compares the id at the home
-    // address with the one the Tailscale address was saved for and drops the pair when another server answers there
-    // (EndpointRules.pairStillValid). Known limit, as on Android: that runs on a save from the setup screen, not at every
-    // launch, so a home address that changed hands can still open the old server through Tailscale until it is next connected
-    // to there. forget(url), the explicit "forget this server", still removes it.
+    // cannot answer on cellular. At launch a known id must match before the saved address opens. A save to an address
+    // whose strict reply has a different id is refused before the pair can be dropped. If no strict reply arrives,
+    // save keeps the earlier reconnect behaviour. forget(url), the explicit "forget this server", still removes it.
     @objc func clear(_ call: CAPPluginCall) {
         DispatchQueue.main.async { [weak self] in self?.stopSearch() }
         // On the writes queue, so a save queued just before this one has landed first; resolved after, so the restart the
@@ -1004,21 +1009,25 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     // The address answered: save it. A Tailscale address saved for this address belongs to the server it was saved for, so
-    // who answers here now is read (only when there is a pair to check) and the pair is dropped when it is ANOTHER server
-    // (EndpointRules.pairStillValid: a readable different id only). The name the server sent in the same reply is kept
+    // who answers here now is read when an expected id exists. A different strict id refuses the save before any write;
+    // an unreadable id preserves the earlier save and Tailscale reconnect behaviour. The name in the loose reply is kept
     // (nil when it sent none, or an older server with no id).
     private static func confirmSaved(_ url: String, body: Data, call: CAPPluginCall) {
-        let hasPair = ServerConfigStore.tailscaleId(for: url) != nil
-        let liveId: String? = hasPair ? EndpointProbe.fetchHealth(url, timeout: ServerConfigPlugin.pairCheckTimeout)?.id : nil
+        let hasExpectedId = ServerConfigStore.expectedId(for: url) != nil
+        let liveId: String? = hasExpectedId ? EndpointProbe.fetchHealth(url, timeout: ServerConfigPlugin.pairCheckTimeout)?.id : nil
         let name: String? = EndpointProbe.parseHealth(body)?.name
         writeSaved(url, liveId: liveId, name: name, call: call)
     }
 
     private static func writeSaved(_ url: String, liveId: String?, name: String?, strictId: String? = nil, call: CAPPluginCall) {
         ServerConfigStore.writes.async {
+            // Recheck stored identity on the writes queue, before the saved URL, pair, list or vault changes.
+            if EndpointRules.identityVerdict(expectedId: ServerConfigStore.expectedId(for: url), liveId: liveId) == .different {
+                call.reject("That address now belongs to a different server. Look for your Nightlight, or type its new address.")
+                return
+            }
             ServerConfigStore.savedURL = url
-            // The iOS twin of Android's dropTailscaleIfAnotherServer: the stale pair goes, and with it the sign-in saved for this
-            // address, which was bound to that pair.
+            // If the stored address id wins over a different pair id, the stale pair and its bound sign-in go.
             if !EndpointRules.pairStillValid(wantedId: ServerConfigStore.tailscaleId(for: url), liveId: liveId) {
                 ServerConfigStore.forgetTailscale(for: url)
                 _ = KeychainSessionStore.vault.clear(url)

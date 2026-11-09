@@ -2,7 +2,7 @@ import Foundation
 
 // EndpointRules.swift: the rules for a server's second address, its Tailscale address, which the server tells the phone about
 // (owner, 2026-11-06). Since the owner decision of 2026-11-09 ("Tailscale first") the app opens that secure address first when
-// it answers, and the address it was set up with when it does not (EndpointChooser says why).
+// it answers, and the address it was set up with when that address passes the launch identity check.
 //
 // The iOS twin of android/app/src/main/java/com/sauso/nightlight/EndpointRules.kt, ported rule for rule with the same names
 // and the same refusal sentences, plus the two pieces of DiscoveryRules.kt these rules need (parseIpv4, isPrivateIpv4).
@@ -23,6 +23,69 @@ struct ServerHealth: Equatable {
 }
 
 enum EndpointRules {
+
+    /// Launch opens a saved address with a known id only after its strict health reply matches.
+    /// Without a known id, preserve the old immediate launch (and its error page on failure).
+    enum LaunchVerdict {
+        case sameServer
+        case differentServer
+        case noAnswer
+        case unchecked
+    }
+
+    static func launchVerdict(expectedId: String?, liveId: String?) -> LaunchVerdict {
+        guard let expected = expectedId else { return .unchecked }
+        guard let live = liveId else { return .noAnswer }
+        return live == expected ? .sameServer : .differentServer
+    }
+
+    static func launchChoice(saved: String, verdict: LaunchVerdict) -> String? {
+        switch verdict {
+        case .sameServer, .unchecked: return saved
+        case .differentServer, .noAnswer: return nil
+        }
+    }
+
+    /// Only a refused, id-checked saved server warrants bypassing the routine search throttle. A first-run setup page or
+    /// an unchecked address does not establish that the person's server was refused.
+    static func launchRefusalRequestsCheck(expectedIdPresent: Bool, verdict: LaunchVerdict,
+                                           idCheckedAddress: Bool) -> Bool {
+        guard expectedIdPresent, idCheckedAddress else { return false }
+        switch verdict {
+        case .differentServer, .noAnswer: return true
+        case .sameServer, .unchecked: return false
+        }
+    }
+
+    /// Only the canonical private IPv4 address that local discovery can identify gets a launch identity check. Typed
+    /// hostnames, HTTPS and other URL forms keep their earlier reachability and save behaviour.
+    static func idCheckedAddress(_ url: String?) -> Bool {
+        guard let parsed = DiscoveryRules.parseFoundUrl(url) else { return false }
+        return isPrivateIpv4(parsed.host)
+    }
+
+    static func expectedId(for url: String, storedId: String?, pairId: String?) -> String? {
+        guard idCheckedAddress(url) else { return nil }
+        return storedId ?? pairId
+    }
+
+    /// Forgetting the selected server must also remove the launch choice; forgetting another remembered server must not.
+    static func forgetClearsActive(saved: String?, forgotten: String) -> Bool {
+        return saved == forgotten
+    }
+
+    /// A save may proceed on no reply as before, but a different strict id must not discard
+    /// this address's pair or sign-in and then reopen it without its expected identity.
+    enum IdentityVerdict {
+        case same
+        case different
+        case unknown
+    }
+
+    static func identityVerdict(expectedId: String?, liveId: String?) -> IdentityVerdict {
+        guard let expected = expectedId, let live = liveId else { return .unknown }
+        return expected == live ? .same : .different
+    }
 
     // `https://<name>.ts.net`, nothing else: no port, no path, no credentials, no IP literal. The server only ever offers its
     // Tailscale name (GET /api/remote-access/tailscale/address), and Serve answers on 443. Lower case only, the form the server

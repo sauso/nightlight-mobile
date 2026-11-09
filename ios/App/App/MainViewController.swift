@@ -4,19 +4,17 @@ import Network
 
 /// Root bridge view controller. Chooses which server to load at launch — the iOS
 /// counterpart of Android's MainActivity reading the saved URL in onCreate:
-///   - a saved server  -> point the bridge at the server's Tailscale address when one
-///     is saved and it answers with the id it was saved for, else at the saved address
-///     ("Tailscale first, saved is the fallback", owner decision 2026-11-09; chooseAddress
-///     below, the twin of MainActivity.chooseAddress). With no Tailscale address saved,
-///     the saved address as always, with no probe and no wait.
+///   - a saved server  -> prefer its verified Tailscale address. Open the saved address
+///     only after a matching strict reply when its id is known; otherwise load setup.
+///     Without a known id, keep the earlier saved-address fallback.
 ///   - no saved server -> leave the descriptor on the bundled web assets, so the
 ///     first-run setup page (public/index.html) loads instead.
 ///
 /// `ServerConfigPlugin.restart()` rebuilds this controller so a newly saved choice
 /// takes effect, and so does NetworkRoamWatcher when the network changes and the choice
 /// would now open the other address (both through AppRestart.rebuildRoot). `errorPath`
-/// (error.html) comes from capacitor.config.json and covers the case where a saved
-/// server is unreachable at launch.
+/// (error.html) comes from capacitor.config.json and covers an unreachable saved
+/// server at launch only when its id is not yet known.
 class MainViewController: CAPBridgeViewController {
     // Local app-target plugins aren't auto-discovered on iOS (unlike npm-package
     // plugins, and unlike Android's @CapacitorPlugin annotation) - they must be
@@ -31,7 +29,15 @@ class MainViewController: CAPBridgeViewController {
         // serverURL is a String on iOS (the raw address), not a URL. The SAVED address is never rewritten by the choice:
         // only the address this bridge opens differs (and ServerConfigPlugin reads which one it was from bridge.config).
         if let saved = ServerConfigStore.savedURL {
-            descriptor.serverURL = MainViewController.chooseAddress(saved: saved)
+            if let address = MainViewController.chooseAddress(saved: saved) {
+                descriptor.serverURL = address
+            } else {
+                // Capacitor's nil serverURL uses bundled assets, as on the existing no-saved-address path.
+                descriptor.serverURL = nil
+            }
+        } else {
+            // A launch without a saved address is still a gate result; clear any refusal from the previous server.
+            MovedServerCheck.shared.launchChoiceFinished(saved: nil, requestsCheck: false)
         }
         return descriptor
     }
@@ -41,24 +47,33 @@ class MainViewController: CAPBridgeViewController {
     // is abandoned, never waited for.
     private static let probeTimeout: TimeInterval = 2.5
 
-    /// Which of the server's addresses to open: the saved Tailscale address if it answers with the id it was saved for, else
-    /// `saved` if it answers (Tailscale first, owner decision 2026-11-09: EndpointChooser says why and how long `saved` waits for
-    /// Tailscale), else `saved` as before (its "Can't reach your server" page then shows). Deliberately different from Android,
-    /// which opens the bundled setup page when neither answers: iOS has always opened the saved address and let errorPath catch
-    /// it, and that is kept.
+    /// Which address to open. A known id requires a matching strict answer, so an address that changed hands cannot be
+    /// opened through the saved fallback. With no known id, the old immediate fallback remains.
     ///
     /// Runs on the main thread, from instanceDescriptor, and BLOCKS for up to EndpointChooser.defaultDeadlineMs (3 s) behind
-    /// the launch screen, as Android's launch gate does behind its splash screen. Only when a Tailscale address is saved for
-    /// the saved server: with none there is nothing to choose between, and the launch is exactly as before (no probe, no wait).
+    /// the launch screen, as Android's launch gate does behind its splash screen. With no pair but a known id, one strict
+    /// saved-address read is bounded to 1.5 s. With neither, there is still no probe or wait.
     /// Chosen at each launch and each rebuild (ServerConfig.restart(), or a move between the addresses when the network
     /// changes: NetworkRoamWatcher, which runs the same choice through chooseAnswer below first).
-    static func chooseAddress(saved: String) -> String {
-        return MainViewController.chooseAnswer(saved: saved) ?? saved
+    static func chooseAddress(saved: String) -> String? {
+        if let chosen = MainViewController.chooseAnswer(saved: saved) {
+            MovedServerCheck.shared.launchChoiceFinished(saved: saved, requestsCheck: false)
+            return chosen
+        }
+        // A dead saved address with a known id now loads setup instead of the error page. This cost prevents a failed
+        // health check from being bypassed by a subsequent page request to a different device at that address.
+        let expectedId = ServerConfigStore.expectedId(for: saved)
+        let verdict: EndpointRules.LaunchVerdict = expectedId == nil ? .unchecked : .noAnswer
+        // chooseAnswer collapses a mismatched strict reply and no reply into nil; both refuse the known saved server.
+        MovedServerCheck.shared.launchChoiceFinished(saved: saved, requestsCheck: EndpointRules.launchRefusalRequestsCheck(
+            expectedIdPresent: expectedId != nil, verdict: verdict,
+            idCheckedAddress: EndpointRules.idCheckedAddress(saved)))
+        return EndpointRules.launchChoice(saved: saved, verdict: verdict)
     }
 
     /// The choice itself: the address that answered (the Tailscale address with the id it was saved for first, then `saved`,
-    /// as EndpointChooser decides), or nil when NEITHER answered or no Tailscale address is saved for `saved` (then nothing is
-    /// probed, nothing is read and it returns at once). Split out of chooseAddress (Codex and Opus plan review of iOS phase 2,
+    /// as EndpointChooser decides), or nil when nothing answered. Without a pair, a known id gets one strict read; an
+    /// unknown id returns nil without a probe. Split out of chooseAddress (Codex and Opus plan review of iOS phase 2,
     /// 2026-11-08) because the network watcher must tell "nothing answered" (it checks again a few times,
     /// RoamRules.retryDelayAfter) from "the saved address answered", which chooseAddress's fallback to `saved` hides. The twin
     /// of Android's MainActivity.chooseAddress, which returns null in the same case.
@@ -67,11 +82,19 @@ class MainViewController: CAPBridgeViewController {
     /// from the launch (chooseAddress); NetworkRoamWatcher calls it on its own queue. It touches no view and no instance state
     /// (UserDefaults, the Network framework reading and the probes are safe from any thread).
     static func chooseAnswer(saved: String) -> String? {
-        guard let tailscale = ServerConfigStore.tailscaleURL(for: saved) else { return nil }
+        let expectedId = ServerConfigStore.expectedId(for: saved)
+        guard let tailscale = ServerConfigStore.tailscaleURL(for: saved) else {
+            guard let expected = expectedId else { return nil }
+            // A judgement: a LAN reply is normally quick, while 1.5 s bounds an unreachable address at launch.
+            let liveId = EndpointProbe.fetchHealth(saved, timeout: 1.5)?.id
+            let verdict = EndpointRules.launchVerdict(expectedId: expected, liveId: liveId)
+            return EndpointRules.launchChoice(saved: saved, verdict: verdict)
+        }
         let wantedId: String? = ServerConfigStore.tailscaleId(for: saved)
         let timeout = MainViewController.probeTimeout
         let probe: (String) throws -> Bool = { url in
-            return EndpointProbe.addressAnswers(url, tailscale: tailscale, wantedId: wantedId, timeout: timeout)
+            return EndpointProbe.addressAnswers(url, tailscale: tailscale, wantedId: wantedId,
+                                                expectedId: expectedId, timeout: timeout)
         }
         // How long an answer from the saved address waits for the Tailscale one: 1 s, or 0.25 s when the phone positively
         // reports no VPN (EndpointRules.tailscaleGraceMs says why; the reading is a hint that can only shorten the wait).

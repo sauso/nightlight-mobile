@@ -262,8 +262,8 @@ final class NetworkRoamWatcher {
         // THE SECOND LOOK (Codex plan review of Tailscale first, 2026-11-09). The choice now prefers Tailscale, so its picking the
         // other address no longer says that the page on screen is dead (a working saved page is passed over whenever Tailscale
         // answers). So, only when there is somewhere else to go, the page's OWN address is asked once more, for up to 1.5 s, with
-        // the same check the choice uses (EndpointProbe.addressAnswers: the Tailscale address only counts with the id it was saved
-        // for). It replaces the old second look, which asked the saved address again before a move to Tailscale only.
+        // the same check the choice uses (EndpointProbe.addressAnswers: either address with a known id counts only when that
+        // id answers). It replaces the old second look, which asked the saved address again before a move to Tailscale only.
         // EndpointProbe never throws, so a look that is taken is true (works) or false (dead: a failed request, an error status,
         // a wrong id, or the timeout); nil means no look was taken, and target then stays anyway (nothing chosen, or the same
         // address). A slow page misjudged as dead moves to an address that has just answered: the risk the old fail-over took,
@@ -271,7 +271,9 @@ final class NetworkRoamWatcher {
         var currentAnswers: Bool? = nil
         if let picked = chosen, picked != current {
             let wantedId: String? = ServerConfigStore.tailscaleId(for: saved)
-            currentAnswers = EndpointProbe.addressAnswers(current, tailscale: tailscale, wantedId: wantedId, timeout: NetworkRoamWatcher.stillAnsweringTimeout)
+            let expectedId: String? = ServerConfigStore.expectedId(for: saved)
+            currentAnswers = EndpointProbe.addressAnswers(current, tailscale: tailscale, wantedId: wantedId,
+                                                           expectedId: expectedId, timeout: NetworkRoamWatcher.stillAnsweringTimeout)
             if !isCurrent(gen) { return }
         }
         // Read LAST before the decision, so nothing slow runs between this read and the rebuild (see finishRoam). Not known (the
@@ -456,6 +458,14 @@ enum AppRestart {
         AddressPrompt.shared.cancelPending()
         let storyboard = UIStoryboard(name: "Main", bundle: nil)
         target.rootViewController = storyboard.instantiateInitialViewController()
+        // The bridge makes its launch choice while loading the root view. Ensure that choice has run before reading the
+        // refusal flag; root-view assignment alone can leave the view lazy until the next display pass.
+        target.rootViewController?.loadViewIfNeeded()
+        // The new bridge's launch gate may have refused the saved server. Activation does not fire again for an in-app
+        // rebuild, so request its one-shot search now that the replacement root is installed.
+        if MovedServerCheck.shared.hasLaunchRefusalRequest {
+            MovedServerCheck.shared.runIfDue()
+        }
     }
 }
 

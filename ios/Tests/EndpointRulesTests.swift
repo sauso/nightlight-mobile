@@ -16,6 +16,76 @@ func runEndpointRulesTests() {
     let otherId = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
     let known: [String] = [home, "https://nightlight.example.com"]
 
+    test("launchChoice opens only a strictly matching known server") {
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: sameId, liveId: sameId)), home)
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: sameId, liveId: otherId)), nil)
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: sameId, liveId: nil)), nil)
+        // With no expected id launchChoice can open immediately; no probe is needed to form this verdict.
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: nil, liveId: nil)), home)
+    }
+
+    test("a refused known private IPv4 server requests an immediate check") {
+        check(EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .differentServer,
+                                                       idCheckedAddress: true), "different server did not request search")
+        check(EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .noAnswer,
+                                                       idCheckedAddress: true), "dead saved address did not request search")
+    }
+
+    test("an answered or unchecked saved address does not request an immediate check") {
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .sameServer,
+                                                        idCheckedAddress: true), "same server requested search")
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .unchecked,
+                                                        idCheckedAddress: true), "unchecked verdict requested search")
+    }
+
+    test("setup without an expected id does not request an immediate check") {
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: false, verdict: .noAnswer,
+                                                        idCheckedAddress: true), "no known server requested search")
+    }
+
+    test("a refusal at a non-id-checked address does not request an immediate check") {
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .differentServer,
+                                                        idCheckedAddress: false), "unchecked address requested search")
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .noAnswer,
+                                                        idCheckedAddress: false), "unchecked dead address requested search")
+    }
+
+    test("expected id applies only to a canonical private IPv4 address with a port") {
+        let checked = "http://192.168.1.50:4000"
+        check(EndpointRules.idCheckedAddress(checked), "private IPv4 address was skipped")
+        checkEqual(EndpointRules.expectedId(for: checked, storedId: sameId, pairId: otherId), sameId)
+        checkEqual(EndpointRules.expectedId(for: checked, storedId: nil, pairId: sameId), sameId)
+        let unchecked = ["http://server.local:4000", "https://192.168.1.50:4000",
+                         "http://192.168.1.50", "http://8.8.8.8:4000",
+                         "http://user@192.168.1.50:4000", "http://192.168.1.50:4000/path"]
+        for address in unchecked {
+            check(!EndpointRules.idCheckedAddress(address), "checked " + address)
+            checkEqual(EndpointRules.expectedId(for: address, storedId: sameId, pairId: otherId), nil)
+            checkEqual(EndpointRules.expectedId(for: address, storedId: nil, pairId: sameId), nil)
+        }
+    }
+
+    test("forget clears only the active saved address") {
+        check(EndpointRules.forgetClearsActive(saved: home, forgotten: home), "active server remained selected")
+        check(!EndpointRules.forgetClearsActive(saved: home, forgotten: ts), "another server cleared the selection")
+        check(!EndpointRules.forgetClearsActive(saved: nil, forgotten: home), "empty selection was cleared")
+    }
+
+    test("identityVerdict refuses only a different answered id") {
+        check(EndpointRules.identityVerdict(expectedId: sameId, liveId: otherId) == .different,
+              "a different device must refuse the save")
+        check(EndpointRules.identityVerdict(expectedId: sameId, liveId: sameId) == .same,
+              "the same server should proceed")
+        check(EndpointRules.identityVerdict(expectedId: sameId, liveId: nil) == .unknown,
+              "no reply keeps the earlier save behavior")
+        check(EndpointRules.identityVerdict(expectedId: nil, liveId: otherId) == .unknown,
+              "no stored identity keeps the earlier save behavior")
+    }
+
     test("a plain https ts-net name is accepted, with or without extra labels") {
         check(EndpointRules.isTailscaleUrl("https://nightlight-1.example-tailnet.ts.net"), "two labels")
         check(EndpointRules.isTailscaleUrl("https://nightlight.tail1234.ts.net"), "a tailnet name")

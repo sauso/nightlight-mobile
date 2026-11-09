@@ -231,13 +231,14 @@ enum EndpointProbe {
 
     /// Whether `url` answers, as the launch choice counts it: the Tailscale address only if the server answering there still
     /// has the id it was saved for (`wantedId`; none saved = it does not count), so an address saved for one server can never
-    /// open another (a saved address handed to a different machine, say); any other address with a 200 from `/api/health`
-    /// (isReachable). Blocks for at most `timeout` seconds; never throws. ONE function, used by the launch choice
+    /// open another (a saved address handed to a different machine, say); another address with a known expected id must
+    /// answer with exactly that id. Only an address with no expected id uses the old 200/reachable check.
+    /// Blocks for at most `timeout` seconds; never throws. ONE function, used by the launch choice
     /// (MainViewController.chooseAnswer) and by NetworkRoamWatcher's second look at the page on screen (Tailscale first, Codex
     /// plan review 2026-11-09), so the two can never judge an address differently. Here, not in MainViewController, so the
     /// watcher's queue calls plain Foundation code, never a method of a UIKit class.
-    static func addressAnswers(_ url: String, tailscale: String, wantedId: String?, timeout: TimeInterval) -> Bool {
-        return addressAnswers(url, tailscale: tailscale, wantedId: wantedId,
+    static func addressAnswers(_ url: String, tailscale: String, wantedId: String?, expectedId: String?, timeout: TimeInterval) -> Bool {
+        return addressAnswers(url, tailscale: tailscale, wantedId: wantedId, expectedId: expectedId,
                               readHealth: { (address: String) -> ServerHealth? in
                                   return EndpointProbe.fetchHealth(address, timeout: timeout)
                               },
@@ -248,8 +249,8 @@ enum EndpointProbe {
 
     /// The same decision with the two network reads passed in, so ios/Tests drives it with replies built from fixture bodies
     /// and no network (the split acceptReply already makes: the decision apart from the request; Codex code review of PR #38).
-    /// `readHealth` is fetchHealth for the Tailscale address, `reachable` is isReachable for any other address.
-    static func addressAnswers(_ url: String, tailscale: String, wantedId: String?, readHealth: (String) -> ServerHealth?, reachable: (String) -> Bool) -> Bool {
+    /// `readHealth` is fetchHealth for a checked address whose id is known; other saved URL forms use `reachable`.
+    static func addressAnswers(_ url: String, tailscale: String, wantedId: String?, expectedId: String?, readHealth: (String) -> ServerHealth?, reachable: (String) -> Bool) -> Bool {
         if url == tailscale {
             // No id saved: it never counts, and nothing is asked (fail closed; a missing id must not compare equal to a
             // missing reply).
@@ -257,6 +258,9 @@ enum EndpointProbe {
             let live: String? = readHealth(url)?.id
             return live == wanted
         }
+        // Only a canonical private IPv4 saved address gets the strict id check. A readable but different occupant,
+        // a missing id, and no reply all refuse that address; other saved URL forms keep the legacy reachable path.
+        if let expected = expectedId, EndpointRules.idCheckedAddress(url) { return readHealth(url)?.id == expected }
         return reachable(url)
     }
 }

@@ -34,17 +34,23 @@ func runMovedServerRulesTests() {
         checkEqual(MovedServerRules.decide(savedUrl: old, storedId: id, pairId: nil,
                                            probe: .answered(id: id)), .stop)
     }
-    test("decide: stored id differs from answer, stops and never learns over it") {
+    test("decide: stored id differs from answer, searches and never learns over it") {
         checkEqual(MovedServerRules.decide(savedUrl: old, storedId: id, pairId: nil,
-                                           probe: .answered(id: otherId)), .stop)
+                                           probe: .answered(id: otherId)), .search(id))
         check(MovedServerRules.decide(savedUrl: old, storedId: id, pairId: otherId,
                                       probe: .answered(id: otherId)) != .learn(otherId), "replaced the saved id")
+    }
+    test("decide: pair-only identity learns the same id but searches for a different one") {
+        checkEqual(MovedServerRules.decide(savedUrl: old, storedId: nil, pairId: id,
+                                           probe: .answered(id: otherId)), .search(id))
+        checkEqual(MovedServerRules.decide(savedUrl: old, storedId: nil, pairId: id,
+                                           probe: .answered(id: id)), .learn(id))
     }
     test("decide: NoAnswer with stored id searches for it") {
         checkEqual(MovedServerRules.decide(savedUrl: old, storedId: id, pairId: nil,
                                            probe: .noAnswer), .search(id))
     }
-    test("decide: NoAnswer with only a verified pair id searches for it") {
+    test("decide: NoAnswer with only a stored pair id searches for it") {
         checkEqual(MovedServerRules.decide(savedUrl: old, storedId: nil, pairId: id,
                                            probe: .noAnswer), .search(id))
     }
@@ -184,9 +190,37 @@ func runMovedServerRulesTests() {
     test("Throttle: no last run allows a check") {
         check(MovedServerRules.Throttle.mayRun(nowMs: 0, lastRunMs: nil), "blocked first check")
     }
+    test("Throttle: matching refused and saved URLs skip once") {
+        check(MovedServerRules.Throttle.skipOnceFor(refusedUrl: old, savedUrl: old),
+              "matching refusal did not skip")
+    }
+    test("Throttle: a different saved URL cannot use another server's refusal") {
+        check(!MovedServerRules.Throttle.skipOnceFor(refusedUrl: old, savedUrl: new),
+              "different server inherited the bypass")
+    }
+    test("Throttle: no refused URL cannot skip") {
+        check(!MovedServerRules.Throttle.skipOnceFor(refusedUrl: nil, savedUrl: old),
+              "routine check bypassed the interval")
+    }
+    test("Throttle: no saved URL cannot skip") {
+        check(!MovedServerRules.Throttle.skipOnceFor(refusedUrl: old, savedUrl: nil),
+              "missing server inherited the bypass")
+    }
     test("Throttle: just under five minutes blocks a check") {
         check(!MovedServerRules.Throttle.mayRun(nowMs: MovedServerRules.CHECK_INTERVAL_MS - 1,
                                                 lastRunMs: 0), "ran early")
+    }
+    test("Throttle: a launch refusal skips the interval once") {
+        check(MovedServerRules.Throttle.mayRun(nowMs: MovedServerRules.CHECK_INTERVAL_MS - 1,
+                                               lastRunMs: 0, skipOnce: true), "refusal was throttled")
+    }
+    test("Throttle: no skip keeps the interval") {
+        check(!MovedServerRules.Throttle.mayRun(nowMs: MovedServerRules.CHECK_INTERVAL_MS - 1,
+                                                lastRunMs: 0, skipOnce: false), "routine check ran early")
+    }
+    test("Throttle: a launch refusal with no previous run is allowed") {
+        check(MovedServerRules.Throttle.mayRun(nowMs: 0, lastRunMs: nil, skipOnce: true),
+              "first refusal was blocked")
     }
     test("Throttle: exactly five minutes allows a check") {
         check(MovedServerRules.Throttle.mayRun(nowMs: MovedServerRules.CHECK_INTERVAL_MS,

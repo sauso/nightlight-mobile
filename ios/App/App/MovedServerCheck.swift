@@ -10,8 +10,8 @@ final class MovedServerCheck {
     private struct Offer {
         let old: String
         let wanted: String
-        let verifiedPairUrl: String?
-        let verifiedPairId: String?
+        let pairUrl: String?
+        let pairId: String?
         let newUrl: String
         let name: String
         let fingerprint: String
@@ -21,6 +21,8 @@ final class MovedServerCheck {
     private let lifecycleLock = NSLock()
     private var active = false
     private var generation = 0
+    private var refusedUrl: String?
+    private var suppressNextLaunchRefusalForUrl: String?
     // Everything below is touched only by queue, except the lock-protected ticket above.
     private var running = false
     private var lastRunMs: Int64?
@@ -28,6 +30,29 @@ final class MovedServerCheck {
     private var discovery: ServerDiscovery?
 
     private init() {}
+
+    /// The launch gate reports its final choice on the main thread. An accepted move rebuilds through this same gate;
+    /// its tap-time strict probe already verified the new address, so that rebuild must not create another urgent search.
+    func launchChoiceFinished(saved: String?, requestsCheck: Bool) {
+        lifecycleLock.lock()
+        let suppressed = saved != nil && suppressNextLaunchRefusalForUrl == saved
+        // Every gate result replaces the previous refusal, including a launch with no saved address.
+        suppressNextLaunchRefusalForUrl = nil
+        refusedUrl = requestsCheck && !suppressed ? saved : nil
+        lifecycleLock.unlock()
+    }
+
+    var hasLaunchRefusalRequest: Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return MovedServerRules.Throttle.skipOnceFor(refusedUrl: refusedUrl, savedUrl: ServerConfigStore.savedURL)
+    }
+
+    private func suppressRefusalFromAcceptedMove(to url: String) {
+        lifecycleLock.lock()
+        suppressNextLaunchRefusalForUrl = url
+        lifecycleLock.unlock()
+    }
 
     /// AppDelegate calls this on activation. The throttle is consumed only after all cheap gates pass.
     func runIfDue() {
@@ -64,7 +89,15 @@ final class MovedServerCheck {
               let old = ServerConfigStore.savedURL,
               let parsed = DiscoveryRules.parseFoundUrl(old), EndpointRules.isPrivateIpv4(parsed.host) else { return }
         let now = AddressPrompt.monotonicMs()
-        guard MovedServerRules.Throttle.mayRun(nowMs: now, lastRunMs: lastRunMs) else { return }
+        lifecycleLock.lock()
+        let skipOnce = MovedServerRules.Throttle.skipOnceFor(refusedUrl: refusedUrl, savedUrl: old)
+        // A cheap early exit before this point (for example, another prompt showing) leaves this URL's refusal pending.
+        // Once a run starts, discard it even if the saved URL changed; another server must not inherit its bypass.
+        refusedUrl = nil
+        lifecycleLock.unlock()
+        // Consume as this run starts, even if the path is not Wi-Fi or the subsequent probe finds nothing.
+        guard MovedServerRules.Throttle.mayRun(nowMs: now, lastRunMs: lastRunMs,
+                                               skipOnce: skipOnce) else { return }
         running = true
         // One-shot path check, as in ServerConfigPlugin.startDiscovery. A missing first update ends quietly after one second.
         let pathMonitor = NWPathMonitor()
@@ -89,22 +122,17 @@ final class MovedServerCheck {
         let stored = ServerConfigStore.serverId(for: old)
         let live = EndpointProbe.fetchHealth(old, timeout: TimeInterval(MovedServerRules.PROBE_TIMEOUT_MS) / 1000)
         guard isCurrent(ticket) else { end(); return }
-        var pairUrl: String?
-        var pairId: String?
-        if live == nil, let url = ServerConfigStore.tailscaleURL(for: old),
-           let id = ServerConfigStore.tailscaleId(for: old),
-           EndpointProbe.addressAnswers(url, tailscale: url, wantedId: id,
-                                        timeout: TimeInterval(MovedServerRules.PROBE_TIMEOUT_MS) / 1000) {
-            pairUrl = url
-            pairId = id
-        }
-        guard isCurrent(ticket) else { end(); return }
+        // The pair's stored id identifies this saved address even if Tailscale is offline now.
+        // No second network request is needed to decide whether to search or learn.
+        let pairUrl = ServerConfigStore.tailscaleURL(for: old)
+        let pairId = ServerConfigStore.tailscaleId(for: old)
         let probe: MovedServerRules.Probe = live.map { .answered(id: $0.id) } ?? .noAnswer
         switch MovedServerRules.decide(savedUrl: old, storedId: stored, pairId: pairId, probe: probe) {
         case .learn(let id):
             ServerConfigStore.writes.async {
                 // A switch between the reply and the write must not learn the id for a different active choice.
-                if ServerConfigStore.savedURL == old, ServerConfigStore.serverId(for: old) == nil {
+                if ServerConfigStore.savedURL == old, ServerConfigStore.serverId(for: old) == nil,
+                   ServerConfigStore.expectedId(for: old).map({ $0 == id }) ?? true {
                     ServerConfigStore.setServerId(id, for: old)
                 }
             }
@@ -148,7 +176,7 @@ final class MovedServerCheck {
             }
             discovery?.stop()
             discovery = nil
-            let offer = Offer(old: old, wanted: wanted, verifiedPairUrl: pairUrl, verifiedPairId: pairId,
+            let offer = Offer(old: old, wanted: wanted, pairUrl: pairUrl, pairId: pairId,
                               newUrl: card.url, name: card.name, fingerprint: card.fingerprint)
             show(offer, ticket: ticket)
         case .failed:
@@ -204,10 +232,10 @@ final class MovedServerCheck {
         guard isCurrent(ticket), let health = live, health.id == offer.wanted else { end(); return }
         ServerConfigStore.writes.async { [weak self] in
             let currentId = ServerConfigStore.serverId(for: offer.old)
-            let pairStillSaved = offer.verifiedPairId == offer.wanted &&
-                ServerConfigStore.tailscaleURL(for: offer.old) == offer.verifiedPairUrl &&
-                ServerConfigStore.tailscaleId(for: offer.old) == offer.verifiedPairId
-            let effectiveId = currentId ?? (pairStillSaved ? offer.verifiedPairId : nil)
+            let pairStillSaved = offer.pairId == offer.wanted &&
+                ServerConfigStore.tailscaleURL(for: offer.old) == offer.pairUrl &&
+                ServerConfigStore.tailscaleId(for: offer.old) == offer.pairId
+            let effectiveId = currentId ?? (pairStillSaved ? offer.pairId : nil)
             guard MovedServerRules.MoveGuard.stillValid(currentSavedUrl: ServerConfigStore.savedURL,
                     currentStoredId: effectiveId, expectedOldUrl: offer.old, expectedId: offer.wanted),
                    self?.isCurrent(ticket) == true else {
@@ -236,6 +264,8 @@ final class MovedServerCheck {
             self?.queue.async { [weak self] in self?.end() }
             DispatchQueue.main.async {
                 let window = (UIApplication.shared.delegate as? AppDelegate)?.window
+                // The check's own accepted move can rebuild the root, but must not generate another urgent check.
+                if window != nil { self?.suppressRefusalFromAcceptedMove(to: offer.newUrl) }
                 AppRestart.rebuildRoot(window: window)
             }
         }

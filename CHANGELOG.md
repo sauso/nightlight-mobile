@@ -71,6 +71,9 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   address again for a week. It asks at most once every 10 minutes, so another question can wait up to that long. A server can
   now be forgotten only from the setup screen.
 
+### Fixed
+- iOS: the app no longer opens a saved local address that has been taken over by a different server (it shows the setup screen and immediately looks for your server, even if its routine check ran recently; see the README)
+
 ## [0.9.0] - 2026-11-08
 
 ### Added
