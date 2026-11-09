@@ -191,6 +191,34 @@ func runEndpointRulesTests() {
         check(!EndpointRules.isOnBundledOrigin("capacitor://localhost/", local: nil), "no bundled origin")
     }
 
+    test("discovery accepts a committed capacitor bundled page") {
+        let local = "capacitor://localhost"
+        check(EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost/index.html",
+                                                   committed: "capacitor://localhost/", isLoading: false, local: local),
+              "a committed bundled page must allow discovery")
+        check(!EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost/",
+                                                    committed: "capacitor://localhost/", isLoading: true, local: local),
+              "a pending navigation must refuse discovery")
+        check(!EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost/",
+                                                    committed: "http://192.168.1.50:4000/", isLoading: false, local: local),
+              "a server page is still committed")
+        check(!EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost:8080/",
+                                                    committed: "capacitor://localhost/", isLoading: false, local: local),
+              "a port is not the bundled origin")
+        check(!EndpointRules.isCommittedBundledPage(shown: "capacitor://user@localhost/",
+                                                    committed: "capacitor://localhost/", isLoading: false, local: local),
+              "user info is not the bundled origin")
+        check(EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost/",
+                                                   committed: nil, isLoading: false, local: local),
+              "the first bundled load may have no current item")
+        check(!EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost/",
+                                                    committed: nil, isLoading: false, local: nil),
+              "an unreadable bundled origin refuses")
+        check(!EndpointRules.isCommittedBundledPage(shown: nil,
+                                                    committed: "capacitor://localhost/", isLoading: false, local: local),
+              "an unreadable shown page refuses")
+    }
+
     test("isBundledPage: a bundled bridge showing the bundled origin, and nothing else (save's reconnect and forget)") {
         // forget is allowed only here since the Codex code review of the PR #38 prompt delta: it clears a stored decline.
         let local = "capacitor://localhost"

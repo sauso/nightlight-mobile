@@ -412,20 +412,33 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     // Codex code review of PR #39: WKWebView.url may show a destination before it commits, while the old
-    // page still receives discovery events. Discovery alone requires the committed main-frame origin.
-    // These callers run on main, so readWebView reads directly and cannot wait on its own queue.
+    // page still receives discovery events. Discovery uses isLoading and the current item when present; the
+    // http(s)-only committedPageURL check cannot recognize capacitor://localhost. These callers run on main,
+    // so readWebView reads directly and cannot wait on its own queue.
     private func callerIsCommittedBundledPage() -> Bool {
-        return bundledPage(using: committedPageURL)
+        guard let localText = bundledBridgeLocalURL() else { return false }
+        let shownBundled = readWebView { (webView: WKWebView?) -> String? in
+            guard let view = webView, let shown = view.url?.absoluteString else { return nil }
+            let committed = view.backForwardList.currentItem?.url.absoluteString
+            return EndpointRules.isCommittedBundledPage(shown: shown, committed: committed,
+                                                         isLoading: view.isLoading, local: localText) ? shown : nil
+        }
+        return shownBundled != nil
     }
 
     private func bundledPage(using pageURL: () -> String?) -> Bool {
-        guard let config = bridge?.config else { return false }
+        guard let localText = bundledBridgeLocalURL() else { return false }
+        return EndpointRules.isBundledPage(bridgeServerUrl: localText, bridgeLocalUrl: localText, shown: pageURL())
+    }
+
+    private func bundledBridgeLocalURL() -> String? {
+        guard let config = bridge?.config else { return nil }
         let server: URL? = config.serverURL
         let local: URL? = config.localURL
         let serverText: String? = server?.absoluteString
         let localText: String? = local?.absoluteString
-        if serverText == nil || serverText != localText { return false }
-        return EndpointRules.isBundledPage(bridgeServerUrl: serverText, bridgeLocalUrl: localText, shown: pageURL())
+        if serverText == nil || serverText != localText { return nil }
+        return localText
     }
 
     // The URL the web view's main frame is showing RIGHT NOW, or nil (no bridge, no web view, nothing loaded, or the main thread

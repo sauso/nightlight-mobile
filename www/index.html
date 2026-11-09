@@ -555,6 +555,8 @@
 
   if (canLook()) {
     findSection.hidden = false;
+    // Owner's iPad, 2026-11-09: autofocus opens the keyboard over this section on launch.
+    input.blur();
     lookButton.addEventListener('click', startLooking);
     searchAgain.addEventListener('click', startLooking);
   }

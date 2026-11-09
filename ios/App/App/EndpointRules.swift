@@ -346,6 +346,15 @@ enum EndpointRules {
         return true
     }
 
+    /// Discovery may run only while the bundled page is committed. WKWebView.url can show a navigation's destination before
+    /// it commits (the earlier addEndpoint High finding); isLoading stays true while that navigation is pending, so this
+    /// guard does not depend on the back-forward list. Check its current item when WebKit gives one. The first bundled load
+    /// may have no item, so nil is allowed only with the isLoading guard; every other missing or non-bundled value refuses.
+    static func isCommittedBundledPage(shown: String?, committed: String?, isLoading: Bool, local: String?) -> Bool {
+        if isLoading || !isOnBundledOrigin(shown, local: local) { return false }
+        return committed == nil || isOnBundledOrigin(committed, local: local)
+    }
+
     /// The check that needs the network's answers: the server the page is on (`reference`) and the offered address
     /// (`candidate`) both reported an id, and it is the same one. This is an identity CLAIM, not proof: /api/health is public,
     /// so a page that is itself hostile can name an address that repeats the id. That page is the server the person chose to
