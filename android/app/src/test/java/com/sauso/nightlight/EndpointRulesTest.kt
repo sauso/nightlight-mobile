@@ -270,6 +270,29 @@ class EndpointRulesTest {
     }
 
     @Test
+    fun `known id refusal of checked saved address requests an immediate check`() {
+        // Android's chooser returns null both for a different id and for no answer.
+        assertTrue(EndpointRules.launchRefusalRequestsCheck(home, sameId, null))
+    }
+
+    @Test
+    fun `opening the same or another address does not request an immediate check`() {
+        assertFalse(EndpointRules.launchRefusalRequestsCheck(home, sameId, home))
+        assertFalse(EndpointRules.launchRefusalRequestsCheck(home, sameId, ts))
+    }
+
+    @Test
+    fun `setup without an expected id does not request an immediate check`() {
+        assertFalse(EndpointRules.launchRefusalRequestsCheck(home, null, null))
+    }
+
+    @Test
+    fun `refusal of a non checked address does not request an immediate check`() {
+        assertFalse(EndpointRules.launchRefusalRequestsCheck("https://192.168.1.50:4000", sameId, null))
+        assertFalse(EndpointRules.launchRefusalRequestsCheck("http://server.example.test:4000", sameId, null))
+    }
+
+    @Test
     fun `forget clears only the active saved address`() {
         assertTrue(EndpointRules.forgetClearsActive(home, home))
         assertFalse(EndpointRules.forgetClearsActive(home, "http://192.168.1.51:4000"))

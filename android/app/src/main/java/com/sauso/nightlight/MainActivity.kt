@@ -123,6 +123,10 @@ class MainActivity : BridgeActivity() {
         val savedUrl = ServerConfigPlugin.getSavedUrl(this)
         if (savedUrl != null) {
             val chosen = chooseAddress(this, savedUrl, ServerConfigPlugin.getTailscaleUrl(this, savedUrl))
+            // The setup page is a refusal of this server only when its checked address had a known id.
+            // Record it before onStart starts the new activity's foreground check.
+            MovedServerCheck.noteLaunchChoice(savedUrl, EndpointRules.launchRefusalRequestsCheck(
+                savedUrl, ServerConfigPlugin.expectedId(this, savedUrl), chosen))
             if (chosen != null) {
                 config = CapConfig.Builder(this)
                     .setServerUrl(chosen)
@@ -132,6 +136,9 @@ class MainActivity : BridgeActivity() {
             // Capacitor page with a working native bridge, so Connect / saved-server taps actually work.
             // (We prefer this over the errorPath page at COLD START because the setup page also lists
             // saved servers.)
+        } else {
+            // A cleared server still completes the next launch gate after an accepted-move recreate.
+            MovedServerCheck.noteLaunchChoice(null, false)
         }
 
         super.onCreate(savedInstanceState)

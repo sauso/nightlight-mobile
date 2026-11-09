@@ -124,9 +124,9 @@ object MovedServerRules {
     }
 
     object Throttle {
-        /** A process gets one check per five minutes; a missing previous run permits its first check. */
-        fun mayRun(nowMs: Long, lastRunMs: Long?): Boolean =
-            lastRunMs == null || nowMs - lastRunMs >= CHECK_INTERVAL_MS
+        /** A refused launch gets one check now; routine foreground checks keep the five-minute process throttle. */
+        fun mayRun(nowMs: Long, lastRunMs: Long?, skipOnce: Boolean = false): Boolean =
+            skipOnce || lastRunMs == null || nowMs - lastRunMs >= CHECK_INTERVAL_MS
     }
 
     object Declines {

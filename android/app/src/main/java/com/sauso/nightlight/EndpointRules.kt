@@ -120,6 +120,10 @@ object EndpointRules {
     fun expectedIdForAddress(url: String?, storedId: String?, pairId: String?): String? =
         if (idCheckedAddress(url)) storedId ?: pairId else null
 
+    /** A refused launch needs one immediate search only when it refused a known, strictly checked saved server. */
+    fun launchRefusalRequestsCheck(savedUrl: String?, expectedId: String?, chosenUrl: String?): Boolean =
+        chosenUrl == null && expectedId != null && idCheckedAddress(savedUrl)
+
     /** Forgetting the active server must also remove the choice that would reopen it without its id. */
     fun forgetClearsActive(savedUrl: String?, forgottenUrl: String): Boolean = savedUrl == forgottenUrl
 

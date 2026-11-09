@@ -46,6 +46,7 @@ now** leaves the saved address alone. A server saved before this release learns 
 private IPv4 address answers; if it moved before its id was learned and had no Tailscale pair, use **Look for my
 Nightlight**.
 A save onto a remembered private IPv4 address now answered by a different server is refused.
+When the app opens its saved address and finds a different server there (or none), it looks for your server straight away, even if it checked a few minutes ago.
 
 This is trust on first use: an address with no stored id and no Tailscale pair is unprotected until its id is learned;
 if another device holds the address at that first learn, its id would be learned. The id is public and is not

@@ -193,6 +193,16 @@ class MovedServerRulesTest {
         assertFalse(throttle.mayRun(now, now + 1))
     }
 
+    @Test fun `launch refusal skips the throttle once inside the interval`() {
+        val lastRun = now - 1_000L
+        assertTrue(MovedServerRules.Throttle.mayRun(now, lastRun, skipOnce = true))
+        assertFalse(MovedServerRules.Throttle.mayRun(now, lastRun, skipOnce = false))
+    }
+
+    @Test fun `launch refusal also permits a first check without a previous run`() {
+        assertTrue(MovedServerRules.Throttle.mayRun(now, null, skipOnce = true))
+    }
+
     @Test fun `decline applies before seven days and expires exactly at seven days`() {
         val map = mapOf(moved to (now - week + 1))
         assertTrue(MovedServerRules.Declines.isDeclined(map, moved, now))

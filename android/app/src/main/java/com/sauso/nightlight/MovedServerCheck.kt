@@ -21,6 +21,22 @@ class MovedServerCheck(private val activity: MainActivity) {
         private val runLock = Any()
         private var lastRunMs: Long? = null
         private var inFlight = false
+        private var checkAfterRefusal = false
+        private var suppressNextLaunchRefusalFor: String? = null
+
+        fun noteLaunchChoice(savedUrl: String?, refusedKnownServer: Boolean) {
+            synchronized(runLock) {
+                // An accepted move rebuilds the root at its verified new address. If that one launch probe
+                // fails transiently, the check's own recreate must not start another urgent search.
+                val ownRestart = savedUrl != null && suppressNextLaunchRefusalFor == savedUrl
+                suppressNextLaunchRefusalFor = null
+                if (refusedKnownServer && !ownRestart) checkAfterRefusal = true
+            }
+        }
+
+        private fun noteAcceptedMoveRestart(newUrl: String) {
+            synchronized(runLock) { suppressNextLaunchRefusalFor = newUrl }
+        }
     }
 
     private val generation = AtomicInteger()
@@ -58,7 +74,9 @@ class MovedServerCheck(private val activity: MainActivity) {
         if (!d.isAvailable) { d.release(); return } // LocalNetwork fails open; NSD still must exist.
         synchronized(runLock) {
             val now = SystemClock.elapsedRealtime()
-            if (inFlight || !MovedServerRules.Throttle.mayRun(now, lastRunMs)) { d.release(); return }
+            if (inFlight || !MovedServerRules.Throttle.mayRun(now, lastRunMs, checkAfterRefusal)) { d.release(); return }
+            // Consume at the start of this actual run, even when its probe or discovery finds nothing.
+            checkAfterRefusal = false
             inFlight = true
             lastRunMs = now
         }
@@ -141,6 +159,7 @@ class MovedServerCheck(private val activity: MainActivity) {
                         if (current(gen)) {
                             MainActivity.recreateLog.noteRecreate(MainActivity.recreateClockMs())
                             AudioService.stopForServerChange(activity)
+                            noteAcceptedMoveRestart(card.url)
                             activity.recreate()
                         }
                     }

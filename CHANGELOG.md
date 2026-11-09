@@ -161,7 +161,7 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   the launcher refreshes. The pictures are generated from one source image by `scripts/make-branding.py`.
 
 ### Fixed
-- Android: the app no longer opens a saved local address that has been taken over by a different server (it shows the setup screen; see the README).
+- Android: the app no longer opens a saved local address that has been taken over by a different server (it shows the setup screen and looks for the saved server immediately, even after a recent check; see the README).
 - Fullscreen camera views now hide the Android status and navigation bars so the on-screen buttons
   can be pressed. Swipe from an edge to show the bars temporarily. This needs the matching server/web
   update to call the native plugin; there is no iOS change.
