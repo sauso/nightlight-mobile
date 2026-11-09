@@ -4,7 +4,7 @@ import Foundation
 //   swiftc ios/App/App/EndpointRules.swift ios/App/App/EndpointProbe.swift ios/App/App/DiscoveryRules.swift
 //          ios/App/App/DiscoveryState.swift ios/App/App/EndpointChooser.swift
 //          ios/App/App/SessionRules.swift ios/App/App/SessionVault.swift ios/App/App/KeychainLogic.swift
-//          ios/App/App/RoamRules.swift ios/Tests/*.swift
+//          ios/App/App/RoamRules.swift ios/App/App/MovedServerRules.swift ios/Tests/*.swift
 // and runs it (build-ios.yml). It needs no network, no Simulator, no Keychain and no Capacitor. Exit status: 0 when every
 // check passed, 1 when any failed or none ran at all (a runner that runs nothing must not look like a pass).
 
@@ -17,6 +17,7 @@ runSessionRulesTests()
 runSessionVaultTests()
 runKeychainLogicTests()
 runRoamRulesTests()
+runMovedServerRulesTests()
 runPromptGateTests()
 
 say("")
