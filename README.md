@@ -105,6 +105,24 @@ the next save from the setup screen.
 page). Capacitor iOS lets the web view open, inside the app, any address that merely starts with the server's
 (`https://server.example.attacker.test` for `https://server.example`), so the address the app opened is not enough on its own.
 
+**The app asks once before it saves a new secure address.** The first time the app learns a secure address from a plain-`http`
+address (or the secure address changes), it asks: **Use this secure address?**, showing the address it came from and the full
+secure name, with **Use it** / **Don't use it**. Only accept it if you have just turned on the secure address in your server's
+Settings → Remote Access and the name matches. Why: the server id the app compares is public, so a device on your network that
+answers at a plain-`http` address could offer its own secure address, and since the app now opens the secure address first,
+that address would be opened first. The rules (`EndpointRules.needsConfirmation`, `PromptGate`):
+- **Asked only** when the offered address differs from the one already saved AND the page on screen is not `https` (a page that
+  cannot be read counts as plain `http`). The same address, offered again at every start, is never asked about; nor is an offer
+  from an `https` page, the secure page itself included. Removing the address (`removeEndpoint`) is never asked: it only returns
+  the app to the saved address.
+- **Use it** saves the address as before. **Don't use it** keeps only the saved address, and the app does not ask about that same
+  address again for **7 days** (then it asks once more); a different address is asked about. Forgetting the server (✕) clears it.
+- **No answer is not a "no".** A prompt that cannot be shown (another screen on top, the app not active), that is not answered
+  within **120 seconds**, or that is withdrawn because the app rebuilds its screen, saves nothing and remembers nothing; the next
+  start asks again. One prompt at a time, and at most one every **10 minutes** while the app runs. All four numbers are
+  judgements, not measurements.
+- Before the address is written, the page on screen is checked once more; if it moved, nothing is saved.
+
 At launch, when a Tailscale address is saved, `MainViewController` probes both addresses at once behind the launch screen, under
 one 3-second deadline (`EndpointChooser`), and opens **the Tailscale address first**: if it answers with the id it was saved for,
 it is opened, whatever the saved address said; otherwise the saved address, if that answers. Why (since 2026-11-09): on a phone
@@ -134,6 +152,10 @@ Known limits on iOS:
   another virtual interface also reads as a VPN, which costs the full 1-second grace and nothing else. If an iPhone does not show
   Tailscale's tunnel as `.other`, a launch with Tailscale on gets the 0.25-second grace, and a slower Tailscale answer loses that
   launch to the saved address. It never opens an address that was not verified: the id check is unchanged.
+- **The prompt cannot prove the secure name is yours.** It shows the name and says when to accept it; someone who accepts a
+  hostile address is exposed as before. Phones that already hold a secure address are not asked again about it. A page that
+  gets your REAL address declined first can keep it away for 7 days at most. Not yet confirmed on a phone: the prompt itself,
+  its timeout and its withdrawal during a rebuild.
 - **One more sign-in, once.** If you signed in before the app kept one sign-in for both addresses (see
   [One sign-in across the two addresses (iOS)](#one-sign-in-across-the-two-addresses-ios)), the Tailscale address, now the one
   most often open, may ask you to sign in once.

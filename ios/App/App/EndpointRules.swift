@@ -70,6 +70,31 @@ enum EndpointRules {
         return "tailscale_id:" + primary
     }
 
+    /// The keys of the secure address the person DECLINED for the saved server `primary` (an explicit "Don't use it"), and of
+    /// the wall-clock time they did, in milliseconds (PromptGate). Beside the Tailscale pair, removed with the server (forget).
+    static func declinedKey(_ primary: String) -> String {
+        return "tailscale_declined:" + primary
+    }
+
+    static func declinedAtKey(_ primary: String) -> String {
+        return "tailscale_declined_at:" + primary
+    }
+
+    /// Whether addEndpoint must ASK the person before saving `candidate` (addendum of 2026-11-09, the owner's "ask once"; Codex
+    /// code review of PR #38 rated the risk High). WHY: the id the identity check compares is PUBLIC, so a device that answers at a
+    /// plain-http saved address (a network can put one there) can offer its own `https://<x>.ts.net` with the right id; under
+    /// Tailscale first that address would then be opened FIRST, at home too, and could show a fake sign-in page. Asks when BOTH:
+    ///  - the candidate differs from the secure address already saved for this server (a first learn, or a change; the same
+    ///    address is offered again at every start and is never asked about), AND
+    ///  - the page actually SHOWN is not https (addendum review: the shown page, not the address the bridge was built with). A
+    ///    page on https, the page on the saved Tailscale address itself included, cannot be put there by the network, so it is
+    ///    not asked. A shown page that cannot be read or parsed counts as plain http: it asks (fail closed).
+    static func needsConfirmation(shownPageUrl: String?, savedTailscale: String?, candidate: String) -> Bool {
+        if let saved = savedTailscale, saved == candidate { return false }
+        guard let shown = origin(shownPageUrl) else { return true }
+        return shown.scheme != "https"
+    }
+
     /// `text` without any trailing slashes. Used for the address a page offers (addEndpoint) and for the address the bridge
     /// was built with, so `https://x.ts.net/` and `https://x.ts.net` are one address, as on Android (`trimEnd('/')`).
     static func withoutTrailingSlashes(_ text: String) -> String {
@@ -172,6 +197,7 @@ enum EndpointRules {
     }
 
     /// Why addEndpoint accepted or refused a request. Reported so a test (and the page) can tell the refusals apart.
+    /// `notAccepted` and `notConfirmed` are the "ask once" prompt's (PromptGate, addendum of 2026-11-09).
     enum AddCheck {
         case ok
         case notATailscaleAddress
@@ -179,6 +205,8 @@ enum EndpointRules {
         case unreadableServer
         case unreachableAddress
         case differentServer
+        case notAccepted
+        case notConfirmed
     }
 
     /// The sentence addEndpoint rejects with. BYTE-IDENTICAL to Android's ServerConfigPlugin.refusal: the web app's About page
@@ -196,6 +224,15 @@ enum EndpointRules {
             return "Couldn't reach that Tailscale address"
         case .differentServer:
             return "That address is a different server"
+        // The two "ask once" refusals (addendum of 2026-11-09). Worded so the web app's classifyAddRefusal (nativeBridge.js, which
+        // matches /couldn'?t reach/i and /different server/i) files them under its generic 'refused', the "did not accept" line:
+        // neither may contain those words (ios/Tests pins it). New sentences, so Android's must be made the same word for word.
+        case .notAccepted:
+            // The person tapped "Don't use it", now or within the last 7 days for this same address.
+            return "The secure address was not accepted on this phone"
+        case .notConfirmed:
+            // No answer: another prompt showing, a prompt shortly before, no screen to show it on, a timeout or a cancel.
+            return "The secure address was not confirmed on this phone"
         case .ok:
             return ""
         }
@@ -304,7 +341,9 @@ enum EndpointRules {
     /// use, so it could already show anything; what it cannot do is change the saved address. Since Tailscale first (owner
     /// decision 2026-11-09) the address it names is opened BEFORE the saved one whenever it answers with that id, where it used
     /// to be opened only when the saved one was not answering: still an address of the one accepted shape (`https://<name>.ts.net`),
-    /// offered by the server the person chose, and the saved sign-in still goes only to it (SessionRules), as before.
+    /// offered by the server the person chose, and the saved sign-in still goes only to it (SessionRules), as before. Because a
+    /// plain-http page can be put there by the network, a NEW or CHANGED address offered from one is saved only after the person
+    /// confirms it (needsConfirmation and PromptGate in this file; addendum of 2026-11-09, Codex code reviews of PR #38).
     static func checkIdentity(reference: ServerHealth?, candidate: ServerHealth?) -> AddCheck {
         guard let ref = reference else { return .unreadableServer }
         guard let cand = candidate else { return .unreachableAddress }
@@ -350,5 +389,118 @@ enum EndpointRules {
         if o[0] == 172 && o[1] >= 16 && o[1] <= 31 { return true }
         if o[0] == 192 && o[1] == 168 { return true }
         return false
+    }
+}
+
+/// The gate in front of the "Use this secure address?" prompt (addendum of 2026-11-09 and its review). Pure: the glue
+/// (AddressPrompt, ServerConfigPlugin.swift) holds the state, reads the clocks and shows the alert; every rule it applies is here,
+/// so ios/Tests runs each row. Only reached when EndpointRules.needsConfirmation says to ask.
+enum PromptGate {
+
+    /// What to do with an offer that needs confirming.
+    ///  - ask: show the prompt (the glue reserves the one prompt slot in the same locked step as this decision);
+    ///  - rejectQuietly: refuse without asking, because the person declined this same address less than 7 days ago;
+    ///  - busy: refuse without asking, because a prompt is showing now, or one was shown less than 10 minutes ago.
+    /// Both refusals store nothing; the web app offers the address again at its next start.
+    enum Decision {
+        case ask
+        case rejectQuietly
+        case busy
+    }
+
+    /// How a prompt ended. ONLY `declined` is the person's explicit "Don't use it" tap. `notAnswered` is everything else: no
+    /// window or root controller to show it on, another screen already on top, the app not active, a rebuild replacing the root
+    /// under it (cancelPending), the 120 s timeout, or any other failure. A non-explicit outcome must never be remembered as a
+    /// decline (addendum review): otherwise a hostile page that made the prompt fail could silence the real address.
+    enum Outcome {
+        case accepted
+        case declined
+        case notAnswered
+    }
+
+    /// A stored decline: the secure address the person declined for one saved server, and when (wall clock, milliseconds).
+    struct DeclineRecord: Equatable {
+        let candidate: String
+        let atWallMs: Int64
+    }
+
+    /// What a prompt's outcome does to the stored decline: an accept clears it, an explicit decline stores (or replaces) it,
+    /// anything else leaves it as it was.
+    enum DeclineChange: Equatable {
+        case keep
+        case clear
+        case store(DeclineRecord)
+    }
+
+    // How long an explicit decline keeps the SAME address from being asked about again: 7 days, on the WALL clock because it is
+    // persisted and must survive restarts (a monotonic clock starts again at every boot). A judgement, not a measurement
+    // (addendum review): the web app offers the address at every start, so without a memory a "no" would be asked again every
+    // time; with a memory that never ended, a hostile page that got the REAL address declined first could silence it for good.
+    // Seven days bounds that to a week, after which the person is asked once more.
+    static let declineLifetimeMs: Int64 = 7 * 24 * 60 * 60 * 1_000
+
+    // At most one prompt per this long in one run of the app, counted from when a prompt was SHOWN, on the monotonic clock. A
+    // judgement, not a measurement (addendum): a hostile page that offers a new address every second must not be able to storm
+    // the person with prompts; a refused offer is only "not saved", and the next start offers it again.
+    static let cooldownMs: Int64 = 10 * 60 * 1_000
+
+    // How long a prompt waits for an answer before it is withdrawn as not answered (no decline stored). A judgement, not a
+    // measurement (addendum review): long enough to read it and check the server's Settings, short enough that the web app's
+    // call (and the About card that waits for it) does not wait for ever.
+    static let answerTimeoutMs: Int = 120_000
+
+    /// Whether `decline` is a decline of THIS candidate that is still in force at `nowWallMs`: at least 0 and less than
+    /// `declineLifetimeMs` old. A decline time in the future (the wall clock was set back) is not in force, so a clock change
+    /// can only end a decline early (the person is asked again), never stretch it past a week.
+    static func declineInForce(_ decline: DeclineRecord?, candidate: String, nowWallMs: Int64) -> Bool {
+        guard let record = decline, record.candidate == candidate else { return false }
+        let age: Int64 = nowWallMs - record.atWallMs
+        return age >= 0 && age < declineLifetimeMs
+    }
+
+    /// The gate, in this order: a prompt showing -> busy; this same address declined less than 7 days ago -> rejectQuietly; a
+    /// prompt shown less than 10 minutes ago (`lastPromptAtMs`, monotonic, nil = none yet in this run) -> busy; otherwise ask.
+    /// The cooldown counts as busy, not as a quiet "no": nothing was declined, the person simply is not asked twice in ten minutes.
+    static func decide(candidate: String, decline: DeclineRecord?, nowWallMs: Int64, lastPromptAtMs: Int64?, nowMs: Int64, showing: Bool) -> Decision {
+        if showing { return .busy }
+        if declineInForce(decline, candidate: candidate, nowWallMs: nowWallMs) { return .rejectQuietly }
+        if let last = lastPromptAtMs, nowMs - last < cooldownMs { return .busy }
+        return .ask
+    }
+
+    /// What `outcome` does to the stored decline for `candidate` (see DeclineChange). Only the explicit tap stores one.
+    static func declineChange(after outcome: Outcome, candidate: String, nowWallMs: Int64) -> DeclineChange {
+        switch outcome {
+        case .accepted:
+            return .clear
+        case .declined:
+            return .store(DeclineRecord(candidate: candidate, atWallMs: nowWallMs))
+        case .notAnswered:
+            return .keep
+        }
+    }
+
+    /// The refusal for a gate decision, or nil when the prompt is to be shown.
+    static func refusal(for decision: Decision) -> EndpointRules.AddCheck? {
+        switch decision {
+        case .ask:
+            return nil
+        case .rejectQuietly:
+            return .notAccepted
+        case .busy:
+            return .notConfirmed
+        }
+    }
+
+    /// The refusal for a prompt's outcome, or nil when the person accepted (the write then runs, as before the prompt existed).
+    static func refusal(after outcome: Outcome) -> EndpointRules.AddCheck? {
+        switch outcome {
+        case .accepted:
+            return nil
+        case .declined:
+            return .notAccepted
+        case .notAnswered:
+            return .notConfirmed
+        }
     }
 }

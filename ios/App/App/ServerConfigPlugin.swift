@@ -15,7 +15,8 @@ import WebKit
 ///   Capacitor.Plugins.ServerConfig.save({ url })  -> validates + persists, rejects if unreachable; resolves { url },
 ///                                                    or { url, via: "tailscale" } when it reconnected a remembered
 ///                                                    server through its Tailscale address (see save)
-///   Capacitor.Plugins.ServerConfig.addEndpoint({ url })  -> { added }; saves the server's Tailscale address
+///   Capacitor.Plugins.ServerConfig.addEndpoint({ url })  -> { added }; saves the server's Tailscale address (asking the
+///                                                          person first when it is new and the page is plain http)
 ///   Capacitor.Plugins.ServerConfig.removeEndpoint()      -> { removed }
 ///   Capacitor.Plugins.ServerConfig.forget({ url })
 ///   Capacitor.Plugins.ServerConfig.clear()
@@ -95,6 +96,29 @@ enum ServerConfigStore {
         names.removeValue(forKey: url)
         writeNames(names)
         forgetTailscale(for: url)
+        clearDeclinedTailscale(for: url)
+    }
+
+    /// The secure address the person declined for `primary` (an explicit "Don't use it"), with when, or nil (none, or an
+    /// unreadable entry, which then simply asks again). Kept beside the Tailscale pair; it is NOT removed with the pair
+    /// (removeEndpoint, a stale pair dropped by save), only by forget(url) and by an accept: a page that removes the pair must not
+    /// thereby wipe the person's "no" (addendum of 2026-11-09).
+    static func declinedTailscale(for primary: String) -> PromptGate.DeclineRecord? {
+        guard let candidate = defaults.string(forKey: EndpointRules.declinedKey(primary)) else { return nil }
+        guard let at = defaults.object(forKey: EndpointRules.declinedAtKey(primary)) as? NSNumber else { return nil }
+        return PromptGate.DeclineRecord(candidate: candidate, atWallMs: at.int64Value)
+    }
+
+    /// Stores (or replaces) the decline for `primary`. On the writes queue.
+    static func setDeclinedTailscale(_ record: PromptGate.DeclineRecord, for primary: String) {
+        defaults.set(record.candidate, forKey: EndpointRules.declinedKey(primary))
+        defaults.set(NSNumber(value: record.atWallMs), forKey: EndpointRules.declinedAtKey(primary))
+    }
+
+    /// Removes the decline for `primary` (an accept, or forgetting the server). On the writes queue.
+    static func clearDeclinedTailscale(for primary: String) {
+        defaults.removeObject(forKey: EndpointRules.declinedKey(primary))
+        defaults.removeObject(forKey: EndpointRules.declinedAtKey(primary))
     }
 
     /// The server's Tailscale address that goes with the saved server `primary`, or nil. Re-checked on read: only an address
@@ -246,7 +270,10 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // did not answer within pageReadTimeout). WKWebView may only be read on the main thread. Plugin methods (the session calls
     // included) run on Capacitor's plugin queue and save's reconnect on a URLSession queue, so the read is handed to the main
     // thread with `async` and waited for with a time limit. When already on the main thread it is read directly (waiting on the
-    // main thread for a block queued on the main thread would never end). Never called from ServerConfigStore.writes.
+    // main thread for a block queued on the main thread would never end). Called from ServerConfigStore.writes in ONE place only,
+    // addEndpoint's last look just before its write (writeEndpoint; addendum review of 2026-11-09: a prompt can stay up for two
+    // minutes, so the page must be checked again where the write happens). That cannot deadlock because of THE RULE (the main
+    // thread never waits for the writes queue); its cost is that other writes can wait up to pageReadTimeout behind it.
     //
     // WHY not `DispatchQueue.main.sync`, as phase 1 had (Codex and Opus plan review of iOS phase 2, 2026-11-08): a sync waits
     // without limit. Nothing on the main thread waits for the queues that call this today, so it could not deadlock, but that
@@ -387,10 +414,17 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     //   - the page's server and the url answer /api/health with the SAME id (EndpointProbe): an address that merely looks right
     //     is not saved for a server that is not this one. The id is public, so this is a claim, not proof (see checkIdentity);
     //     it is saved with the address and re-checked each time the address is opened.
+    //   - ASK ONCE (addendum of 2026-11-09, the owner's choice; both Codex code reviews of PR #38 rated the risk High): when the
+    //     address is NEW or CHANGED for this server and the page actually shown is not https (EndpointRules.needsConfirmation),
+    //     the person is asked with a native prompt before anything is saved (PromptGate, AddressPrompt below). The id above is
+    //     public, so a device answering at a plain-http saved address could otherwise plant its own secure address, which
+    //     Tailscale first would then open first.
     // Resolves { added }: true when this is new or different, false when it was already saved (so the app tells the person
     // once). Nothing is switched or restarted here: the address is used the next time the app starts. The refusal sentences
-    // are Android's, word for word (EndpointRules.refusal): the web app's About card reads them.
+    // are Android's, word for word (EndpointRules.refusal): the web app's About card reads them. The call is answered exactly
+    // once (OnceReply), whichever of the write, the prompt, its timeout or a cancel finishes it.
     @objc func addEndpoint(_ call: CAPPluginCall) {
+        let reply = OnceReply(call)
         let url = EndpointRules.offeredAddress(call.getString("url"))
         let primary = ServerConfigStore.savedURL
         let page = pageServerURL()
@@ -401,7 +435,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let first = EndpointRules.checkPage(url: url, primary: primary, savedTailscale: savedTailscale, page: page, shown: shown)
         guard first == .ok, let offered = url, let home = primary, let pageURL = page else {
-            call.reject(EndpointRules.refusal(first == .ok ? .notThisPage : first))
+            reply.reject(EndpointRules.refusal(first == .ok ? .notThisPage : first))
             return
         }
         // Off the plugin queue: two health checks can take seconds, and other plugin calls must not wait behind them.
@@ -410,19 +444,83 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
             let candidate = EndpointProbe.fetchHealth(offered, timeout: ServerConfigPlugin.tailscaleProbeTimeout)
             let second = EndpointRules.checkIdentity(reference: reference, candidate: candidate)
             guard second == .ok, let confirmed = candidate else {
-                call.reject(EndpointRules.refusal(second == .ok ? .unreachableAddress : second))
+                reply.reject(EndpointRules.refusal(second == .ok ? .unreachableAddress : second))
                 return
             }
-            ServerConfigStore.writes.async {
-                let previous = ServerConfigStore.tailscaleURL(for: home)
-                ServerConfigStore.setTailscale(offered, id: confirmed.id, for: home)
-                // The saved server's name, learned for free here: this runs at every start while signed in, so servers saved
-                // before names were kept get theirs without any action (the page's server and the saved address are the same
-                // server).
-                let pageName: String? = reference?.name
-                ServerConfigStore.rememberName(home, pageName)
-                call.resolve(["added": previous != offered])
+            // The saved server's name, learned for free here: this runs at every start while signed in, so servers saved before
+            // names were kept get theirs without any action (the page's server and the saved address are the same server).
+            let pageName: String? = reference?.name
+            // Every check above has passed; only now is the prompt considered, so a refused offer never asks. The page is read
+            // again (the identity check took seconds) and the saved secure address as it is now.
+            let shownNow: String? = self.shownPageURL()
+            let savedNow: String? = ServerConfigStore.tailscaleURL(for: home)
+            if !EndpointRules.needsConfirmation(shownPageUrl: shownNow, savedTailscale: savedNow, candidate: offered) {
+                self.writeEndpoint(reply, offered: offered, id: confirmed.id, home: home, pageName: pageName, clearDecline: false)
+                return
             }
+            self.askThenWrite(reply, offered: offered, id: confirmed.id, home: home, pageName: pageName)
+        }
+    }
+
+    // The prompt step (not on the main thread). The gate is decided and the one prompt slot reserved in ONE locked step
+    // (AddressPrompt.reserve), so two offers cannot both show a prompt. Busy or recently declined: refused at once, nothing stored.
+    private func askThenWrite(_ reply: OnceReply, offered: String, id: String, home: String, pageName: String?) {
+        let decline: PromptGate.DeclineRecord? = ServerConfigStore.declinedTailscale(for: home)
+        let reservation: AddressPrompt.Reservation = AddressPrompt.shared.reserve(candidate: offered, decline: decline, completion: { (outcome: PromptGate.Outcome) -> Void in
+            self.promptAnswered(outcome, reply: reply, offered: offered, id: id, home: home, pageName: pageName)
+        })
+        if let refusal = PromptGate.refusal(for: reservation.decision) {
+            AddressPrompt.log(reservation.decision == .busy ? "not asked: a prompt is showing or was shown in the last 10 minutes" : "not asked: declined less than 7 days ago")
+            reply.reject(EndpointRules.refusal(refusal))
+            return
+        }
+        let message: String = AddressPrompt.message(home: home, offered: offered)
+        let serial: Int = reservation.serial
+        // Async onto the main thread, never sync (THE RULE at ServerConfigStore.writes).
+        DispatchQueue.main.async {
+            AddressPrompt.shared.present(serial, message: message)
+        }
+    }
+
+    // How the prompt ended (main thread, called once per prompt by AddressPrompt.finish). An accept runs the write exactly as an
+    // offer that needed no prompt does; an explicit "Don't use it" stores the decline (7 days, PromptGate); anything else
+    // refuses and stores NOTHING (addendum review: a prompt that failed, timed out or was cancelled is not the person's "no").
+    private func promptAnswered(_ outcome: PromptGate.Outcome, reply: OnceReply, offered: String, id: String, home: String, pageName: String?) {
+        let change: PromptGate.DeclineChange = PromptGate.declineChange(after: outcome, candidate: offered, nowWallMs: AddressPrompt.wallClockMs())
+        if let refusal = PromptGate.refusal(after: outcome) {
+            AddressPrompt.log(outcome == .declined ? "the person declined the secure address" : "the prompt was not answered; nothing stored")
+            ServerConfigStore.writes.async {
+                if case .store(let record) = change {
+                    ServerConfigStore.setDeclinedTailscale(record, for: home)
+                }
+                reply.reject(EndpointRules.refusal(refusal))
+            }
+            return
+        }
+        writeEndpoint(reply, offered: offered, id: id, home: home, pageName: pageName, clearDecline: change == .clear)
+    }
+
+    // The write, on the writes queue. FIRST, the page is checked once more right where the write happens (addendum review of
+    // 2026-11-09): the prompt can stay up for two minutes, and the identity check takes seconds, so the saved server must still
+    // be `home` and the web view must still be showing a trusted page of it (EndpointRules.isTrustedPage, as checkPage). Fails
+    // closed: a page that moved, an unreadable page or a changed saved server refuses, and nothing is written. Reading the page
+    // from this queue is the one exception noted at shownPageURL (bounded at a second; THE RULE keeps it deadlock-free).
+    private func writeEndpoint(_ reply: OnceReply, offered: String, id: String, home: String, pageName: String?, clearDecline: Bool) {
+        ServerConfigStore.writes.async {
+            let primaryNow: String? = ServerConfigStore.savedURL
+            let savedTailscaleNow: String? = ServerConfigStore.tailscaleURL(for: home)
+            let trusted: Bool = EndpointRules.isTrustedPage(primary: primaryNow, savedTailscale: savedTailscaleNow, page: self.pageServerURL(), shown: self.shownPageURL())
+            guard primaryNow == home, trusted else {
+                reply.reject(EndpointRules.refusal(.notThisPage))
+                return
+            }
+            let previous = ServerConfigStore.tailscaleURL(for: home)
+            ServerConfigStore.setTailscale(offered, id: id, for: home)
+            if clearDecline {
+                ServerConfigStore.clearDeclinedTailscale(for: home)
+            }
+            ServerConfigStore.rememberName(home, pageName)
+            reply.resolve(["added": previous != offered])
         }
     }
 
@@ -703,6 +801,195 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         DispatchQueue.main.async { [weak self] in
             AppRestart.rebuildRoot(window: self?.bridge?.viewController?.view.window)
         }
+    }
+}
+
+/// Answers one plugin call EXACTLY once (addendum review of 2026-11-09): addEndpoint's call can now be finished by the write, the
+/// prompt, its 120 s timeout or a cancel from a rebuild, and only the first of them may resolve or reject it. Thread-safe.
+private final class OnceReply {
+    private let lock = NSLock()
+    private var done: Bool = false
+    private let call: CAPPluginCall
+
+    init(_ call: CAPPluginCall) {
+        self.call = call
+    }
+
+    // True for the first caller only.
+    private func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if done { return false }
+        done = true
+        return true
+    }
+
+    func resolve(_ data: [String: Any]) {
+        if claim() {
+            call.resolve(data)
+        }
+    }
+
+    func reject(_ message: String) {
+        if claim() {
+            call.reject(message)
+        }
+    }
+}
+
+/// The app's one "Use this secure address?" prompt (addendum of 2026-11-09, the owner's "ask once", and its review; Codex code
+/// reviews of PR #38). Process-wide, NOT per plugin: every rebuild registers a new ServerConfigPlugin, and the gate (one prompt
+/// at a time, at most one per 10 minutes) must hold across them. The rules are PromptGate's (pure, run by ios/Tests); this is
+/// the glue (the state, the clocks, the alert), which only an iPhone can test.
+///
+/// Threads: `reserve` runs off the main thread; `present`, `finish` and `cancelPending` run ON the main thread (UIKit, the
+/// button handlers, the main-thread timeout, AppRestart.rebuildRoot). The state is behind one lock, never held while calling out.
+/// The completion runs on the main thread and only queues work with `async` (THE RULE at ServerConfigStore.writes).
+final class AddressPrompt {
+
+    static let shared = AddressPrompt()
+
+    /// What reserve decided, and the prompt's number when it is to be shown (0 otherwise).
+    struct Reservation {
+        let decision: PromptGate.Decision
+        let serial: Int
+    }
+
+    // The prompt reserved or on screen. A number per prompt, so a late timeout or a late button can only ever end its own.
+    private final class Pending {
+        let serial: Int
+        let completion: (PromptGate.Outcome) -> Void
+        var alert: UIAlertController? = nil
+
+        init(serial: Int, completion: @escaping (PromptGate.Outcome) -> Void) {
+            self.serial = serial
+            self.completion = completion
+        }
+    }
+
+    static let title: String = "Use this secure address?"
+
+    private let lock = NSLock()
+    private var current: Pending? = nil
+    // When a prompt was last SHOWN in this run (monotonic ms), for the 10-minute cooldown. Set when the alert is presented, not
+    // when it is reserved, so a prompt that could not be shown (no screen, the app inactive) does not hold the next one back.
+    private var lastShownAtMs: Int64? = nil
+    private var nextSerial: Int = 0
+
+    private init() {}
+
+    /// Decides (PromptGate.decide) and, on ask, reserves the one prompt slot, in ONE locked step, so two offers arriving
+    /// together cannot both be asked about (addendum review: "the gate reserves atomically"). `completion` is kept only on ask.
+    func reserve(candidate: String, decline: PromptGate.DeclineRecord?, completion: @escaping (PromptGate.Outcome) -> Void) -> Reservation {
+        lock.lock()
+        defer { lock.unlock() }
+        let decision: PromptGate.Decision = PromptGate.decide(candidate: candidate, decline: decline, nowWallMs: AddressPrompt.wallClockMs(),
+                                                              lastPromptAtMs: lastShownAtMs, nowMs: AddressPrompt.monotonicMs(), showing: current != nil)
+        if decision != .ask {
+            return Reservation(decision: decision, serial: 0)
+        }
+        nextSerial += 1
+        current = Pending(serial: nextSerial, completion: completion)
+        return Reservation(decision: .ask, serial: nextSerial)
+    }
+
+    /// Shows prompt `serial` from the app window's root view controller. Main thread. When it cannot be shown (cancelled
+    /// already, no window or root controller, another screen already on top, the app not active), it ends as not answered:
+    /// refused, the slot released, NO decline stored (fail closed, addendum review).
+    func present(_ serial: Int, message: String) {
+        if !isCurrent(serial) { return }
+        let delegate: AppDelegate? = UIApplication.shared.delegate as? AppDelegate
+        let root: UIViewController? = delegate?.window?.rootViewController
+        guard UIApplication.shared.applicationState == .active, let host = root, host.presentedViewController == nil else {
+            AddressPrompt.log("not shown (no screen to show it on, another screen on top, or the app is not active); nothing stored")
+            finish(serial, .notAnswered, dismissAlert: false)
+            return
+        }
+        let alert = UIAlertController(title: AddressPrompt.title, message: message, preferredStyle: .alert)
+        // Both buttons are `.default`, with no `.cancel` one, on purpose: UIKit maps a `.cancel` action to the Escape key of an
+        // iPad keyboard, and a decline is stored only for a real tap on "Don't use it" (addendum review). Unconfirmed on a device.
+        alert.addAction(UIAlertAction(title: "Don't use it", style: .default, handler: { (_: UIAlertAction) -> Void in
+            AddressPrompt.shared.finish(serial, .declined, dismissAlert: false)
+        }))
+        alert.addAction(UIAlertAction(title: "Use it", style: .default, handler: { (_: UIAlertAction) -> Void in
+            AddressPrompt.shared.finish(serial, .accepted, dismissAlert: false)
+        }))
+        markShown(serial, alert: alert)
+        host.present(alert, animated: true, completion: nil)
+        // The 120 s limit (PromptGate.answerTimeoutMs): unanswered by then, the prompt is withdrawn as not answered. A timer for
+        // a prompt that has already ended does nothing (finish matches the number).
+        let deadline: DispatchTime = DispatchTime.now() + DispatchTimeInterval.milliseconds(PromptGate.answerTimeoutMs)
+        DispatchQueue.main.asyncAfter(deadline: deadline) {
+            AddressPrompt.shared.finish(serial, .notAnswered, dismissAlert: true)
+        }
+    }
+
+    /// Ends prompt `serial` with `outcome`, ONCE: the first of the buttons, the timeout, a cancel or a failure to show wins and
+    /// releases the slot; any later one for the same number finds nothing and returns. Main thread. A button tap needs no
+    /// dismiss (the alert closes itself); a timeout or a cancel closes it here.
+    func finish(_ serial: Int, _ outcome: PromptGate.Outcome, dismissAlert: Bool) {
+        lock.lock()
+        guard let pending = current, pending.serial == serial else {
+            lock.unlock()
+            return
+        }
+        current = nil
+        let alert: UIAlertController? = pending.alert
+        lock.unlock()
+        if dismissAlert, let shown = alert, shown.presentingViewController != nil {
+            shown.dismiss(animated: false, completion: nil)
+        }
+        pending.completion(outcome)
+    }
+
+    /// Withdraws a prompt reserved or on screen, as not answered (refused, slot released, no decline stored). Called by
+    /// AppRestart.rebuildRoot, on the main thread, just BEFORE the root view controller is replaced (addendum review): the alert
+    /// is presented by that root, and a call left waiting would hang the web app's start-up ask.
+    func cancelPending() {
+        lock.lock()
+        let serial: Int? = current?.serial
+        lock.unlock()
+        if let pendingSerial = serial {
+            AddressPrompt.log("withdrawn: the screen is being rebuilt; nothing stored")
+            finish(pendingSerial, .notAnswered, dismissAlert: true)
+        }
+    }
+
+    private func isCurrent(_ serial: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return current?.serial == serial
+    }
+
+    private func markShown(_ serial: Int, alert: UIAlertController) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let pending = current, pending.serial == serial else { return }
+        pending.alert = alert
+        lastShownAtMs = AddressPrompt.monotonicMs()
+    }
+
+    /// The prompt's text: the saved server's own address the offer came from, the FULL secure host, and when to accept it
+    /// (addendum). It can only SHOW the name and say when to accept; it cannot prove the name is the person's (README limit).
+    static func message(home: String, offered: String) -> String {
+        let host: String = URLComponents(string: offered)?.host ?? offered
+        return "Your server at " + home + " offered this secure address:\n\n" + host
+            + "\n\nOnly use it if you just turned on the secure address in your server's Settings \u{2192} Remote Access and this name matches."
+    }
+
+    // The wall clock, for the 7-day decline (it is stored and must survive restarts), in milliseconds.
+    static func wallClockMs() -> Int64 {
+        return Int64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    // The monotonic clock (seconds since the phone started), for the 10-minute cooldown within one run, in milliseconds.
+    static func monotonicMs() -> Int64 {
+        return Int64(ProcessInfo.processInfo.systemUptime * 1000)
+    }
+
+    // One line in the device log. Never an address and never a token.
+    static func log(_ text: String) {
+        NSLog("%@", "Nightlight address prompt: " + text)
     }
 }
 

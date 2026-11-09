@@ -451,6 +451,9 @@ enum AppRestart {
     static func rebuildRoot(window: UIWindow?) {
         guard let target = window else { return }
         NetworkRoamWatcher.shared.rebuildStarted()
+        // A "Use this secure address?" prompt is presented by the root about to be replaced: withdraw it first, as not answered
+        // (refused, nothing stored), so the web app's call is not left waiting (addendum review of 2026-11-09).
+        AddressPrompt.shared.cancelPending()
         let storyboard = UIStoryboard(name: "Main", bundle: nil)
         target.rootViewController = storyboard.instantiateInitialViewController()
     }

@@ -14,6 +14,7 @@ runSessionRulesTests()
 runSessionVaultTests()
 runKeychainLogicTests()
 runRoamRulesTests()
+runPromptGateTests()
 
 say("")
 if testRun.checks == 0 {
