@@ -11,6 +11,9 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Added
+- **iOS: Your server moved.** If a saved local address stops answering on Wi-Fi, the app can find the same server at a new
+  private IPv4 address and ask before switching. It rechecks the server when you accept, carries a matching Tailscale pair,
+  and asks you to sign in once at the new address. This still needs confirmation on a phone.
 - **iOS: Look for my Nightlight.** The setup screen can find a server on your Wi-Fi and check it again when you tap
   Connect. Search needs Local Network access and finds private IPv4 addresses only. Networks that isolate devices or
   block multicast may find nothing; you can still type the address, but a local address also needs Local Network

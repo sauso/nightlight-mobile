@@ -26,6 +26,8 @@
 		BB22BB22BB22BB22BB22C102 /* DiscoveryRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22BB22BB22BB22BB22C101 /* DiscoveryRules.swift */; };
 		BB22BB22BB22BB22BB22C202 /* DiscoveryState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22BB22BB22BB22BB22C201 /* DiscoveryState.swift */; };
 		BB22BB22BB22BB22BB22C302 /* ServerDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22BB22BB22BB22BB22C301 /* ServerDiscovery.swift */; };
+		CC33CC33CC33CC33CC33D402 /* MovedServerRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC33CC33CC33CC33CC33D401 /* MovedServerRules.swift */; };
+		CC33CC33CC33CC33CC33D502 /* MovedServerCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC33CC33CC33CC33CC33D501 /* MovedServerCheck.swift */; };
 		504EC30D1FED79650016851F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30B1FED79650016851F /* Main.storyboard */; };
 		504EC30F1FED79650016851F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30E1FED79650016851F /* Assets.xcassets */; };
 		504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC3101FED79650016851F /* LaunchScreen.storyboard */; };
@@ -52,6 +54,8 @@
 		BB22BB22BB22BB22BB22C101 /* DiscoveryRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryRules.swift; sourceTree = "<group>"; };
 		BB22BB22BB22BB22BB22C201 /* DiscoveryState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryState.swift; sourceTree = "<group>"; };
 		BB22BB22BB22BB22BB22C301 /* ServerDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerDiscovery.swift; sourceTree = "<group>"; };
+		CC33CC33CC33CC33CC33D401 /* MovedServerRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovedServerRules.swift; sourceTree = "<group>"; };
+		CC33CC33CC33CC33CC33D501 /* MovedServerCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovedServerCheck.swift; sourceTree = "<group>"; };
 		504EC30C1FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		504EC30E1FED79650016851F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		504EC3111FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
@@ -109,6 +113,8 @@
 				BB22BB22BB22BB22BB22C101 /* DiscoveryRules.swift */,
 				BB22BB22BB22BB22BB22C201 /* DiscoveryState.swift */,
 				BB22BB22BB22BB22BB22C301 /* ServerDiscovery.swift */,
+				CC33CC33CC33CC33CC33D401 /* MovedServerRules.swift */,
+				CC33CC33CC33CC33CC33D501 /* MovedServerCheck.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
@@ -216,6 +222,8 @@
 				BB22BB22BB22BB22BB22C102 /* DiscoveryRules.swift in Sources */,
 				BB22BB22BB22BB22BB22C202 /* DiscoveryState.swift in Sources */,
 				BB22BB22BB22BB22BB22C302 /* ServerDiscovery.swift in Sources */,
+				CC33CC33CC33CC33CC33D402 /* MovedServerRules.swift in Sources */,
+				CC33CC33CC33CC33CC33D502 /* MovedServerCheck.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

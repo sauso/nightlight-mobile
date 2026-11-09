@@ -38,9 +38,10 @@ jobs:
       # The pure rules behind the server's Tailscale address (ios/App/App/EndpointRules.swift, EndpointProbe.swift,
       # EndpointChooser.swift), behind discovery (DiscoveryRules.swift, DiscoveryState.swift), behind the one sign-in
       # across both addresses (SessionRules.swift, SessionVault.swift,
-      # KeychainLogic.swift) and behind moving between the addresses when the network changes (RoamRules.swift), compiled
+      # KeychainLogic.swift), behind moving between the addresses when the network changes (RoamRules.swift), and behind
+      # finding a saved server at its new local address (MovedServerRules.swift), compiled
       # ALONE with swiftc together with ios/Tests and run as a plain program: the project has no Xcode test target. Those
-      # nine files import Foundation only, so this needs no npm, no Capacitor and no Simulator, and it runs first so a
+      # ten files import Foundation only, so this needs no npm, no Capacitor and no Simulator, and it runs first so a
       # broken rule fails in seconds. The program prints each test, then each failed check with its file and line, and
       # exits non-zero on any failure. It uses no network and no Keychain (the probes and the Keychain calls are fakes).
       # KeychainSessionStore.swift is deliberately NOT here: it imports Security and makes the real Keychain calls, so only
@@ -60,6 +61,7 @@ jobs:
             ios/App/App/SessionVault.swift \
             ios/App/App/KeychainLogic.swift \
             ios/App/App/RoamRules.swift \
+            ios/App/App/MovedServerRules.swift \
             ios/Tests/*.swift \
             -o "$RUNNER_TEMP/rules-tests"
           "$RUNNER_TEMP/rules-tests"
