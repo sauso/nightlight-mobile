@@ -7,8 +7,8 @@ import android.os.Looper
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * The native "Use this secure address?" prompt (Codex code review of PR #37; the owner chose "ask once in the app",
- * 2026-11-09). ServerConfigPlugin.addEndpoint shows it when EndpointRules.needsConfirmation and PromptGate say so.
+ * The native confirmation dialog for a secure address or a moved server. The original secure-address caller keeps
+ * its exact title, body and buttons through the defaults below; MovedServerCheck supplies its own plain text.
  *
  * It is NOT cancelable (as on the iPhone, whose buttons carry no cancel style): the back key and a tap outside do nothing, so
  * neither can count as an explicit "Don't use it". [onShown] runs once it is on screen (the gate's cooldown starts then).
@@ -44,20 +44,25 @@ internal class SecureAddressPrompt(
     private var dialog: AlertDialog? = null
 
     /** Shows the prompt on [activity], on the main thread. No activity, or one that is going away, ends it as NO_WINDOW. */
-    fun show(activity: Activity?, message: String) {
+    fun show(
+        activity: Activity?, message: String,
+        title: String = TITLE, positiveLabel: String = USE_IT, negativeLabel: String = DONT_USE_IT,
+        requireResumed: Boolean = false,
+    ) {
         main.post {
             // Ended before it could be shown (cancelPending): nothing to show.
             if (done.get()) return@post
-            if (activity == null || activity.isFinishing || activity.isDestroyed) {
+            if (activity == null || activity.isFinishing || activity.isDestroyed ||
+                (requireResumed && (activity as? MainActivity)?.movedPromptResumed != true)) {
                 finish(PromptGate.Outcome.NO_WINDOW)
                 return@post
             }
             try {
                 val d = AlertDialog.Builder(activity)
-                    .setTitle(TITLE)
+                    .setTitle(title)
                     .setMessage(message)
-                    .setPositiveButton(USE_IT) { _, _ -> finish(PromptGate.Outcome.USE_IT) }
-                    .setNegativeButton(DONT_USE_IT) { _, _ -> finish(PromptGate.Outcome.DONT_USE_IT) }
+                    .setPositiveButton(positiveLabel) { _, _ -> finish(PromptGate.Outcome.USE_IT) }
+                    .setNegativeButton(negativeLabel) { _, _ -> finish(PromptGate.Outcome.DONT_USE_IT) }
                     .setCancelable(false)
                     .setOnDismissListener { finish(PromptGate.Outcome.DISMISSED) }
                     .create()

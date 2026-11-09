@@ -15,6 +15,11 @@ package com.sauso.nightlight
 class PromptGate {
 
     companion object {
+        // Both kinds of native question share one screen slot, while each PromptGate keeps its own cooldown.
+        private val screenLock = Any()
+        private var screenReserved = false
+
+        fun isAnyShowing(): Boolean = synchronized(screenLock) { screenReserved }
         // How long a "Don't use it" tap keeps that same address from being asked about again, by the WALL clock (it is stored and
         // must survive restarts). A judgement, not a measurement (the addendum review, 2026-11-09): the web app offers the address
         // at every start, so without a memory a declined address would be asked about every time (a nag); without an expiry a
@@ -131,9 +136,15 @@ class PromptGate {
      */
     @Synchronized
     fun reserve(candidate: String, declinedCandidate: String?, declinedAtWallMs: Long?, nowWallMs: Long, nowMs: Long): Decision {
-        val decision = decide(candidate, declinedCandidate, declinedAtWallMs, nowWallMs, lastPromptAtMs, nowMs, showing)
-        if (decision == Decision.ASK) showing = true
-        return decision
+        synchronized(screenLock) {
+            val decision = decide(candidate, declinedCandidate, declinedAtWallMs, nowWallMs, lastPromptAtMs, nowMs,
+                showing || screenReserved)
+            if (decision == Decision.ASK) {
+                showing = true
+                screenReserved = true
+            }
+            return decision
+        }
     }
 
     /**
@@ -148,6 +159,9 @@ class PromptGate {
     /** The prompt that [reserve] allowed has ended (any outcome). The cooldown, if it was shown, keeps running from then. */
     @Synchronized
     fun release() {
-        showing = false
+        synchronized(screenLock) {
+            if (showing) screenReserved = false
+            showing = false
+        }
     }
 }

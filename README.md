@@ -35,6 +35,21 @@ different home networks still need a test on a phone; the Simulator build alone 
 When nothing is found, the screen shows a one-line technical summary you can share when asking for help: counts and
 error codes only, with no address or name.
 
+## If your server's address changes (Android)
+
+At launch, the app makes one background health request to a saved private IPv4 address. If it no longer answers,
+the app searches your Wi-Fi for the same server id. When it finds that id at a new private IPv4 address, a native
+prompt shows the old and new addresses, the offered name and an eight-character code. Check the new address on your
+server or router before tapping **Use new address**: the name, id and code are public identifiers, not proof. **Not
+now** leaves the saved address alone. A server saved before this release learns its id the first time its saved
+address answers; if it moved before its id was learned and had no Tailscale pair, use **Look for my Nightlight**.
+
+This does not cover a different device taking over the old address, a saved hostname or HTTPS address, IPv6-only
+networks, or Wi-Fi that blocks multicast or isolates devices. Android 7–13 resolves one address per host at a time,
+so discovery can miss an otherwise reachable server. A server behind a Docker bridge may not be announced. The first
+verified card for an id wins, so compare the address before accepting. You sign in once at the new origin. The move
+flow still needs confirmation on a phone.
+
 ## Two addresses for one server (Android)
 
 The address you set the app up with stays the **saved** address. If the server has Tailscale and its secure address on, the
