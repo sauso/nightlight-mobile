@@ -124,6 +124,10 @@ object MovedServerRules {
     }
 
     object Throttle {
+        /** Only the saved address refused by this launch can bypass its next routine throttle. */
+        fun skipOnceFor(refusedUrl: String?, savedUrl: String?): Boolean =
+            refusedUrl != null && savedUrl != null && refusedUrl == savedUrl
+
         /** A refused launch gets one check now; routine foreground checks keep the five-minute process throttle. */
         fun mayRun(nowMs: Long, lastRunMs: Long?, skipOnce: Boolean = false): Boolean =
             skipOnce || lastRunMs == null || nowMs - lastRunMs >= CHECK_INTERVAL_MS

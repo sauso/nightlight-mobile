@@ -21,7 +21,7 @@ class MovedServerCheck(private val activity: MainActivity) {
         private val runLock = Any()
         private var lastRunMs: Long? = null
         private var inFlight = false
-        private var checkAfterRefusal = false
+        private var refusedUrl: String? = null
         private var suppressNextLaunchRefusalFor: String? = null
 
         fun noteLaunchChoice(savedUrl: String?, refusedKnownServer: Boolean) {
@@ -30,7 +30,8 @@ class MovedServerCheck(private val activity: MainActivity) {
                 // fails transiently, the check's own recreate must not start another urgent search.
                 val ownRestart = savedUrl != null && suppressNextLaunchRefusalFor == savedUrl
                 suppressNextLaunchRefusalFor = null
-                if (refusedKnownServer && !ownRestart) checkAfterRefusal = true
+                // Every launch result replaces the previous request, including a successful or empty launch.
+                refusedUrl = if (refusedKnownServer && !ownRestart) savedUrl else null
             }
         }
 
@@ -74,9 +75,12 @@ class MovedServerCheck(private val activity: MainActivity) {
         if (!d.isAvailable) { d.release(); return } // LocalNetwork fails open; NSD still must exist.
         synchronized(runLock) {
             val now = SystemClock.elapsedRealtime()
-            if (inFlight || !MovedServerRules.Throttle.mayRun(now, lastRunMs, checkAfterRefusal)) { d.release(); return }
-            // Consume at the start of this actual run, even when its probe or discovery finds nothing.
-            checkAfterRefusal = false
+            // A different saved server cannot inherit this launch's bypass, even if its routine check is throttled.
+            if (refusedUrl != null && refusedUrl != old) refusedUrl = null
+            val skipOnce = MovedServerRules.Throttle.skipOnceFor(refusedUrl, old)
+            if (inFlight || !MovedServerRules.Throttle.mayRun(now, lastRunMs, skipOnce)) { d.release(); return }
+            // Consume only as this run starts. Earlier exits leave the same URL pending, e.g. off Wi-Fi then back on.
+            refusedUrl = null
             inFlight = true
             lastRunMs = now
         }

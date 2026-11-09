@@ -203,6 +203,22 @@ class MovedServerRulesTest {
         assertTrue(MovedServerRules.Throttle.mayRun(now, null, skipOnce = true))
     }
 
+    @Test fun `matching refused and saved URLs request one throttle skip`() {
+        assertTrue(MovedServerRules.Throttle.skipOnceFor(old, old))
+    }
+
+    @Test fun `a different saved URL cannot inherit the refused URL skip`() {
+        assertFalse(MovedServerRules.Throttle.skipOnceFor(old, moved))
+    }
+
+    @Test fun `a missing refused URL cannot skip a saved server check`() {
+        assertFalse(MovedServerRules.Throttle.skipOnceFor(null, old))
+    }
+
+    @Test fun `a refused URL cannot skip without a saved URL`() {
+        assertFalse(MovedServerRules.Throttle.skipOnceFor(old, null))
+    }
+
     @Test fun `decline applies before seven days and expires exactly at seven days`() {
         val map = mapOf(moved to (now - week + 1))
         assertTrue(MovedServerRules.Declines.isDeclined(map, moved, now))
