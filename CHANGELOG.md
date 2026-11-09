@@ -38,7 +38,10 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   address waits at most about a quarter of a second longer (a second if another VPN is on). If Tailscale is slow to answer
   when the app starts, the app opens the saved address and moves to the secure one the next time you open it. While you use
   the app it only switches address when the page on screen stops answering. If you signed in before the app kept one sign-in
-  for both addresses, the secure address asks you to sign in once.
+  for both addresses, the secure address asks you to sign in once. The first time the app learns a secure address (or a
+  different one) from your server's plain `http` address, it asks you to confirm it and shows the full name: tap Use it only
+  if you have just turned on the secure address in your server's Settings → Remote Access and the name matches. Don't use it
+  keeps your saved address only, and the app does not ask about that address again for a week.
 
 ## [0.9.0] - 2026-11-08
 

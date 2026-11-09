@@ -21,9 +21,26 @@ theirs without any action. A server that has sent no name is listed by its addre
 The address you set the app up with stays the **saved** address. If the server has Tailscale and its secure address on, the
 web app asks the server for that address after sign-in and hands it to the app (`ServerConfig.addEndpoint`), which keeps it
 beside the saved one (SharedPreferences key `tailscale_for:<saved address>`). The app checks it first: it must be exactly
-`https://<name>.ts.net`, the page asking must be the saved server (or its Tailscale address), and `/api/health` at the new
+`https://<name>.ts.net`, the page asking must be the saved server (or its Tailscale address) and really be showing that address, and `/api/health` at the new
 address must report the same server id as the page's server (the id is saved with the address, and the address is opened at
 launch only if the server there still reports it). Forgetting a server (the ✕ on the setup page) removes its Tailscale address; **Change server** keeps it, so on the setup page a remembered server whose home address does not answer (you are on mobile data) is reconnected through its Tailscale address, once that address answers with the id it was saved for (`EndpointRules.canReconnectViaTailscale`). Only the bundled setup page can use that reconnect (a page on a server cannot). The address is dropped when the saved address is next confirmed from the setup screen (a save, not every launch: the launch gate does not read the home address's id) and a different server answers there (`EndpointRules.pairStillValid`).
+
+**The app asks once before it saves a new secure address.** When the app learns a secure address for the first time, or a
+different one, while the page on screen is a plain `http` address, it asks "Use this secure address?" and shows the saved
+address the offer came from and the full secure name. Tap **Use it** only if you have just turned on the secure address in your
+server's Settings → Remote Access and the name matches; the web app's own "saved" notice follows. Why: a saved secure address
+now opens ahead of the saved one, and the server id the app checks is public, so a device that answers at a plain `http` address
+(where the network can be faked) could otherwise offer its own address. The details (`EndpointRules.needsConfirmation`,
+`PromptGate`):
+- **Don't use it** keeps only the saved address, and the app does not ask about that same address again for **7 days**; then it
+  asks once more. A different address is asked about at once.
+- Closing the question any other way (the back button, no answer within **2 minutes**, the app closing) saves nothing and
+  remembers nothing: the next start asks again. At most one question shows at a time, and at most one every **10 minutes**.
+- Never asked: an address that is already saved, and an offer made from an `https` page (including the secure address itself),
+  which the network cannot fake. Forgetting the server forgets a decline too.
+- The three numbers are judgements, not measurements. Known limits: accepting a hostile address leaves you exposed as before;
+  the question cannot prove the name is yours, it only shows it and says when to accept; a phone that already holds a secure
+  address is not asked about it again.
 
 **Which address opens: Tailscale first.** When a Tailscale address is saved, the app opens it whenever it answers, and the
 saved address only when it does not. (It used to be the other way round. On a phone hotspot with Tailscale on, the plain `http`

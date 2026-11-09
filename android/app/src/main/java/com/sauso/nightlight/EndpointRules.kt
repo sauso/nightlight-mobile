@@ -34,6 +34,35 @@ object EndpointRules {
     fun idKey(primary: String): String = "tailscale_id:$primary"
 
     /**
+     * The keys of the secure address the person DECLINED for the saved server [primary], and of when (wall-clock ms): the
+     * "ask once" prompt's memory (PromptGate; the addendum to the Tailscale-first plan, 2026-11-09). Kept beside the Tailscale
+     * pair, removed with the server (forget), replaced by a later decline and cleared by an accept.
+     */
+    fun declinedKey(primary: String): String = "tailscale_declined:$primary"
+    fun declinedAtKey(primary: String): String = "tailscale_declined_at:$primary"
+
+    // An https page: the scheme, then a host. Anchored at the start, so "https://" inside an http page's path or query does not count.
+    private val HTTPS_PAGE = Regex("^https://[^/?#\\s]+", RegexOption.IGNORE_CASE)
+
+    /**
+     * Whether saving [candidate] as the saved server's secure address must first be confirmed by the person (Codex code review
+     * of PR #37, rated High twice; the owner chose "ask once in the app", 2026-11-09). Under Tailscale first a secure address
+     * that is saved opens AHEAD of the saved one, at home too, and the only check on it is an id that is PUBLIC: a device that
+     * answers at a plain-http saved address (where the network can be spoofed) could plant its own `https://<x>.ts.net` and show
+     * a fake sign-in page there. So the person is asked when BOTH hold:
+     *  - [candidate] differs from the secure address already saved ([savedTailscale]): a first learn or a change. The address
+     *    already saved is re-offered at every start and is never asked about again;
+     *  - the page actually SHOWN ([shownPageUrl], not the bridge's configured address: the addendum review) is not https. An
+     *    https page cannot be spoofed by the network, which includes the page on the saved secure address itself. A page that
+     *    could not be read (null) counts as not https: it asks (fails closed).
+     */
+    fun needsConfirmation(shownPageUrl: String?, savedTailscale: String?, candidate: String): Boolean {
+        if (candidate == savedTailscale) return false
+        val shownIsHttps = shownPageUrl != null && HTTPS_PAGE.containsMatchIn(shownPageUrl.trim())
+        return !shownIsHttps
+    }
+
+    /**
      * True when [url]'s host can only be reached from a local network: a private IPv4 address (10/8, 172.16/12, 192.168/16) or
      * a `.local` name. A public name or address (a domain with HTTPS, say) is NOT local-only: it answers on mobile data too.
      * Anything that does not parse is not local-only.
@@ -150,7 +179,8 @@ object EndpointRules {
      * so it could already show anything; what it cannot do is change the saved address. Since Tailscale first (owner decision
      * 2026-11-09) an accepted address is opened AHEAD of the saved one whenever it answers with that id, at home too, where
      * before it was opened only when the saved address did not answer: such a page's address therefore wins more launches
-     * than it used to. A known limit, unchanged in kind: the page could already show anything at the saved address.
+     * than it used to. Codex's code review of PR #37 rated that High, so a NEW or CHANGED address offered from a page that is
+     * not https is now confirmed by the person first ([needsConfirmation], PromptGate); one they accept is trusted as before.
      */
     fun checkIdentity(reference: DiscoveryRules.Health?, candidate: DiscoveryRules.Health?): AddCheck {
         if (reference == null) return AddCheck.UNREADABLE_SERVER

@@ -163,6 +163,44 @@ class EndpointRulesTest {
         assertTrue(EndpointRules.TAILSCALE_GRACE_NO_VPN_MS < EndpointRules.TAILSCALE_GRACE_MS)
     }
 
+    // ---- needsConfirmation: when a secure address must be confirmed by the person (Codex code review of PR #37) ----
+
+    @Test
+    fun `the decline keys are per server and never the address's own keys`() {
+        assertEquals("tailscale_declined:$home", EndpointRules.declinedKey(home))
+        assertEquals("tailscale_declined_at:$home", EndpointRules.declinedAtKey(home))
+        assertFalse(EndpointRules.declinedKey(home) == EndpointRules.declinedKey("http://192.168.1.51:4000"))
+        val keys = setOf(EndpointRules.key(home), EndpointRules.idKey(home), EndpointRules.declinedKey(home), EndpointRules.declinedAtKey(home))
+        assertEquals("four different keys", 4, keys.size)
+    }
+
+    @Test
+    fun `a new or changed address is confirmed unless the page shown is https`() {
+        val httpPage = "http://192.168.1.50:4000/#/live"
+        val httpsPage = "https://nightlight.example.com/#/live"
+        val tailscalePage = "$ts/#/live"
+        // Rows: (saved secure address, page shown) -> asks? The candidate is always `ts`.
+        val rows = listOf(
+            Triple(null, httpPage, true), // first learn, from http
+            Triple(other, httpPage, true), // a change, from http
+            Triple(null, null, true), // first learn, the page could not be read: asks (fails closed)
+            Triple(other, null, true),
+            Triple(null, "about:blank", true), // not https
+            Triple(null, "http://192.168.1.50:4000/?next=https://x.example", true), // "https://" later in an http address
+            Triple(null, httpsPage, false), // an https page cannot be spoofed by the network
+            Triple(other, httpsPage, false),
+            Triple(other, "$other/#/live", false), // the page on the (old) saved secure address itself
+            Triple(null, tailscalePage, false),
+            Triple(ts, httpPage, false), // already saved: re-offered at every start, never asked again
+            Triple(ts, null, false),
+            Triple(ts, httpsPage, false),
+            Triple(ts, tailscalePage, false),
+        )
+        for ((savedTailscale, shown, asks) in rows) {
+            assertEquals("saved $savedTailscale, shown $shown", asks, EndpointRules.needsConfirmation(shown, savedTailscale, ts))
+        }
+    }
+
     // ---- addressAnswers: what "answers" means, for the launch's choice and the watcher's second look alike ----
 
     // Network reads that must not happen: each fails the test if it is called.

@@ -175,8 +175,12 @@ class MainActivity : BridgeActivity() {
     }
 
     // In case onStop did not run first. stop() is safe to call twice.
+    // A "Use this secure address?" prompt still showing ends here as "not answered" (no decline stored), BEFORE the window goes,
+    // so a rebuild (a roam, Change server) cannot leave the web app waiting for an answer (the addendum review of Tailscale first,
+    // 2026-11-09). The page the next activity loads asks again at its own start.
     override fun onDestroy() {
         roamWatcher?.stop()
+        ServerConfigPlugin.cancelPending()
         super.onDestroy()
     }
 
