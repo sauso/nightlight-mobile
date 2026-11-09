@@ -52,10 +52,10 @@ flow still needs confirmation on a phone.
 
 ## If your server's address changes (iOS)
 
-At launch, when the saved address has a known server id (stored for that address or in its Tailscale pair), the app
-opens that address only after a strict health reply identifies the same server. A different server or no strict answer
-loads the bundled setup screen, which lists your saved server and offers **Look for my Nightlight**. Saving an address
-that answers with a different id is refused before it changes the saved server or Tailscale pair. Away from home, a
+At launch, when a saved private IPv4 `http://ip:port` address has a known server id (stored for that address or in its
+Tailscale pair), the app opens that address only after a strict health reply identifies the same server. A different
+server or no strict answer loads the bundled setup screen, which lists your saved server and offers **Look for my Nightlight**.
+Saving that address when a different id answers is refused before it changes the saved server or Tailscale pair. Away from home, a
 dead saved address with a known id now shows setup instead of the **Can't reach your server** page.
 
 At most once every five minutes while the app is active, it checks a saved private IPv4 `http://ip:port` address on
@@ -75,7 +75,8 @@ the stronger path. A saved hostname or `https://` address is not moved by the lo
 Wi-Fi that blocks multicast or isolates devices, and servers hidden behind a Docker bridge may not be found. If the
 server's id legitimately changes, remove the saved server on the setup screen and add it again. Discovery offers one
 card per id, so a false first card can hide a real one for that search. The launch choice, moved-address prompt and
-reconnect still need confirmation on a phone.
+reconnect still need confirmation on a phone. The id check runs when the app starts or rebuilds after a retry or network
+move; a later navigation or reload of the saved address while the app stays open is not re-verified.
 
 ## Two addresses for one server (Android)
 

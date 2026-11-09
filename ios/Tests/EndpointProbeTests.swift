@@ -309,4 +309,17 @@ func runEndpointProbeTests() {
         check(!EndpointProbe.addressAnswers(homeAddress, tailscale: tsAddress, wantedId: nil, expectedId: id,
                                             readHealth: { _ in nil }, reachable: reachable), "no reply accepted")
     }
+
+    test("addressAnswers: a hostname with a pair id keeps legacy reachability") {
+        let hostname = "http://server.local:4000"
+        var readCount = 0
+        let readHealth: (String) -> ServerHealth? = { _ in
+            readCount += 1
+            return nil
+        }
+        check(EndpointProbe.addressAnswers(hostname, tailscale: tsAddress, wantedId: id, expectedId: id,
+                                           readHealth: readHealth, reachable: { $0 == hostname }),
+              "reachable hostname was refused because its pair had an id")
+        checkEqual(readCount, 0, "hostname used a strict health read")
+    }
 }

@@ -28,6 +28,27 @@ func runEndpointRulesTests() {
             verdict: EndpointRules.launchVerdict(expectedId: nil, liveId: nil)), home)
     }
 
+    test("expected id applies only to a canonical private IPv4 address with a port") {
+        let checked = "http://192.168.1.50:4000"
+        check(EndpointRules.idCheckedAddress(checked), "private IPv4 address was skipped")
+        checkEqual(EndpointRules.expectedId(for: checked, storedId: sameId, pairId: otherId), sameId)
+        checkEqual(EndpointRules.expectedId(for: checked, storedId: nil, pairId: sameId), sameId)
+        let unchecked = ["http://server.local:4000", "https://192.168.1.50:4000",
+                         "http://192.168.1.50", "http://8.8.8.8:4000",
+                         "http://user@192.168.1.50:4000", "http://192.168.1.50:4000/path"]
+        for address in unchecked {
+            check(!EndpointRules.idCheckedAddress(address), "checked " + address)
+            checkEqual(EndpointRules.expectedId(for: address, storedId: sameId, pairId: otherId), nil)
+            checkEqual(EndpointRules.expectedId(for: address, storedId: nil, pairId: sameId), nil)
+        }
+    }
+
+    test("forget clears only the active saved address") {
+        check(EndpointRules.forgetClearsActive(saved: home, forgotten: home), "active server remained selected")
+        check(!EndpointRules.forgetClearsActive(saved: home, forgotten: ts), "another server cleared the selection")
+        check(!EndpointRules.forgetClearsActive(saved: nil, forgotten: home), "empty selection was cleared")
+    }
+
     test("identityVerdict refuses only a different answered id") {
         check(EndpointRules.identityVerdict(expectedId: sameId, liveId: otherId) == .different,
               "a different device must refuse the save")

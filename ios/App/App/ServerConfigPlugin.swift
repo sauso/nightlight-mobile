@@ -95,6 +95,7 @@ enum ServerConfigStore {
     /// Drop every per-address item, including the sign-in slot. Used on the writes queue by both the bundled-page forget
     /// and the native move; the latter cannot call the page-gated plugin method.
     static func forget(_ url: String) {
+        if EndpointRules.forgetClearsActive(saved: savedURL, forgotten: url) { savedURL = nil }
         var list = knownServers
         list.removeAll { $0 == url }
         knownServers = list
@@ -136,10 +137,10 @@ enum ServerConfigStore {
         return defaults.string(forKey: keyServerId + url)
     }
 
-    /// The per-address id wins; a stored Tailscale pair also identifies this saved address
-    /// when it has not yet learned its own strict health id.
+    /// The per-address id wins; a stored Tailscale pair also identifies this saved address when it has not yet learned
+    /// its own strict health id. Only canonical private IPv4 addresses use either id for launch, roam and save checks.
     static func expectedId(for url: String) -> String? {
-        return serverId(for: url) ?? tailscaleId(for: url)
+        return EndpointRules.expectedId(for: url, storedId: serverId(for: url), pairId: tailscaleId(for: url))
     }
 
     static func setServerId(_ id: String, for url: String) {
@@ -605,7 +606,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         ])
     }
 
-    // Drop a server from the remembered list (does not touch the active choice). Its name and Tailscale address go with it, and
+    // Drop a server from the remembered list (and the active choice if it is that server). Its name and Tailscale address go with it, and
     // so does the sign-in saved for that address (it was only ever meaningful for that server), as on Android.
     //
     // ONLY from the bundled setup page (its ✕ is the one caller, www/index.html), checked before anything else (Codex code review of

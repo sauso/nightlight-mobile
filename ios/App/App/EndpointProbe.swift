@@ -249,7 +249,7 @@ enum EndpointProbe {
 
     /// The same decision with the two network reads passed in, so ios/Tests drives it with replies built from fixture bodies
     /// and no network (the split acceptReply already makes: the decision apart from the request; Codex code review of PR #38).
-    /// `readHealth` is fetchHealth for an address whose id is known; `reachable` is isReachable only without one.
+    /// `readHealth` is fetchHealth for a checked address whose id is known; other saved URL forms use `reachable`.
     static func addressAnswers(_ url: String, tailscale: String, wantedId: String?, expectedId: String?, readHealth: (String) -> ServerHealth?, reachable: (String) -> Bool) -> Bool {
         if url == tailscale {
             // No id saved: it never counts, and nothing is asked (fail closed; a missing id must not compare equal to a
@@ -258,8 +258,9 @@ enum EndpointProbe {
             let live: String? = readHealth(url)?.id
             return live == wanted
         }
-        // A readable but different occupant, a missing id, and no reply all refuse this address.
-        if let expected = expectedId { return readHealth(url)?.id == expected }
+        // Only a canonical private IPv4 saved address gets the strict id check. A readable but different occupant,
+        // a missing id, and no reply all refuse that address; other saved URL forms keep the legacy reachable path.
+        if let expected = expectedId, EndpointRules.idCheckedAddress(url) { return readHealth(url)?.id == expected }
         return reachable(url)
     }
 }

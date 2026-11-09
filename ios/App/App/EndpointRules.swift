@@ -46,6 +46,23 @@ enum EndpointRules {
         }
     }
 
+    /// Only the canonical private IPv4 address that local discovery can identify gets a launch identity check. Typed
+    /// hostnames, HTTPS and other URL forms keep their earlier reachability and save behaviour.
+    static func idCheckedAddress(_ url: String?) -> Bool {
+        guard let parsed = DiscoveryRules.parseFoundUrl(url) else { return false }
+        return isPrivateIpv4(parsed.host)
+    }
+
+    static func expectedId(for url: String, storedId: String?, pairId: String?) -> String? {
+        guard idCheckedAddress(url) else { return nil }
+        return storedId ?? pairId
+    }
+
+    /// Forgetting the selected server must also remove the launch choice; forgetting another remembered server must not.
+    static func forgetClearsActive(saved: String?, forgotten: String) -> Bool {
+        return saved == forgotten
+    }
+
     /// A save may proceed on no reply as before, but a different strict id must not discard
     /// this address's pair or sign-in and then reopen it without its expected identity.
     enum IdentityVerdict {
