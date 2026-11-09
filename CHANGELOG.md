@@ -11,6 +11,10 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Added
+- **iOS: Look for my Nightlight.** The setup screen can find a server on your Wi-Fi and check it again when you tap
+  Connect. Search needs Local Network access and finds private IPv4 addresses only. Networks that isolate devices or
+  block multicast may find nothing; you can still type the address. The iOS search and permission flow still need a
+  test on a phone.
 - **iOS: one sign-in for both of your server's addresses.** On an iPhone, the home address and the Tailscale address used to
   ask for a sign-in each. The app now keeps your sign-in in the iPhone's Keychain and hands it to the Tailscale address (only
   that address) the first time you open it there, so signing in once at home is enough, as on Android. It is kept for the

@@ -470,10 +470,11 @@
   // Native could not start looking (it can say so after startDiscovery has already answered { started: true }).
   // Code review of #20: say it at once instead of "Looking…" for two minutes. Stopping first leaves things as after
   // any other stop, so Search again simply starts over.
-  async function failLooking() {
+  async function failLooking(message) {
     await stopLooking();
     findHelp.hidden = false;
-    showStopped("Couldn't start looking on this phone. Type your server's address below.");
+    showStopped(typeof message === 'string' && message ? message :
+      "Couldn't start looking on this phone. Type your server's address below.");
   }
 
   async function startLooking() {
@@ -500,7 +501,7 @@
       // within moments of starting.
       handles.push(await p.addListener('serverFound', (e) => { if (thisRun === run) addFound(e); }));
       handles.push(await p.addListener('serverLost', (e) => { if (thisRun === run) removeFound(e && e.id); }));
-      handles.push(await p.addListener('discoveryFailed', () => { if (thisRun === run) failLooking(); }));
+      handles.push(await p.addListener('discoveryFailed', (e) => { if (thisRun === run) failLooking(e && e.message); }));
       if (await stale()) return;
       const result = await p.startDiscovery();
       if (await stale()) return;

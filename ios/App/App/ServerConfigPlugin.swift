@@ -2,6 +2,7 @@ import Foundation
 import Capacitor
 import UIKit
 import WebKit
+import Network
 
 /// iOS counterpart of `ServerConfigPlugin.kt`. Which Nightlight server the app talks
 /// to is chosen at runtime (the Home Assistant-style first-run flow), not baked in.
@@ -12,7 +13,8 @@ import WebKit
 ///   Capacitor.Plugins.ServerConfig.get()          -> { url: string | null, tailscale: string | null }
 ///   Capacitor.Plugins.ServerConfig.list()         -> { servers: string[], active: string | null,
 ///                                                      tailscale: string | null, names: { [url]: name } }
-///   Capacitor.Plugins.ServerConfig.save({ url })  -> validates + persists, rejects if unreachable; resolves { url },
+///   Capacitor.Plugins.ServerConfig.save({ url, expectId? }) -> validates + persists; a found card's id is re-checked
+///                                                    at save, then resolves { url },
 ///                                                    or { url, via: "tailscale" } when it reconnected a remembered
 ///                                                    server through its Tailscale address (see save)
 ///   Capacitor.Plugins.ServerConfig.addEndpoint({ url })  -> { added }; saves the server's Tailscale address (asking the
@@ -24,13 +26,14 @@ import WebKit
 ///   Capacitor.Plugins.ServerConfig.saveSession({ token, tailscale })  -> { saved }; keeps the sign-in for the other address
 ///   Capacitor.Plugins.ServerConfig.getSession()   -> { token }, or { token: null } for EVERY refusal
 ///   Capacitor.Plugins.ServerConfig.clearSession({ token? })  -> { cleared }
+///   Capacitor.Plugins.ServerConfig.startDiscovery() / stopDiscovery() -> look on the local Wi-Fi
+///   events serverFound { id, name, url, fingerprint }, serverLost { id }, discoveryFailed { message }
 ///
 /// The shapes are exactly Android's: the web app turns its Tailscale features on by whether `addEndpoint` and
 /// `list().names` exist (nativeBridge.js), so the About card, the "Away from home" notice and the sync work here as
 /// they do on Android. The same goes for one sign-in across both addresses (iOS phase 2, 2026-11-08): nativeBridge.js
 /// `sessionPlugin()` uses it only when ALL THREE of saveSession / getSession / clearSession exist, so registering them
-/// below is what switches it on. NOT on iOS yet, deliberately absent so the web app skips them: startDiscovery /
-/// stopDiscovery ("Look for my Nightlight").
+/// below is what switches it on. A found card only suggests an address; save({ url, expectId }) checks it again.
 ///
 /// The launch-time "which address to open" lives in MainViewController.instanceDescriptor; this plugin owns the stored
 /// values it reads.
@@ -204,6 +207,8 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "forget", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clear", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "restart", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "startDiscovery", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stopDiscovery", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "addEndpoint", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "removeEndpoint", returnType: CAPPluginReturnPromise),
         // All three or none: the web app uses the saved sign-in only when every one exists (nativeBridge.js sessionPlugin).
@@ -221,6 +226,149 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // getSession's read of the Tailscale page's own live id: Android's 3000 ms. It has to fit, with the page reads and the
     // Keychain read, inside the web app's 6 s wait (nativeBridge.js SESSION_ADOPT_DEADLINE_MS). A judgement, not a measurement.
     private static let sessionProbeTimeout: TimeInterval = 3
+
+    // Search and its path snapshot are owned on the main thread, where the shown WKWebView URL can be checked
+    // immediately before each event. A stale callback carries an old token and cannot report into a new search.
+    private static weak var activeDiscoveryOwner: ServerConfigPlugin?
+    private var discovery: ServerDiscovery?
+    private var discoveryToken = UUID()
+    private var pathCheck: NWPathMonitor?
+    private var pathCheckSerial = 0
+    private var pendingStartCall: CAPPluginCall?
+
+    deinit {
+        discovery?.stop()
+        pathCheck?.cancel()
+    }
+
+    static func stopDiscoveryForBackground() {
+        if Thread.isMainThread {
+            activeDiscoveryOwner?.stopSearch()
+        } else {
+            DispatchQueue.main.async { activeDiscoveryOwner?.stopSearch() }
+        }
+    }
+
+    private func stopSearch() {
+        discoveryToken = UUID()
+        pathCheckSerial += 1
+        pathCheck?.cancel()
+        pathCheck = nil
+        pendingStartCall?.reject("Couldn't start looking for servers.")
+        pendingStartCall = nil
+        discovery?.stop()
+        discovery = nil
+        if ServerConfigPlugin.activeDiscoveryOwner === self { ServerConfigPlugin.activeDiscoveryOwner = nil }
+    }
+
+    private func deliverDiscovery(_ event: ServerDiscovery.Event, token: UUID) {
+        // Never ask the writes queue for the page. This is already on main; after navigation, no found
+        // address or permission message is delivered to a different page and the search is stopped.
+        guard discoveryToken == token, discovery != nil else { return }
+        guard callerIsBundledPage() else { stopSearch(); return }
+        switch event {
+        case .found(let card):
+            notifyListeners("serverFound", data: ["id": card.id, "name": card.name,
+                                                   "url": card.url, "fingerprint": card.fingerprint])
+        case .lost(let id):
+            notifyListeners("serverLost", data: ["id": id])
+        case .failed(let message):
+            notifyListeners("discoveryFailed", data: ["message": message])
+            stopSearch()
+        }
+    }
+
+    private func watchBundledPage(_ token: UUID) {
+        // The page calls stop on pagehide. This bounded poll covers a navigation that never runs pagehide or
+        // loses its JS listeners; an event also checks the page at delivery time.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self = self, self.discoveryToken == token, self.discovery != nil else { return }
+            if !self.callerIsBundledPage() { self.stopSearch(); return }
+            self.watchBundledPage(token)
+        }
+    }
+
+    @objc func startDiscovery(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { call.reject("Couldn't start looking for servers."); return }
+            guard self.callerIsBundledPage() else {
+                call.reject(EndpointRules.refusal(.notThisPage))
+                return
+            }
+            guard UIApplication.shared.applicationState == .active else {
+                call.reject("Couldn't start looking for servers.")
+                return
+            }
+            self.stopSearch()
+            self.pathCheckSerial += 1
+            let check = self.pathCheckSerial
+            let monitor = NWPathMonitor()
+            self.pathCheck = monitor
+            self.pendingStartCall = call
+            ServerConfigPlugin.activeDiscoveryOwner = self
+            monitor.pathUpdateHandler = { [weak self] path in
+                DispatchQueue.main.async { [weak self] in
+                    self?.finishPathCheck(check, path: path, call: call)
+                }
+            }
+            monitor.start(queue: DispatchQueue(label: "com.sauso.nightlight.discovery-path"))
+            // NWPathMonitor's first update is normally immediate. A one-second bound avoids holding a plugin
+            // call indefinitely if it does not arrive; an unknown path is a generic start failure.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.finishPathCheck(check, path: nil, call: call)
+            }
+        }
+    }
+
+    private func finishPathCheck(_ check: Int, path: NWPath?, call: CAPPluginCall) {
+        guard check == pathCheckSerial, pathCheck != nil else { return }
+        pathCheck?.cancel()
+        pathCheck = nil
+        pendingStartCall = nil
+        guard UIApplication.shared.applicationState == .active else {
+            stopSearch()
+            call.reject("Couldn't start looking for servers.")
+            return
+        }
+        guard callerIsBundledPage() else {
+            stopSearch()
+            call.reject(EndpointRules.refusal(.notThisPage))
+            return
+        }
+        guard let path = path else {
+            stopSearch()
+            call.reject("Couldn't start looking for servers.")
+            return
+        }
+        let onWifi = path.status == .satisfied &&
+            (path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet))
+        guard onWifi else {
+            stopSearch()
+            call.resolve(["started": false, "onWifi": false])
+            return
+        }
+        let token = UUID()
+        discoveryToken = token
+        let search = ServerDiscovery { [weak self] event in
+            DispatchQueue.main.async { [weak self] in self?.deliverDiscovery(event, token: token) }
+        }
+        discovery = search
+        ServerConfigPlugin.activeDiscoveryOwner = self
+        search.start()
+        watchBundledPage(token)
+        call.resolve(["started": true])
+    }
+
+    @objc func stopDiscovery(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.callerIsBundledPage() else {
+                call.reject(EndpointRules.refusal(.notThisPage))
+                return
+            }
+            self.stopSearch()
+            call.resolve()
+        }
+    }
 
     // How long work off the main thread waits for the main thread to read the web view's URL (shownPageURL). Android's
     // PAGE_CHECK_TIMEOUT_MS: the main thread answers in microseconds unless it is busy, and if it is busy for a whole second the
@@ -403,6 +551,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // launch, so a home address that changed hands can still open the old server through Tailscale until it is next connected
     // to there. forget(url), the explicit "forget this server", still removes it.
     @objc func clear(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in self?.stopSearch() }
         // On the writes queue, so a save queued just before this one has landed first; resolved after, so the restart the
         // page asks for next starts from the cleared state.
         ServerConfigStore.writes.async {
@@ -712,9 +861,20 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // mirrors Android: an explicit scheme is respected; a bare address tries https
     // first then http (self-hosted LAN servers are commonly plain-http).
     @objc func save(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in self?.stopSearch() }
         let raw = (call.getString("url") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if raw.isEmpty {
             call.reject("Enter your server address")
+            return
+        }
+        // Present but non-string must not silently take the typed-address route. A found URL is
+        // checked by one no-redirect probe and never falls into validate or the Tailscale reconnect.
+        if let value = call.options["expectId"] {
+            guard let expectId = value as? String else {
+                call.reject("That address is not the server we found. Search again.")
+                return
+            }
+            saveFoundServer(raw, expectId: expectId, call: call)
             return
         }
         var bare = raw
@@ -770,6 +930,10 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         let hasPair = ServerConfigStore.tailscaleId(for: url) != nil
         let liveId: String? = hasPair ? EndpointProbe.fetchHealth(url, timeout: ServerConfigPlugin.pairCheckTimeout)?.id : nil
         let name: String? = EndpointProbe.parseHealth(body)?.name
+        writeSaved(url, liveId: liveId, name: name, call: call)
+    }
+
+    private static func writeSaved(_ url: String, liveId: String?, name: String?, call: CAPPluginCall) {
         ServerConfigStore.writes.async {
             ServerConfigStore.savedURL = url
             // The iOS twin of Android's dropTailscaleIfAnotherServer: the stale pair goes, and with it the sign-in saved for this
@@ -781,6 +945,28 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
             ServerConfigStore.remember(url)
             ServerConfigStore.rememberName(url, name)
             call.resolve(["url": url])
+        }
+    }
+
+    private func saveFoundServer(_ url: String, expectId: String, call: CAPPluginCall) {
+        guard let target = DiscoveryRules.parseFoundUrl(url), EndpointRules.isPrivateIpv4(target.host) else {
+            call.reject("Couldn't reach a Nightlight server at that address")
+            return
+        }
+        // The id is public, not authentication. Re-check it at the person's tap because the address
+        // may have changed hands since the card appeared. The same reply supplies the saved name and
+        // stale Tailscale-pair check: exactly one request, no redirect or second identity probe.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let health = EndpointProbe.fetchHealth(url, timeout: 2)
+            guard let live = health else {
+                call.reject("Couldn't reach a Nightlight server at that address")
+                return
+            }
+            guard DiscoveryRules.matches(live, expectId) else {
+                call.reject("That address is not the server we found. Search again.")
+                return
+            }
+            ServerConfigPlugin.writeSaved(url, liveId: live.id, name: live.name, call: call)
         }
     }
 
@@ -826,6 +1012,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // so a check in flight cannot act on the page being replaced. Not counted towards the
     // watcher's reload limit: the person asked for this one (as on Android).
     @objc func restart(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in self?.stopSearch() }
         call.resolve()
         DispatchQueue.main.async { [weak self] in
             AppRestart.rebuildRoot(window: self?.bridge?.viewController?.view.window)
