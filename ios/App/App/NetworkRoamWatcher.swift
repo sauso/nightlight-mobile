@@ -14,19 +14,22 @@ import WebKit
 // phone checklist).
 //
 // What it does, while the app is in the foreground:
-//  - one NWPathMonitor (the Network framework, already used by LocalNetworkSnapshot) is started at the first
+//  - one NWPathMonitor (the Network framework, also used by MainViewController's VpnSnapshot) is started at the first
 //    applicationDidBecomeActive after launch and after each return from the background, and cancelled in
 //    applicationDidEnterBackground (AppDelegate). A NEW monitor is made each time: a cancelled one cannot be started again.
 //    It keeps running through a short inactivity (Control Center, a call banner, the app switcher fire didBecomeActive without
-//    a trip to the background), and a didBecomeActive while it runs does nothing at all, so those cannot fail the app back
-//    home in the middle of use (Codex and Opus plan review of iOS phase 2, 2026-11-08);
+//    a trip to the background), and a didBecomeActive while it runs does nothing at all, so those cannot reload a working page
+//    for an upgrade in the middle of use (Codex and Opus plan review of iOS phase 2, 2026-11-08);
 //  - a real change (NetworkEventFilter over NetworkSignature: path status + interface types + gateways) schedules a
 //    NETWORK_CHANGE check; the first activation after launch and the first after a return from the background schedule one
-//    FOREGROUND_START check, so an app brought back to the front after roaming in the background, or coming home, re-chooses
-//    too. Each waits RoamRules.settleMs, and a newer request replaces a waiting one (a flapping network is one check);
+//    FOREGROUND_START check, so an app brought back to the front after roaming in the background, or with Tailscale turned on
+//    meanwhile, re-chooses too. Each waits RoamRules.settleMs, and a newer request replaces a waiting one (a flapping network
+//    is one check);
 //  - the check, on the watcher's queue: the page the web view is really showing must be on the saved address or its Tailscale
 //    address (RoamRules.currentAddress), then the launch's own choice runs (MainViewController.chooseAnswer, so the two cannot
-//    drift), RoamRules.target says whether to switch, and RecreateLog says whether a rebuild is allowed now;
+//    drift: Tailscale first, the saved address as the fallback, owner decision 2026-11-09); when it picks the OTHER address,
+//    the page's own address gets a second look (does it still answer?), RoamRules.target says whether to move (an ESCAPE off a
+//    dead page, or an UPGRADE of a working saved page at a start), and RecreateLog says whether a rebuild is allowed now;
 //  - when nothing answered, it checks again a few times (RoamRules.retryDelayAfter) and then waits for the next event;
 //  - the switch is the same root-view-controller rebuild ServerConfig.restart() does (AppRestart.rebuildRoot, ONE function so
 //    the two cannot drift), on the main thread, after checking again that the page has not moved.
@@ -61,9 +64,9 @@ final class NetworkRoamWatcher {
     // and an answer that does not come counts as "not known" (which never switches anything).
     private static let mainThreadTimeout: TimeInterval = 1
 
-    // The second look at the saved address before a fail-over (see evaluate), in seconds. Android's STILL_ANSWERING_MS:
-    // shorter than the launch's 2.5 s probe, because the first probe already waited and this one only has to catch a blip. A
-    // judgement, not a measurement.
+    // The second look at the address on screen before any move (see evaluate), in seconds. Android's STILL_ANSWERING_MS:
+    // shorter than the launch's 2.5 s probe, because the choice's probes already waited and this one only has to tell a page
+    // that works from one that has stopped. A judgement, not a measurement.
     private static let stillAnsweringTimeout: TimeInterval = 1.5
 
     // Whether a video is floating in Picture-in-Picture, read in the page. `document.pictureInPictureElement` is the standard
@@ -101,8 +104,9 @@ final class NetworkRoamWatcher {
     private var startOwed: Bool = true
     // True from the scheduling of a start check until the first check runs. Ported from Android: a start check still waiting
     // keeps its FOREGROUND_START trigger when a path update replaces it. Unlocking the phone usually brings a path update with
-    // it (Wi-Fi coming back), and letting that turn the start check into a NETWORK_CHANGE check would never move the app back
-    // home, so the person would stay on Tailscale until the next time they opened the app.
+    // it (Wi-Fi coming back), and letting that turn the start check into a NETWORK_CHANGE check would never upgrade a working
+    // saved page to the Tailscale address, so the person would stay on the saved address until the next time they opened the
+    // app.
     private var startPending: Bool = false
     // The check or retry waiting to run, so a newer request (or the background) can cancel it, and the generation it was made
     // under (see rebuildStarted).
@@ -115,7 +119,8 @@ final class NetworkRoamWatcher {
 
     /// applicationDidBecomeActive. Starts a new monitor if none is running and schedules the start check if one is owed. While
     /// a monitor is running it does nothing (a Control Center pull, a call banner or the app switcher fire this without a
-    /// trip to the background, and must not start a check that could fail back in the middle of use).
+    /// trip to the background, and must not start a check that could reload a working page for an upgrade in the middle of
+    /// use).
     func didBecomeActive() {
         queue.async {
             self.activate()
@@ -206,7 +211,7 @@ final class NetworkRoamWatcher {
     // that reached this queue after the generation moved on was scheduled under the new one and is kept, so a network change
     // during a rebuild is not lost. A start check that dies here takes startPending with it: a dead check returns before it
     // clears the flag (evaluate), and a flag left on would let a later NETWORK_CHANGE check run as a start check, which may
-    // move the app back home in the middle of use. iOS-only: on Android a recreate is followed by onStart, which schedules a
+    // reload a working page for an upgrade in the middle of use. iOS-only: on Android a recreate is followed by onStart, which schedules a
     // new start check and sets the flag again anyway.
     private func dropStaleWaiting() {
         if waitingGeneration == currentGeneration() { return }
@@ -250,37 +255,48 @@ final class NetworkRoamWatcher {
         // answer from the main thread in time is no page.
         let shown: String? = readShownPage()
         guard let current = RoamRules.currentAddress(webViewUrl: shown, saved: saved, tailscale: tailscale) else { return }
-        // The launch's own choice, off the main thread. Blocks this queue for up to 3 s.
+        // The launch's own choice, off the main thread: Tailscale first, the saved address as the fallback (owner decision
+        // 2026-11-09). Blocks this queue for up to 3 s (plus the VPN reading's 0.2 s at most).
         let chosen: String? = MainViewController.chooseAnswer(saved: saved)
         if !isCurrent(gen) { return }
-        // Not known (the main thread did not answer in time, or the page could not say) counts as in Picture-in-Picture: that
-        // only ever holds back a fail-back, never a fail-over (Codex and Opus plan review of iOS phase 2, 2026-11-08, as Android).
+        // THE SECOND LOOK (Codex plan review of Tailscale first, 2026-11-09). The choice now prefers Tailscale, so its picking the
+        // other address no longer says that the page on screen is dead (a working saved page is passed over whenever Tailscale
+        // answers). So, only when there is somewhere else to go, the page's OWN address is asked once more, for up to 1.5 s, with
+        // the same check the choice uses (EndpointProbe.addressAnswers: the Tailscale address only counts with the id it was saved
+        // for). It replaces the old second look, which asked the saved address again before a move to Tailscale only.
+        // EndpointProbe never throws, so a look that is taken is true (works) or false (dead: a failed request, an error status,
+        // a wrong id, or the timeout); nil means no look was taken, and target then stays anyway (nothing chosen, or the same
+        // address). A slow page misjudged as dead moves to an address that has just answered: the risk the old fail-over took,
+        // stated as a known limit in the README.
+        var currentAnswers: Bool? = nil
+        if let picked = chosen, picked != current {
+            let wantedId: String? = ServerConfigStore.tailscaleId(for: saved)
+            currentAnswers = EndpointProbe.addressAnswers(current, tailscale: tailscale, wantedId: wantedId, timeout: NetworkRoamWatcher.stillAnsweringTimeout)
+            if !isCurrent(gen) { return }
+        }
+        // Read LAST before the decision, so nothing slow runs between this read and the rebuild (see finishRoam). Not known (the
+        // main thread did not answer in time, or the page could not say) counts as in Picture-in-Picture: that only ever holds
+        // back an upgrade, never an escape (Codex and Opus plan review of iOS phase 2, 2026-11-08, as Android).
         let inPip: Bool = readInPictureInPicture() ?? true
-        guard let destination = RoamRules.target(trigger: trigger, saved: saved, tailscale: tailscale, current: current, chosen: chosen, inPip: inPip) else {
+        guard let move = RoamRules.target(trigger: trigger, saved: saved, tailscale: tailscale, current: current, chosen: chosen, inPip: inPip, currentAnswers: currentAnswers) else {
+            // Unchanged: only "nothing answered" retries. A page that works needs none (the next start check does the upgrade).
             if chosen == nil, let wait = RoamRules.retryDelayAfter(attempt: attempt) {
                 schedule(gen, trigger, attempt: attempt + 1, delayMs: wait)
             }
             return
         }
-        let toTailscale: Bool = (destination == tailscale)
-        // A fail-over off a page that is still working is the one wrong move that costs something (a sign-in or an MFA code half
-        // typed): the saved address's probe above can fail for a moment while the page is fine. Ask it once more before leaving it
-        // (Android's second look, Codex review of the Android code). A saved address that really is gone fails this too, and the
-        // switch goes ahead.
-        if toTailscale && EndpointProbe.isReachable(saved, timeout: NetworkRoamWatcher.stillAnsweringTimeout) {
-            NetworkRoamWatcher.logLine("Nightlight roam: the saved address still answers, staying on it")
-            return
-        }
         if !isCurrent(gen) { return }
-        let which: String = toTailscale ? "the Tailscale address" : "the saved address"
+        let which: String = (move.address == tailscale) ? "the Tailscale address" : "the saved address"
+        let kind: String = move.escape ? "escape from a page that stopped answering" : "upgrade"
         let why: String = (trigger == .foregroundStart) ? "foreground start" : "network change"
         if !roamLog.mayRoam(nowMs: NetworkRoamWatcher.clockMs()) {
-            // No retry: the next network change or the next start checks again.
-            NetworkRoamWatcher.logLine("Nightlight roam: would move to \(which) (\(why)), held back by the reload limit")
+            // No retry: the next network change or the next start checks again. The loop guard holds back every move, an
+            // escape too: a network that keeps flapping must not turn into a reload loop.
+            NetworkRoamWatcher.logLine("Nightlight roam: would move to \(which) (\(kind), \(why)), held back by the reload limit")
             return
         }
         DispatchQueue.main.async {
-            self.finishRoam(gen, saved: saved, tailscale: tailscale, current: current, which: which, why: why)
+            self.finishRoam(gen, saved: saved, tailscale: tailscale, current: current, move: move, which: which, kind: kind, why: why)
         }
     }
 
@@ -293,27 +309,25 @@ final class NetworkRoamWatcher {
     // One difference from Android, stated: Android also reads Picture-in-Picture again here. On iOS that state can only be read
     // through the page (evaluateJavaScript, which answers later, on a later turn of the main thread), and a rebuild from inside
     // WebKit's own callback would tear down the web view that is calling back; so it is read once, on the watcher's queue, just
-    // before the decision. For a fail-back (the only move Picture-in-Picture holds back) nothing slow runs between that read and
-    // this step (the second look is for a fail-over only), so the gap is one hop to the main thread.
-    private func finishRoam(_ gen: Int, saved: String, tailscale: String, current: String, which: String, why: String) {
+    // before the decision. For an upgrade (the only move Picture-in-Picture holds back) nothing slow runs between that read and
+    // this step (the second look runs before it), so the gap is one hop to the main thread.
+    private func finishRoam(_ gen: Int, saved: String, tailscale: String, current: String, move: RoamMove, which: String, kind: String, why: String) {
         if !isCurrent(gen) { return }
         let window: UIWindow? = NetworkRoamWatcher.appWindow()
         let shown: String? = NetworkRoamWatcher.webView(in: window)?.url?.absoluteString
         if RoamRules.currentAddress(webViewUrl: shown, saved: saved, tailscale: tailscale) != current { return }
-        // A FAIL-BACK (the person is on the Tailscale address and the saved address answers again) waits for the app to be active
-        // (Codex code review of PR #36): Control Center, a call banner or the app switcher make the app inactive without a trip to
-        // the background, so no lifecycle call has stopped this check, and a reload under them is not wanted. A fail-over is NOT
-        // held back: its page is already dead, so a reload loses nothing, and skipping it would leave the person on a dead page
-        // until the next event. A held fail-back is not retried: the next start or network change checks again.
-        if current == tailscale && UIApplication.shared.applicationState != .active {
-            NetworkRoamWatcher.logLine("Nightlight roam: would move to \(which) (\(why)), held back because the app is not active")
+        // An UPGRADE waits for the app to be active; an ESCAPE does not, in either direction (RoamRules.heldBackAtLastStep says
+        // why, and ios/Tests pins it). A held upgrade is not retried: the next start checks again.
+        let appActive: Bool = (UIApplication.shared.applicationState == .active)
+        if RoamRules.heldBackAtLastStep(move: move, appActive: appActive) {
+            NetworkRoamWatcher.logLine("Nightlight roam: would move to \(which) (\(kind), \(why)), held back because the app is not active")
             return
         }
-        // Asked again where it is noted, so the check and the note are one step.
+        // Asked again where it is noted, so the check and the note are one step. It applies to every move, escapes included.
         let now: Int64 = NetworkRoamWatcher.clockMs()
         if !roamLog.mayRoam(nowMs: now) { return }
         roamLog.noteRoam(nowMs: now)
-        NetworkRoamWatcher.logLine("Nightlight roam: moving to \(which) (\(why))")
+        NetworkRoamWatcher.logLine("Nightlight roam: moving to \(which) (\(kind), \(why))")
         // The rebuild re-runs the launch choice (MainViewController.instanceDescriptor), which makes the same choice and points
         // the bridge at it, holding the main thread for up to 3 s as at launch. The saved address is never rewritten: only the
         // address the bridge opens differs.
@@ -378,7 +392,7 @@ final class NetworkRoamWatcher {
 
     // What a path update is compared by (NetworkSignature says why each part is there). The interface types are recorded both
     // as used by the path and as available to it: with a VPN such as Tailscale on, the path itself may run over the VPN's own
-    // interface (LocalNetworkSnapshot's note), so Wi-Fi giving way to mobile data may show only in what is available. How an
+    // interface, so Wi-Fi giving way to mobile data may show only in what is available. How an
     // iPhone fills these in with Tailscale on is unconfirmed on a phone; a signature that changes more often than needed costs
     // one check each (the check decides whether anything moves, and RecreateLog bounds the reloads). The gateways are kept in
     // memory only and never logged.
@@ -437,6 +451,9 @@ enum AppRestart {
     static func rebuildRoot(window: UIWindow?) {
         guard let target = window else { return }
         NetworkRoamWatcher.shared.rebuildStarted()
+        // A "Use this secure address?" prompt is presented by the root about to be replaced: withdraw it first, as not answered
+        // (refused, nothing stored), so the web app's call is not left waiting (addendum review of 2026-11-09).
+        AddressPrompt.shared.cancelPending()
         let storyboard = UIStoryboard(name: "Main", bundle: nil)
         target.rootViewController = storyboard.instantiateInitialViewController()
     }

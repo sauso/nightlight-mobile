@@ -142,30 +142,81 @@ The iPhone app does the same, keeping the copy in the iOS Keychain: see
 
 ## Two addresses for one server (iOS)
 
-The iPhone app uses your server's Tailscale address too: at home it opens the address you set it up with, and away from home
-(with the Tailscale app on the phone connected) it opens through Tailscale. **Change server** works away from home, and the saved
-list shows each server's name. The rules are the Android ones above, ported case for case: `ServerConfig.addEndpoint` saves the
-address only if it is exactly `https://<name>.ts.net`, the page asking is the saved server or its Tailscale address, and both
+The iPhone app uses your server's Tailscale address too: it opens that secure address first whenever it answers (with the
+Tailscale app on the phone connected), and the address you set it up with when it does not. **Change server** works away from
+home, and the saved list shows each server's name. The rules are the Android ones above, ported case for case:
+`ServerConfig.addEndpoint` saves the address only if it is exactly `https://<name>.ts.net`, the page asking is the saved server
+or its Tailscale address, and both
 report the same server id (UserDefaults keys `tailscale_for:<saved address>` and `tailscale_id:<saved address>`, names in
-`server_names`). `clear` (Change server) keeps the address; the ✕ on the setup page (`forget`) removes it. Only the bundled setup
-page can reconnect a remembered server through it, and the address is dropped when another server answers at the home address on
-the next save from the setup screen.
+`server_names`). `clear` (Change server) keeps the address; the ✕ on the setup page (`forget`) removes it. `forget` is accepted
+only from the bundled setup page (a server's page is refused, "Not available on this page"), because it also clears a
+remembered "Don't use it" (below). Only the bundled setup page can reconnect a remembered server through it, and the address is
+dropped when another server answers at the home address on the next save from the setup screen.
 
 "The page asking" means both the address the app opened and the origin the web view is showing right now
 (`EndpointRules.isTrustedPage`, for `addEndpoint` and `removeEndpoint`; the reconnect also checks the web view is on the bundled
 page). Capacitor iOS lets the web view open, inside the app, any address that merely starts with the server's
 (`https://server.example.attacker.test` for `https://server.example`), so the address the app opened is not enough on its own.
 
-At launch, when a Tailscale address is saved, `MainViewController` probes both addresses at once behind the launch screen and
-opens the saved one if it answers within 3 seconds, else the Tailscale one if it answers with the id it was saved for
-(`EndpointChooser`); a quick Tailscale answer never beats a slower home answer. Off Wi-Fi and Ethernet (one `NWPathMonitor`
-reading at launch; no reading counts as on Wi-Fi), a home-network-only saved address gets about 1 second instead of 3. With no
-Tailscale address saved, the launch is exactly as before: no probe, no wait. The 3 s, 2.5 s (each probe) and 1 s are carried over
-from Android as judgements, not measurements.
+**The app asks once before it saves a new secure address.** The first time the app learns a secure address from a plain-`http`
+address (or the secure address changes), it asks: **Use this secure address?**, showing the address it came from and the full
+secure name, with **Use it** / **Don't use it**. Only accept it if you have just turned on the secure address in your server's
+Settings → Remote Access and the name matches. Why: the server id the app compares is public, so a device on your network that
+answers at a plain-`http` address could offer its own secure address, and since the app now opens the secure address first,
+that address would be opened first. The rules (`EndpointRules.needsConfirmation`, `PromptGate`):
+- **Asked only** when the offered address differs from the one already saved AND the page is not `https`. "The page" is the one
+  the web view has committed: its address must agree, by origin, with the back-forward list's current page, so an address the web
+  view shows only because it has started to load another page does not count; a page that cannot be read counts as plain `http`. The same address, offered again at every start, is never asked about; nor is an offer from an `https` page, the secure
+  page itself included. Removing the address (`removeEndpoint`) is never asked: it only returns the app to the saved address.
+- **Use it** saves the address as before. **Don't use it** saves nothing: the app keeps what it had (the saved address, and the
+  secure address it already had if the offer was a change), and it does not ask about that same address again for **7 days**
+  (then it asks once more). A different address is asked about, subject to the 10-minute wait below. Forgetting the server (the ✕
+  on the setup page) clears the remembered "no".
+- **No answer is not a "no".** A prompt that cannot be shown (another screen on top, the app not active), that is not answered
+  within **120 seconds**, or that is withdrawn because the app rebuilds its screen, saves nothing and remembers nothing; a later
+  start asks again. One prompt at a time, and at most one every **10 minutes** while the app runs: within those 10 minutes an
+  offer is refused without asking, whether it is the same address at the next start (a rebuild after a network change, say) or a
+  different one. Closing and reopening the app starts the count again. All four numbers are judgements, not measurements.
+- **Checked again at the write.** Just before the address is written, the saved server, the page and the "does this need
+  asking" decision are all checked again; if the page moved, or the offer needs asking now but was not accepted in a prompt,
+  nothing is saved.
+
+At launch, when a Tailscale address is saved, `MainViewController` probes both addresses at once behind the launch screen, under
+one 3-second deadline (`EndpointChooser`), and opens **the Tailscale address first**: if it answers with the id it was saved for,
+it is opened, whatever the saved address said; otherwise the saved address, if that answers. Why (since 2026-11-09): on a phone
+hotspot with Tailscale routing the home network, the saved `http` address answered too, so the old saved-first rule kept the
+app on plain `http`, and two-way talk, which needs HTTPS, could not work.
+
+- **The grace.** When the saved address answers first, the app still waits a short grace for the Tailscale one: **1 second**,
+  or **0.25 second** when the phone positively has no VPN. A Tailscale address that fails outright (refused, an error, the wrong
+  server id) ends the grace at once. Both numbers are judgements, not measurements: Tailscale on and healthy answers in well
+  under a second, and with Tailscale off the saved address should not be held back by more than a quarter of a second.
+- **The VPN hint.** One `NWPathMonitor` reading at launch: a VPN counts as present when the phone lists a network interface of
+  type `.other` (Tailscale's tunnel is not Wi-Fi, mobile data or Ethernet). It can only shorten the grace: no reading counts as a
+  VPN, so the full second.
+- With no Tailscale address saved, the launch is exactly as before: no probe, no wait. The 3 s and 2.5 s (each probe) are
+  carried over from Android as judgements, not measurements.
 
 Known limits on iOS:
 - **When neither address answers**, the app opens the saved address and shows the "Can't reach your server" screen, as it always
   has on iOS (Android shows the setup screen instead).
+- **A slow Tailscale path opens the saved address.** A Tailscale path that is cold (relayed, or the first request after a long
+  idle) can take longer than the grace. That launch then opens the saved address, and the next time the app comes to the front
+  it moves to the Tailscale address (see below).
+- **At home the app now goes through the server's Tailscale node** (a software node inside the server's container) instead of
+  the home address. Not measured for video load on the server. If Tailscale does not answer, the app uses the saved address, so
+  home use does not depend on it.
+- **The VPN hint is not yet confirmed on a phone.** Apple describes `.other` as "virtual or unknown", so it is a hint, not proof:
+  another virtual interface also reads as a VPN, which costs the full 1-second grace and nothing else. If an iPhone does not show
+  Tailscale's tunnel as `.other`, a launch with Tailscale on gets the 0.25-second grace, and a slower Tailscale answer loses that
+  launch to the saved address. It never opens an address that was not verified: the id check is unchanged.
+- **The prompt cannot prove the secure name is yours.** It shows the name and says when to accept it; someone who accepts a
+  hostile address is exposed as before. Phones that already hold a secure address are not asked again about it. A page that
+  gets your REAL address declined first can keep it away for 7 days at most. Not yet confirmed on a phone: the prompt itself,
+  its timeout and its withdrawal during a rebuild.
+- **One more sign-in, once.** If you signed in before the app kept one sign-in for both addresses (see
+  [One sign-in across the two addresses (iOS)](#one-sign-in-across-the-two-addresses-ios)), the Tailscale address, now the one
+  most often open, may ask you to sign in once.
 - **Capacitor iOS cannot tell which frame called a plugin method.** "The page asking" is judged from the address the app opened and
   the main frame's current origin, so a child frame inside an accepted page counts as that page. Nightlight's own pages use no
   frames and its CSP forbids a cross-origin one, so this is a conditional gap, as for Android's old WebView.
@@ -175,46 +226,52 @@ Known limits on iOS:
 
 ### When you change network (iOS)
 
-The iPhone app moves between the two addresses by itself, as the Android app does. Leave home with the app open and, when Wi-Fi
-turns to mobile data, it moves to the Tailscale address within a few seconds, with no restart (when a Tailscale address is saved,
-as above, and the Tailscale app on the phone is connected). Coming home, it does not move back while you are using it (the
-Tailscale address keeps working on Wi-Fi). It moves back the next time the app comes to the front (opened again, or the phone
-unlocked with the app in front), a few seconds after it appears, so something typed in those first seconds can be lost, and
-not while a video is already floating in Picture-in-Picture or while the app is inactive (Control Center, a call banner). Either move reloads the app onto its home screen, so a video you were watching
-starts again, and the screen can freeze for up to about 3 seconds while the app picks the address, as it does when it starts.
-Sign-in carries across as described in [One sign-in across the two addresses (iOS)](#one-sign-in-across-the-two-addresses-ios).
+The iPhone app moves between the two addresses by itself, as the Android app does (when a Tailscale address is saved, as above).
+When the page on screen **stops answering**, it moves to the other address within a few seconds, with no restart: leave home with
+the app open on the home address and Wi-Fi turns to mobile data, or switch Tailscale off while the app is on the Tailscale
+address. When the page on screen **still works**, the only move is up to the Tailscale address, and only the next time the app
+comes to the front (opened again, or the phone unlocked with the app in front), a few seconds after it appears, so something
+typed in those first seconds can be lost; not while a video is already floating in Picture-in-Picture or while the app is
+inactive (Control Center, a call banner). A working Tailscale page is never moved to the home address. Either move reloads the
+app onto its home screen, so a video you were watching starts again, and the screen can freeze for up to about 3 seconds while
+the app picks the address, as it does when it starts. Sign-in carries across as described in
+[One sign-in across the two addresses (iOS)](#one-sign-in-across-the-two-addresses-ios).
 
 How it works: while the app is in the foreground, `NetworkRoamWatcher` watches the phone's network (`NWPathMonitor`). A change is
 a different connection state, a different set of network types (Wi-Fi, mobile data, Ethernet, VPN and so on, in use or
 available) or a different router, so moving to another Wi-Fi network counts too. It waits about 2 seconds for the network to
-settle, then makes the same choice the launch makes (`MainViewController.chooseAnswer`). If that picks the other address from the
-page on screen, the app rebuilds its main screen, which re-runs the launch choice, the same rebuild **Connect** and **Change
-server** use (`AppRestart.rebuildRoot`). Coming back from the background runs the same check once; pulling down Control Center,
-a call banner or the app switcher does not. The saved address is never rewritten. Only a page on one of the two addresses is
-moved: the setup page and the "Can't reach your server" page are left alone, since they already offer a retry and your saved
-servers. With no Tailscale address saved, nothing is probed and nothing changes.
+settle, then makes the same choice the launch makes (`MainViewController.chooseAnswer`: Tailscale first). If that picks the
+other address from the page on screen, the app asks the page's own address once more (for up to 1.5 seconds, with the same id
+check for the Tailscale address), because the choice prefers Tailscale and so cannot say on its own whether the page on screen
+still works. `RoamRules.target` then decides, and a move rebuilds the main screen, which re-runs the launch choice, the same
+rebuild **Connect** and **Change server** use (`AppRestart.rebuildRoot`). Coming back from the background runs the same check
+once; pulling down Control Center, a call banner or the app switcher does not. The saved address is never rewritten. Only a
+page on one of the two addresses is moved: the setup page and the "Can't reach your server" page are left alone, since they
+already offer a retry and your saved servers. With no Tailscale address saved, nothing is probed and nothing changes.
 
-- **Leaving home happens at once**, on a network change or when the app comes to the front, even with a video in
-  Picture-in-Picture (the page on screen has already stopped working). Before it leaves the home address, the app asks that
-  address once more (for up to 1.5 seconds) and stays if it answers.
-- **Coming home waits** until the app comes to the front, and does not happen while a video is already floating in
-  Picture-in-Picture or while the app is inactive. If the app cannot tell whether one is floating, it counts as floating. Known
-  gap: the floating state is read once, a moment before the reload, and iOS gives no safe way to read it again at the last
-  instant, so a video that starts floating in that instant is not caught (unconfirmed on a phone).
+- **Leaving a page that stopped answering happens at once**, in either direction, on a network change or when the app comes to
+  the front, even with a video in Picture-in-Picture and even while the app is inactive (the page has already stopped working).
+  Known limit: a page that is only slow, taking more than 1.5 seconds to answer that second look, counts as stopped, and the app
+  moves to the address that has just answered.
+- **Moving up to the Tailscale address waits** until the app comes to the front, and does not happen while a video is already
+  floating in Picture-in-Picture or while the app is inactive. If the app cannot tell whether one is floating, it counts as
+  floating. Known gap: the floating state is read once, a moment before the reload, and iOS gives no safe way to read it again at
+  the last instant, so a video that starts floating in that instant is not caught (unconfirmed on a phone).
 - **Nothing answering yet** (Tailscale still reconnecting, say): it checks again at about 3, 6, 12 and 25 seconds, then waits
-  for the next network change or the next time the app comes to the front.
-- **No reload loops**: a move needs at least 20 seconds since the last move, and at most 3 moves happen in any 5 minutes. That
-  limit lifts by itself as the 5 minutes roll on; a move it holds back waits for the next network change or the next time the
-  app comes to the front. A reload you ask for (Connect, Change server) does not count. The iPhone app has no automatic reload
-  after a page fails to load (Android's 8-second gap), so only moves are counted (`RecreateLog`).
+  for the next network change or the next time the app comes to the front. A page that still works needs no retry: the next
+  time the app comes to the front checks again.
+- **No reload loops**: a move needs at least 20 seconds since the last move, and at most 3 moves happen in any 5 minutes, for
+  both kinds of move. That limit lifts by itself as the 5 minutes roll on; a move it holds back waits for the next network change
+  or the next time the app comes to the front. A reload you ask for (Connect, Change server) does not count. The iPhone app has no
+  automatic reload after a page fails to load (Android's 8-second gap), so only moves are counted (`RecreateLog`).
 - **Not covered**: the watcher runs only while the app is in the foreground. With audio playing in the background (screen off) on
   a network that has stopped working, nothing is rescued until you bring the app to the front. All the numbers above are
   judgements carried over from Android, not measurements.
 - **Not yet confirmed on a phone**: how an iPhone reports its network while Tailscale's VPN is on (the app compares the network
-  types in use and the ones available, so leaving Wi-Fi should still count), and whether a floating video shows as
-  `document.pictureInPictureElement` or only as WebKit's own Picture-in-Picture mode (the app checks both).
-- **Tested**: the rules (`RoamRules.swift`, ported case for case from Android's `RoamRulesTest`) run in CI with `swiftc`
-  (`ios/Tests`). The watcher, the lifecycle calls and the rebuild need an iPhone.
+  types in use and the ones available, so leaving Wi-Fi should still count), whether a floating video shows as
+  `document.pictureInPictureElement` or only as WebKit's own Picture-in-Picture mode (the app checks both), and the VPN hint above.
+- **Tested**: the rules (`RoamRules.swift`, the same table as Android's `RoamRulesTest`) run in CI with `swiftc`
+  (`ios/Tests`). The watcher, the second look, the lifecycle calls and the rebuild need an iPhone.
 
 ## One sign-in across the two addresses (iOS)
 

@@ -9,19 +9,28 @@ import Foundation
 // apps.
 //
 // The idea is deliberately small: when the network changes, the app runs the SAME choice the launch runs
-// (MainViewController.chooseAnswer: the saved address first, the Tailscale one as the fallback), and if that picks a different
-// address from the one on screen, the root view controller is rebuilt (AppRestart.rebuildRoot, the same rebuild
-// ServerConfig.restart() does), which re-runs the launch choice. No new way of choosing. What is new is WHEN a switch may
-// happen and how often, which is all here.
+// (MainViewController.chooseAnswer: the Tailscale address first, the saved one as the fallback, since the owner decision of
+// 2026-11-09), and if that picks a different address from the one on screen, the root view controller is rebuilt
+// (AppRestart.rebuildRoot, the same rebuild ServerConfig.restart() does), which re-runs the launch choice. No new way of
+// choosing. What is new is WHEN a switch may happen and how often, which is all here.
 //
 // Foundation only, no Network, UIKit or Capacitor import, on purpose: CI compiles this file with swiftc and runs ios/Tests
 // against exactly this code (build-ios.yml). The glue that feeds it (the path monitor, the main-thread reads, the rebuild) is
 // NetworkRoamWatcher.swift, which only an iPhone can test. Every rule fails CLOSED: when in doubt, nothing moves.
 
-/// Why an address check runs. Only a foreground start may move the app back home (see RoamRules.target).
+/// Why an address check runs. Only a foreground start may UPGRADE a working page to the Tailscale address (see RoamRules.target).
 enum RoamTrigger {
     case networkChange
     case foregroundStart
+}
+
+/// A move RoamRules.target allows: the address to move to, and whether it is an ESCAPE (the page on screen stopped answering,
+/// either direction) or the optional UPGRADE (a working page on the saved address moves to the Tailscale address). The two are
+/// told apart because the watcher's last checks on the main thread hold back an upgrade only, never an escape (Codex plan review
+/// of Tailscale first, 2026-11-09: as the old checks were written, they would trap a person on a dead Tailscale page).
+struct RoamMove: Equatable {
+    let address: String
+    let escape: Bool
 }
 
 enum RoamRules {
@@ -46,27 +55,51 @@ enum RoamRules {
         return nil
     }
 
-    /// The address to switch to, or nil to stay.
+    /// The move to make, or nil to stay (Tailscale first, owner decision 2026-11-09; the shape is the Codex plan review's).
     ///  - `current` is currentAddress's answer for the page on screen; `chosen` is what the launch's choice picked just now
-    ///    (nil when neither address answered).
-    ///  - FAIL-OVER (the saved address is on screen and only Tailscale answers now) is allowed at once, for either trigger and
-    ///    even in Picture-in-Picture: the page on screen is already dead, so a reload loses nothing that still works.
-    ///  - FAIL-BACK (Tailscale is on screen and the saved address answers again) is allowed ONLY at a foreground start, and not
-    ///    in Picture-in-Picture (owner, 2026-11-06, refined after the Codex plan review). Tailscale keeps working over Wi-Fi, so
-    ///    there is no hurry, and a reload while someone is looking at the app would cut a form, an upload or a video. A start
-    ///    (the app opened again, or the screen unlocked with the app in front) is the moment nothing is lost. Picture-in-Picture
-    ///    IS a case on an iPhone: the web app starts it from inside the app and the person can go Home with the video floating
-    ///    (Codex and Opus plan review of iOS phase 2, 2026-11-08).
+    ///    (nil when neither address answered). Under Tailscale first the choice alone cannot say whether the page on screen
+    ///    still works (a working saved page is passed over whenever Tailscale answers), so the watcher takes a SECOND LOOK at
+    ///    the page's own address when `chosen` differs from it: `currentAnswers` is true (it answers), false (it is dead: a
+    ///    completed probe that failed, or the look's timeout) or nil (the look could not be taken).
+    ///  - ESCAPE: the page on screen is DEAD (`currentAnswers == false`). Move to `chosen` at once, in EITHER direction (the
+    ///    saved address died: to Tailscale; Tailscale stopped answering: to the saved address), for either trigger and even in
+    ///    Picture-in-Picture: the page has already stopped working, so a reload loses nothing that still works. Only between
+    ///    the two addresses: a page or a choice on anything else stays.
+    ///  - UPGRADE: the page works, or it is not known (nil never reloads on a doubt). The ONLY move is from a working saved page
+    ///    to the Tailscale address, and ONLY at a foreground start and not in Picture-in-Picture (the owner's rule of 2026-11-06
+    ///    for a move nothing forces, refined after the Codex plan review): a reload while someone is looking at the app would cut
+    ///    a form, an upload or a video, and a start (the app opened again, or the screen unlocked with the app in front) is the
+    ///    moment nothing is lost. Picture-in-Picture IS a case on an iPhone: the web app starts it from inside the app and the
+    ///    person can go Home with the video floating (Codex and Opus plan review of iOS phase 2, 2026-11-08).
+    ///  - A WORKING Tailscale page is never moved to the saved address: the secure address is the one preferred.
     ///  - Anything else stays: nothing chosen, the same address, a page on neither address, no Tailscale address saved.
-    /// (The nil checks below are also implied by the two direction rules; they are written out so the rule reads as stated.
-    /// The same-address check is not: it is what stops a saved address that equals its own Tailscale address from "switching"
-    /// to itself.)
-    static func target(trigger: RoamTrigger, saved: String, tailscale: String?, current: String?, chosen: String?, inPip: Bool) -> String? {
+    /// (The nil checks below are also implied by the rules after them; they are written out so the rule reads as stated. The
+    /// same-address check is not: it is what stops a saved address that equals its own Tailscale address from "switching" to
+    /// itself.)
+    static func target(trigger: RoamTrigger, saved: String, tailscale: String?, current: String?, chosen: String?, inPip: Bool, currentAnswers: Bool?) -> RoamMove? {
         guard let tailscaleAddress = tailscale, let here = current, let picked = chosen else { return nil }
         if picked == here { return nil }
-        if here == saved && picked == tailscaleAddress { return picked }
-        if here == tailscaleAddress && picked == saved && trigger == .foregroundStart && !inPip { return picked }
+        let hereIsOneOfTwo: Bool = (here == saved || here == tailscaleAddress)
+        let pickedIsOneOfTwo: Bool = (picked == saved || picked == tailscaleAddress)
+        if currentAnswers == false {
+            if hereIsOneOfTwo && pickedIsOneOfTwo { return RoamMove(address: picked, escape: true) }
+            return nil
+        }
+        if here == saved && picked == tailscaleAddress && trigger == .foregroundStart && !inPip {
+            return RoamMove(address: picked, escape: false)
+        }
         return nil
+    }
+
+    /// Whether the LAST step, on the main thread just before the rebuild (NetworkRoamWatcher.finishRoam), holds `move` back
+    /// because the app is not active (Control Center, a call banner or the app switcher make it inactive without a trip to the
+    /// background, so no lifecycle call has stopped the check, and a reload under them is not wanted: Codex code review of PR
+    /// #36). It holds back an UPGRADE only. An ESCAPE goes ahead in either direction: its page has already stopped answering,
+    /// so a reload loses nothing, and holding it back would leave the person on a dead page, a dead Tailscale page included,
+    /// until the next event (Codex plan review of Tailscale first, 2026-11-09). Pure, so ios/Tests pins it (Codex code review of
+    /// PR #38). Picture-in-Picture is not here: target already refuses an upgrade in it, and an escape ignores it.
+    static func heldBackAtLastStep(move: RoamMove, appActive: Bool) -> Bool {
+        return !move.escape && !appActive
     }
 
     // When the check finds NOTHING answering (the tunnel is not routing yet, the new network has no internet yet), it runs again
