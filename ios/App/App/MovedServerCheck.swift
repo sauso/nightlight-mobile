@@ -21,6 +21,8 @@ final class MovedServerCheck {
     private let lifecycleLock = NSLock()
     private var active = false
     private var generation = 0
+    private var launchRefusalRequested = false
+    private var suppressNextLaunchRefusalForUrl: String?
     // Everything below is touched only by queue, except the lock-protected ticket above.
     private var running = false
     private var lastRunMs: Int64?
@@ -28,6 +30,28 @@ final class MovedServerCheck {
     private var discovery: ServerDiscovery?
 
     private init() {}
+
+    /// The launch gate reports its final choice on the main thread. An accepted move rebuilds through this same gate;
+    /// its tap-time strict probe already verified the new address, so that rebuild must not create another urgent search.
+    func launchChoiceFinished(saved: String, requestsCheck: Bool) {
+        lifecycleLock.lock()
+        let suppressed = suppressNextLaunchRefusalForUrl == saved
+        if suppressed { suppressNextLaunchRefusalForUrl = nil }
+        if requestsCheck && !suppressed { launchRefusalRequested = true }
+        lifecycleLock.unlock()
+    }
+
+    var hasLaunchRefusalRequest: Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return launchRefusalRequested
+    }
+
+    private func suppressRefusalFromAcceptedMove(to url: String) {
+        lifecycleLock.lock()
+        suppressNextLaunchRefusalForUrl = url
+        lifecycleLock.unlock()
+    }
 
     /// AppDelegate calls this on activation. The throttle is consumed only after all cheap gates pass.
     func runIfDue() {
@@ -64,7 +88,13 @@ final class MovedServerCheck {
               let old = ServerConfigStore.savedURL,
               let parsed = DiscoveryRules.parseFoundUrl(old), EndpointRules.isPrivateIpv4(parsed.host) else { return }
         let now = AddressPrompt.monotonicMs()
-        guard MovedServerRules.Throttle.mayRun(nowMs: now, lastRunMs: lastRunMs) else { return }
+        lifecycleLock.lock()
+        let skipOnce = launchRefusalRequested
+        launchRefusalRequested = false
+        lifecycleLock.unlock()
+        // Consume as this run starts, even if the path is not Wi-Fi or the subsequent probe finds nothing.
+        guard MovedServerRules.Throttle.mayRun(nowMs: now, lastRunMs: lastRunMs,
+                                               skipOnce: skipOnce) else { return }
         running = true
         // One-shot path check, as in ServerConfigPlugin.startDiscovery. A missing first update ends quietly after one second.
         let pathMonitor = NWPathMonitor()
@@ -231,6 +261,8 @@ final class MovedServerCheck {
             self?.queue.async { [weak self] in self?.end() }
             DispatchQueue.main.async {
                 let window = (UIApplication.shared.delegate as? AppDelegate)?.window
+                // The check's own accepted move can rebuild the root, but must not generate another urgent check.
+                if window != nil { self?.suppressRefusalFromAcceptedMove(to: offer.newUrl) }
                 AppRestart.rebuildRoot(window: window)
             }
         }

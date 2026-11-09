@@ -115,7 +115,9 @@ enum MovedServerRules {
 
     enum Throttle {
         /// A process runs one check at most every five minutes. Exactly five minutes is allowed; a missing first run is too.
-        static func mayRun(nowMs: Int64, lastRunMs: Int64?) -> Bool {
+        static func mayRun(nowMs: Int64, lastRunMs: Int64?, skipOnce: Bool = false) -> Bool {
+            // A fresh launch refusal is stronger evidence than the routine foreground cadence; the caller consumes it once.
+            if skipOnce { return true }
             guard let last = lastRunMs else { return true }
             let (elapsed, overflow) = nowMs.subtractingReportingOverflow(last)
             return !overflow && elapsed >= CHECK_INTERVAL_MS

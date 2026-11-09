@@ -194,6 +194,18 @@ func runMovedServerRulesTests() {
         check(!MovedServerRules.Throttle.mayRun(nowMs: MovedServerRules.CHECK_INTERVAL_MS - 1,
                                                 lastRunMs: 0), "ran early")
     }
+    test("Throttle: a launch refusal skips the interval once") {
+        check(MovedServerRules.Throttle.mayRun(nowMs: MovedServerRules.CHECK_INTERVAL_MS - 1,
+                                               lastRunMs: 0, skipOnce: true), "refusal was throttled")
+    }
+    test("Throttle: no skip keeps the interval") {
+        check(!MovedServerRules.Throttle.mayRun(nowMs: MovedServerRules.CHECK_INTERVAL_MS - 1,
+                                                lastRunMs: 0, skipOnce: false), "routine check ran early")
+    }
+    test("Throttle: a launch refusal with no previous run is allowed") {
+        check(MovedServerRules.Throttle.mayRun(nowMs: 0, lastRunMs: nil, skipOnce: true),
+              "first refusal was blocked")
+    }
     test("Throttle: exactly five minutes allows a check") {
         check(MovedServerRules.Throttle.mayRun(nowMs: MovedServerRules.CHECK_INTERVAL_MS,
                                                lastRunMs: 0), "blocked boundary")

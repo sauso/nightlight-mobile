@@ -458,6 +458,14 @@ enum AppRestart {
         AddressPrompt.shared.cancelPending()
         let storyboard = UIStoryboard(name: "Main", bundle: nil)
         target.rootViewController = storyboard.instantiateInitialViewController()
+        // The bridge makes its launch choice while loading the root view. Ensure that choice has run before reading the
+        // refusal flag; root-view assignment alone can leave the view lazy until the next display pass.
+        target.rootViewController?.loadViewIfNeeded()
+        // The new bridge's launch gate may have refused the saved server. Activation does not fire again for an in-app
+        // rebuild, so request its one-shot search now that the replacement root is installed.
+        if MovedServerCheck.shared.hasLaunchRefusalRequest {
+            MovedServerCheck.shared.runIfDue()
+        }
     }
 }
 

@@ -28,6 +28,32 @@ func runEndpointRulesTests() {
             verdict: EndpointRules.launchVerdict(expectedId: nil, liveId: nil)), home)
     }
 
+    test("a refused known private IPv4 server requests an immediate check") {
+        check(EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .differentServer,
+                                                       idCheckedAddress: true), "different server did not request search")
+        check(EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .noAnswer,
+                                                       idCheckedAddress: true), "dead saved address did not request search")
+    }
+
+    test("an answered or unchecked saved address does not request an immediate check") {
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .sameServer,
+                                                        idCheckedAddress: true), "same server requested search")
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .unchecked,
+                                                        idCheckedAddress: true), "unchecked verdict requested search")
+    }
+
+    test("setup without an expected id does not request an immediate check") {
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: false, verdict: .noAnswer,
+                                                        idCheckedAddress: true), "no known server requested search")
+    }
+
+    test("a refusal at a non-id-checked address does not request an immediate check") {
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .differentServer,
+                                                        idCheckedAddress: false), "unchecked address requested search")
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .noAnswer,
+                                                        idCheckedAddress: false), "unchecked dead address requested search")
+    }
+
     test("expected id applies only to a canonical private IPv4 address with a port") {
         let checked = "http://192.168.1.50:4000"
         check(EndpointRules.idCheckedAddress(checked), "private IPv4 address was skipped")

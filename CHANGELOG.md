@@ -72,7 +72,7 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   now be forgotten only from the setup screen.
 
 ### Fixed
-- iOS: the app no longer opens a saved local address that has been taken over by a different server (it shows the setup screen; see the README)
+- iOS: the app no longer opens a saved local address that has been taken over by a different server (it shows the setup screen and immediately looks for your server, even if its routine check ran recently; see the README)
 
 ## [0.9.0] - 2026-11-08
 

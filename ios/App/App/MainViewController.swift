@@ -53,10 +53,18 @@ class MainViewController: CAPBridgeViewController {
     /// Chosen at each launch and each rebuild (ServerConfig.restart(), or a move between the addresses when the network
     /// changes: NetworkRoamWatcher, which runs the same choice through chooseAnswer below first).
     static func chooseAddress(saved: String) -> String? {
-        if let chosen = MainViewController.chooseAnswer(saved: saved) { return chosen }
+        if let chosen = MainViewController.chooseAnswer(saved: saved) {
+            MovedServerCheck.shared.launchChoiceFinished(saved: saved, requestsCheck: false)
+            return chosen
+        }
         // A dead saved address with a known id now loads setup instead of the error page. This cost prevents a failed
         // health check from being bypassed by a subsequent page request to a different device at that address.
-        let verdict: EndpointRules.LaunchVerdict = ServerConfigStore.expectedId(for: saved) == nil ? .unchecked : .noAnswer
+        let expectedId = ServerConfigStore.expectedId(for: saved)
+        let verdict: EndpointRules.LaunchVerdict = expectedId == nil ? .unchecked : .noAnswer
+        // chooseAnswer collapses a mismatched strict reply and no reply into nil; both refuse the known saved server.
+        MovedServerCheck.shared.launchChoiceFinished(saved: saved, requestsCheck: EndpointRules.launchRefusalRequestsCheck(
+            expectedIdPresent: expectedId != nil, verdict: verdict,
+            idCheckedAddress: EndpointRules.idCheckedAddress(saved)))
         return EndpointRules.launchChoice(saved: saved, verdict: verdict)
     }
 

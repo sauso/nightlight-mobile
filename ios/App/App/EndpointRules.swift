@@ -46,6 +46,17 @@ enum EndpointRules {
         }
     }
 
+    /// Only a refused, id-checked saved server warrants bypassing the routine search throttle. A first-run setup page or
+    /// an unchecked address does not establish that the person's server was refused.
+    static func launchRefusalRequestsCheck(expectedIdPresent: Bool, verdict: LaunchVerdict,
+                                           idCheckedAddress: Bool) -> Bool {
+        guard expectedIdPresent, idCheckedAddress else { return false }
+        switch verdict {
+        case .differentServer, .noAnswer: return true
+        case .sameServer, .unchecked: return false
+        }
+    }
+
     /// Only the canonical private IPv4 address that local discovery can identify gets a launch identity check. Typed
     /// hostnames, HTTPS and other URL forms keep their earlier reachability and save behaviour.
     static func idCheckedAddress(_ url: String?) -> Bool {

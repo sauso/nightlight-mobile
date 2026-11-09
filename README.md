@@ -57,8 +57,9 @@ Tailscale pair), the app opens that address only after a strict health reply ide
 server or no strict answer loads the bundled setup screen, which lists your saved server and offers **Look for my Nightlight**.
 Saving that address when a different id answers is refused before it changes the saved server or Tailscale pair. Away from home, a
 dead saved address with a known id now shows setup instead of the **Can't reach your server** page.
+When the app opens its saved address and finds a different server there (or none), it looks for your server straight away, even if it checked a few minutes ago.
 
-At most once every five minutes while the app is active, it checks a saved private IPv4 `http://ip:port` address on
+Normally at most once every five minutes while the app is active, it checks a saved private IPv4 `http://ip:port` address on
 Wi-Fi or Ethernet. If the address answers with a different id, or does not answer, and the expected id is known, the
 app searches for the same server for up to 10 seconds. When it finds a
 different private IPv4 address, a native prompt shows the saved and new addresses, the server name and an eight-character
