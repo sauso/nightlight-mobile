@@ -34,8 +34,9 @@ now opens ahead of the saved one, and the server id the app checks is public, so
 `PromptGate`):
 - **Don't use it** keeps only the saved address, and the app does not ask about that same address again for **7 days**; then it
   asks once more. A different address is asked about at once.
-- Closing the question any other way (the back button, no answer within **2 minutes**, the app closing) saves nothing and
-  remembers nothing: the next start asks again. At most one question shows at a time, and at most one every **10 minutes**.
+- The back button and a tap outside do not close the question, so only a tap answers it. If it gets no answer within
+  **2 minutes**, or the app closes while it shows, nothing is saved or remembered: the next start asks again. At most one
+  question shows at a time, and at most one every **10 minutes** (counted from when one was shown).
 - Never asked: an address that is already saved, and an offer made from an `https` page (including the secure address itself),
   which the network cannot fake. Forgetting the server forgets a decline too.
 - The three numbers are judgements, not measurements. Known limits: accepting a hostile address leaves you exposed as before;

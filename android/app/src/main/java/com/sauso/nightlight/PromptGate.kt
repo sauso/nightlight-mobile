@@ -36,8 +36,8 @@ class PromptGate {
          * Whether to show the prompt now for [candidate]. In this order:
          *  1. a prompt is already [showing] -> BUSY (one at a time; the call is refused, nothing is stored);
          *  2. the person declined this same address less than [DECLINE_LIFETIME_MS] ago -> REJECT_QUIETLY (not asked again);
-         *  3. a prompt was shown less than [COOLDOWN_MS] ago ([lastPromptAtMs], by the process clock [nowMs]) -> BUSY (refused,
-         *     nothing stored: once the cooldown has passed the next offer is asked about);
+         *  3. a prompt was SHOWN less than [COOLDOWN_MS] ago ([lastPromptAtMs], by the process clock [nowMs], a monotonic one) ->
+         *     BUSY (refused, nothing stored: once the cooldown has passed the next offer is asked about);
          *  4. otherwise ASK.
          * [declinedCandidate] and [declinedAtWallMs] are the stored decline (null when none); [nowWallMs] is the wall clock now.
          */
@@ -72,14 +72,33 @@ class PromptGate {
 
         /**
          * What a prompt that ended in [outcome] leads to. Only the person's two taps are an answer: "Use it" saves, "Don't use
-         * it" stores the decline and refuses. EVERY other ending (dismissed by the system or the back button, the timeout, a
-         * lifecycle cancel, no window to show it in, an error) refuses and stores NOTHING (the addendum review: a decline the
-         * person did not give must never silence the address for a week).
+         * it" stores the decline and refuses. EVERY other ending (closed without a tap, the timeout, a lifecycle cancel, no window
+         * to show it in, an error) refuses and stores NOTHING (the addendum review: a decline the person did not give must never
+         * silence the address for a week). The back key and a tap outside cannot close it (SecureAddressPrompt: not cancelable),
+         * so neither can be mistaken for a "Don't use it".
          */
         fun effectOf(outcome: Outcome): Effect = when (outcome) {
             Outcome.USE_IT -> Effect.SAVE
             Outcome.DONT_USE_IT -> Effect.REMEMBER_DECLINE_AND_REFUSE
             Outcome.DISMISSED, Outcome.TIMED_OUT, Outcome.CANCELLED, Outcome.NO_WINDOW, Outcome.FAILED -> Effect.REFUSE
+        }
+
+        /**
+         * The refusal for a call the gate did not ask about: a decline still in force is NOT_ACCEPTED (the person said no), a busy
+         * gate NOT_CONFIRMED (nothing was declined, it was just not asked now). The same mapping as the iPhone app, whose
+         * sentences these are (EndpointRules.refusal). ASK is not a refusal (OK).
+         */
+        fun refusalWhenNotAsked(decision: Decision): EndpointRules.AddCheck = when (decision) {
+            Decision.REJECT_QUIETLY -> EndpointRules.AddCheck.NOT_ACCEPTED
+            Decision.BUSY -> EndpointRules.AddCheck.NOT_CONFIRMED
+            Decision.ASK -> EndpointRules.AddCheck.OK
+        }
+
+        /** The refusal after a prompt that ended without "Use it": the explicit decline is NOT_ACCEPTED, anything else NOT_CONFIRMED. */
+        fun refusalAfter(effect: Effect): EndpointRules.AddCheck = when (effect) {
+            Effect.REMEMBER_DECLINE_AND_REFUSE -> EndpointRules.AddCheck.NOT_ACCEPTED
+            Effect.REFUSE -> EndpointRules.AddCheck.NOT_CONFIRMED
+            Effect.SAVE -> EndpointRules.AddCheck.OK
         }
 
         /**
@@ -107,20 +126,26 @@ class PromptGate {
     private var lastPromptAtMs: Long? = null
 
     /**
-     * [decide], and when it says ASK, take the one prompt slot and start the cooldown in the same step, so two offers arriving
-     * together cannot both be shown. BUSY and REJECT_QUIETLY change nothing. Every ASK must be followed by exactly one [release].
+     * [decide], and when it says ASK, take the one prompt slot in the same step, so two offers arriving together cannot both be
+     * shown. BUSY and REJECT_QUIETLY change nothing. Every ASK must be followed by exactly one [release].
      */
     @Synchronized
     fun reserve(candidate: String, declinedCandidate: String?, declinedAtWallMs: Long?, nowWallMs: Long, nowMs: Long): Decision {
         val decision = decide(candidate, declinedCandidate, declinedAtWallMs, nowWallMs, lastPromptAtMs, nowMs, showing)
-        if (decision == Decision.ASK) {
-            showing = true
-            lastPromptAtMs = nowMs
-        }
+        if (decision == Decision.ASK) showing = true
         return decision
     }
 
-    /** The prompt that [reserve] allowed has ended (any outcome). The cooldown keeps running from when it was shown. */
+    /**
+     * The reserved prompt is now on screen, at [nowMs] (the process clock): the cooldown starts HERE, not at [reserve] (as on the
+     * iPhone), so a prompt that could not be shown (no activity, an error) does not hold back the next start's question.
+     */
+    @Synchronized
+    fun shown(nowMs: Long) {
+        lastPromptAtMs = nowMs
+    }
+
+    /** The prompt that [reserve] allowed has ended (any outcome). The cooldown, if it was shown, keeps running from then. */
     @Synchronized
     fun release() {
         showing = false

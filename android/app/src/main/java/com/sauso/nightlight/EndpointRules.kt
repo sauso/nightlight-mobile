@@ -152,8 +152,33 @@ object EndpointRules {
     fun namesForKnown(stored: Map<String, String>, knownServers: List<String>): Map<String, String> =
         knownServers.mapNotNull { url -> stored[url]?.takeIf { it.isNotBlank() }?.let { url to it } }.toMap()
 
-    /** Why addEndpoint accepted or refused a request. Reported so a test (and a log line) can tell the refusals apart. */
-    enum class AddCheck { OK, NOT_A_TAILSCALE_ADDRESS, NOT_THIS_PAGE, UNREADABLE_SERVER, UNREACHABLE_ADDRESS, DIFFERENT_SERVER }
+    /**
+     * Why addEndpoint accepted or refused a request. Reported so a test (and a log line) can tell the refusals apart.
+     * NOT_ACCEPTED and NOT_CONFIRMED are the "ask once" prompt's (PromptGate): the person declined the address (now, or less than
+     * a week ago), or the question ended without an answer or could not be asked now.
+     */
+    enum class AddCheck {
+        OK, NOT_A_TAILSCALE_ADDRESS, NOT_THIS_PAGE, UNREADABLE_SERVER, UNREACHABLE_ADDRESS, DIFFERENT_SERVER, NOT_ACCEPTED, NOT_CONFIRMED
+    }
+
+    /**
+     * The sentence addEndpoint rejects with. BYTE-IDENTICAL to iOS's EndpointRules.refusal, and pinned word for word by
+     * EndpointRulesTest on Android and ios/Tests on iOS: the web app's About card reads the reason from these words
+     * (nativeBridge.js classifyAddRefusal: "Couldn't reach" -> unreachable, "different server" -> different, anything else ->
+     * refused, shown as "The app did not accept the address the server offered"), so a sentence reworded on one platform would
+     * show a different reason there. The two prompt sentences contain neither phrase, so both read as 'refused' (moved here from
+     * ServerConfigPlugin so a JVM test can pin them; the iOS strings were set first, 2026-11-09).
+     */
+    fun refusal(check: AddCheck): String = when (check) {
+        AddCheck.NOT_A_TAILSCALE_ADDRESS -> "Not a Tailscale address"
+        AddCheck.NOT_THIS_PAGE -> "Not available on this page"
+        AddCheck.UNREADABLE_SERVER -> "Couldn't read this server's identity"
+        AddCheck.UNREACHABLE_ADDRESS -> "Couldn't reach that Tailscale address"
+        AddCheck.DIFFERENT_SERVER -> "That address is a different server"
+        AddCheck.NOT_ACCEPTED -> "The secure address was not accepted on this phone"
+        AddCheck.NOT_CONFIRMED -> "The secure address was not confirmed on this phone"
+        AddCheck.OK -> ""
+    }
 
     /**
      * The checks that need no network: the address has the one accepted shape, and the page asking is the saved server or the

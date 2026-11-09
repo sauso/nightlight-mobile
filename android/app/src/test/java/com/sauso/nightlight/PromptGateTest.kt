@@ -99,13 +99,27 @@ class PromptGateTest {
     }
 
     @Test
-    fun `reserving takes the one slot and starts the cooldown, and release frees only the slot`() {
+    fun `reserving takes the one slot, and the cooldown starts only when a prompt is shown`() {
         val gate = PromptGate()
         assertEquals(ask, gate.reserve(candidate, null, null, wallNow, now))
-        assertEquals("a second offer while the first shows", busy, gate.reserve(another, null, null, wallNow, now + 1))
+        assertEquals("a second offer while the first is pending", busy, gate.reserve(another, null, null, wallNow, now + 1))
         gate.release()
-        assertEquals("released, but still inside the cooldown", busy, gate.reserve(another, null, null, wallNow, now + minute))
-        assertEquals("the cooldown is over", ask, gate.reserve(another, null, null, wallNow, now + 10 * minute))
+        // Never shown (no activity, an error): no cooldown, the next offer is asked about.
+        assertEquals("released without being shown", ask, gate.reserve(another, null, null, wallNow, now + 2))
+        gate.shown(now + 3)
+        gate.release()
+        assertEquals("shown and released, still inside the cooldown", busy, gate.reserve(another, null, null, wallNow, now + 3 + minute))
+        assertEquals("the cooldown counts from when it was shown", ask, gate.reserve(another, null, null, wallNow, now + 3 + 10 * minute))
+    }
+
+    @Test
+    fun `the refusal sentences follow the iPhone app's mapping`() {
+        assertEquals("a decline still in force", EndpointRules.AddCheck.NOT_ACCEPTED, PromptGate.refusalWhenNotAsked(quiet))
+        assertEquals("a busy gate declined nothing", EndpointRules.AddCheck.NOT_CONFIRMED, PromptGate.refusalWhenNotAsked(busy))
+        assertEquals(EndpointRules.AddCheck.OK, PromptGate.refusalWhenNotAsked(ask))
+        assertEquals("the explicit tap", EndpointRules.AddCheck.NOT_ACCEPTED, PromptGate.refusalAfter(PromptGate.Effect.REMEMBER_DECLINE_AND_REFUSE))
+        assertEquals("any other ending", EndpointRules.AddCheck.NOT_CONFIRMED, PromptGate.refusalAfter(PromptGate.Effect.REFUSE))
+        assertEquals(EndpointRules.AddCheck.OK, PromptGate.refusalAfter(PromptGate.Effect.SAVE))
     }
 
     @Test

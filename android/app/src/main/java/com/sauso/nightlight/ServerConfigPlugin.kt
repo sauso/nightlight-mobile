@@ -148,13 +148,6 @@ class ServerConfigPlugin : Plugin() {
             pendingPrompt?.finish(PromptGate.Outcome.CANCELLED)
         }
 
-        // The refusals of the prompt path, byte-identical to the iPhone app's (EndpointRules.refusal: .notAccepted and .notConfirmed),
-        // as every other refusal sentence is. Neither contains "Couldn't reach" or "different server", so the web app's
-        // classifyAddRefusal (nativeBridge.js) reads each as 'refused', which the About card shows as "The app did not accept the
-        // address the server offered" (true for both: nothing was saved). A gate that is BUSY (a question already open, or one shown
-        // within the last 10 minutes) uses NOT_CONFIRMED too, as on the iPhone: nothing was declined, it was just not asked now.
-        private const val DECLINED_BY_PERSON = "The secure address was not accepted on this phone"
-        private const val NOT_CONFIRMED = "The secure address was not confirmed on this phone"
 
         // The plan's wording (#20, decision 3): plain, and it says what to do next.
         private const val NOT_THE_FOUND_SERVER = "That address is not the server we found. Search again."
@@ -403,10 +396,12 @@ class ServerConfigPlugin : Plugin() {
             }
             val (declinedCandidate, declinedAtWallMs) = storedDecline(primary)
             val decision = promptGate.reserve(url, declinedCandidate, declinedAtWallMs, System.currentTimeMillis(), SystemClock.elapsedRealtime())
-            when (decision) {
-                PromptGate.Decision.BUSY -> call.reject(NOT_CONFIRMED)
-                PromptGate.Decision.REJECT_QUIETLY -> call.reject(DECLINED_BY_PERSON)
-                PromptGate.Decision.ASK -> askThenWrite(call, primary, url, candidate.id, reference?.name, page)
+            // Not asked: a decline still in force is NOT_ACCEPTED, a busy gate NOT_CONFIRMED (PromptGate.refusalWhenNotAsked, the
+            // same mapping and the same sentences as the iPhone app).
+            if (decision == PromptGate.Decision.ASK) {
+                askThenWrite(call, primary, url, candidate.id, reference?.name, page)
+            } else {
+                call.reject(refusal(PromptGate.refusalWhenNotAsked(decision)))
             }
         }.start()
     }
@@ -424,11 +419,14 @@ class ServerConfigPlugin : Plugin() {
     // The gate said ASK (and holds the one prompt slot): show the prompt and act on how it ends, exactly once (SecureAddressPrompt).
     // Only "Use it" saves; only "Don't use it" stores a decline; every other ending refuses and stores nothing (PromptGate.effectOf).
     private fun askThenWrite(call: PluginCall, primary: String, url: String, id: String, name: String?, page: String) {
-        val prompt = SecureAddressPrompt { outcome ->
+        // The cooldown starts when the prompt is actually SHOWN (as on the iPhone): one that could not be shown does not hold
+        // back the next start's question.
+        val prompt = SecureAddressPrompt(onShown = { promptGate.shown(SystemClock.elapsedRealtime()) }) { outcome ->
             // Cleared before the slot is released, so it can never clear a LATER prompt (none can be reserved before release).
             pendingPrompt = null
             promptGate.release()
-            when (PromptGate.effectOf(outcome)) {
+            val effect = PromptGate.effectOf(outcome)
+            when (effect) {
                 PromptGate.Effect.SAVE -> writeEndpoint(call, primary, url, id, name, page, accepted = true)
                 PromptGate.Effect.REMEMBER_DECLINE_AND_REFUSE -> sessionExecutor.execute {
                     // Replaces any earlier decline: one per saved server. Wall clock, so the 7 days survive a restart.
@@ -436,9 +434,9 @@ class ServerConfigPlugin : Plugin() {
                         .putString(EndpointRules.declinedKey(primary), url)
                         .putLong(EndpointRules.declinedAtKey(primary), System.currentTimeMillis())
                         .apply()
-                    call.reject(DECLINED_BY_PERSON)
+                    call.reject(refusal(PromptGate.refusalAfter(effect)))
                 }
-                PromptGate.Effect.REFUSE -> call.reject(NOT_CONFIRMED)
+                PromptGate.Effect.REFUSE -> call.reject(refusal(PromptGate.refusalAfter(effect)))
             }
         }
         try {

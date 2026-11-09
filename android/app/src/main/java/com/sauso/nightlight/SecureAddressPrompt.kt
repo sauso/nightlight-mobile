@@ -10,8 +10,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The native "Use this secure address?" prompt (Codex code review of PR #37; the owner chose "ask once in the app",
  * 2026-11-09). ServerConfigPlugin.addEndpoint shows it when EndpointRules.needsConfirmation and PromptGate say so.
  *
+ * It is NOT cancelable (as on the iPhone, whose buttons carry no cancel style): the back key and a tap outside do nothing, so
+ * neither can count as an explicit "Don't use it". [onShown] runs once it is on screen (the gate's cooldown starts then).
+ *
  * It ends EXACTLY ONCE (the addendum review: exactly-once completion), with whichever comes first: a tap on "Use it" or
- * "Don't use it", a dismissal (the back button, a tap outside, the system), the [PromptGate.ANSWER_TIMEOUT_MS] timeout,
+ * "Don't use it", a dismissal that is not a tap (the system closing it), the [PromptGate.ANSWER_TIMEOUT_MS] timeout,
  * [finish] from outside (ServerConfigPlugin.cancelPending, from MainActivity.onDestroy), no activity to show it in, or an
  * error while showing it. [onOutcome] is called once with that ending; PromptGate.effectOf says what it leads to (only the
  * explicit "Don't use it" tap stores a decline). Later endings are ignored: an AlertDialog button first calls its listener and
@@ -22,7 +25,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Glue: no JVM test reaches this; the phone checklist covers it (first learn, accept, decline, back button, timeout, a
  * rebuild while it shows).
  */
-internal class SecureAddressPrompt(private val onOutcome: (PromptGate.Outcome) -> Unit) {
+internal class SecureAddressPrompt(
+    private val onShown: () -> Unit,
+    private val onOutcome: (PromptGate.Outcome) -> Unit,
+) {
 
     companion object {
         const val TITLE = "Use this secure address?"
@@ -52,11 +58,13 @@ internal class SecureAddressPrompt(private val onOutcome: (PromptGate.Outcome) -
                     .setMessage(message)
                     .setPositiveButton(USE_IT) { _, _ -> finish(PromptGate.Outcome.USE_IT) }
                     .setNegativeButton(DONT_USE_IT) { _, _ -> finish(PromptGate.Outcome.DONT_USE_IT) }
+                    .setCancelable(false)
                     .setOnDismissListener { finish(PromptGate.Outcome.DISMISSED) }
                     .create()
                 dialog = d
                 d.show()
                 main.postDelayed(timeout, PromptGate.ANSWER_TIMEOUT_MS)
+                onShown()
             } catch (e: Exception) {
                 // A window that cannot take the dialog (BadTokenException), say: refused, nothing stored.
                 finish(PromptGate.Outcome.FAILED)

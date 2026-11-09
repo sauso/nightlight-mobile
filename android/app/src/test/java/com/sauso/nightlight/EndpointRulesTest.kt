@@ -163,6 +163,31 @@ class EndpointRulesTest {
         assertTrue(EndpointRules.TAILSCALE_GRACE_NO_VPN_MS < EndpointRules.TAILSCALE_GRACE_MS)
     }
 
+    // ---- refusal: the sentences addEndpoint rejects with, word for word ----
+
+    @Test
+    fun `every refusal sentence is pinned, byte-identical to the iPhone app's`() {
+        // The web app's About card reads these words (nativeBridge.js classifyAddRefusal), and ios/Tests pins the same sentences:
+        // a sentence reworded on one platform would show a different reason there.
+        assertEquals("Not a Tailscale address", EndpointRules.refusal(EndpointRules.AddCheck.NOT_A_TAILSCALE_ADDRESS))
+        assertEquals("Not available on this page", EndpointRules.refusal(EndpointRules.AddCheck.NOT_THIS_PAGE))
+        assertEquals("Couldn't read this server's identity", EndpointRules.refusal(EndpointRules.AddCheck.UNREADABLE_SERVER))
+        assertEquals("Couldn't reach that Tailscale address", EndpointRules.refusal(EndpointRules.AddCheck.UNREACHABLE_ADDRESS))
+        assertEquals("That address is a different server", EndpointRules.refusal(EndpointRules.AddCheck.DIFFERENT_SERVER))
+        assertEquals("The secure address was not accepted on this phone", EndpointRules.refusal(EndpointRules.AddCheck.NOT_ACCEPTED))
+        assertEquals("The secure address was not confirmed on this phone", EndpointRules.refusal(EndpointRules.AddCheck.NOT_CONFIRMED))
+        assertEquals("", EndpointRules.refusal(EndpointRules.AddCheck.OK))
+    }
+
+    @Test
+    fun `the prompt's refusals read as refused on the web, never as unreachable or another server`() {
+        for (check in listOf(EndpointRules.AddCheck.NOT_ACCEPTED, EndpointRules.AddCheck.NOT_CONFIRMED)) {
+            val sentence = EndpointRules.refusal(check)
+            assertFalse(sentence, Regex("couldn'?t reach", RegexOption.IGNORE_CASE).containsMatchIn(sentence))
+            assertFalse(sentence, Regex("different server", RegexOption.IGNORE_CASE).containsMatchIn(sentence))
+        }
+    }
+
     // ---- needsConfirmation: when a secure address must be confirmed by the person (Codex code review of PR #37) ----
 
     @Test
