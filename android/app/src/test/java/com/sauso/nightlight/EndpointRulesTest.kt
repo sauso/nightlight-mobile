@@ -253,29 +253,51 @@ class EndpointRulesTest {
 
     @Test
     fun `the tailscale address answers when it reports the id it was saved for`() {
-        assertTrue(EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { sameId }, reachable = reachableNeverAsked))
+        assertTrue(EndpointRules.addressAnswers(ts, ts, sameId, otherId, fetchId = { sameId }, reachable = reachableNeverAsked))
     }
 
     @Test
     fun `a wrong id, no id or no saved id is not an answer from the tailscale address`() {
-        assertFalse("another server's id", EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { otherId }, reachable = reachableNeverAsked))
-        assertFalse("no id read", EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { null }, reachable = reachableNeverAsked))
-        assertFalse("no saved id, the address reports one", EndpointRules.addressAnswers(ts, ts, null, fetchId = { sameId }, reachable = reachableNeverAsked))
+        assertFalse("another server's id", EndpointRules.addressAnswers(ts, ts, sameId, null, fetchId = { otherId }, reachable = reachableNeverAsked))
+        assertFalse("no id read", EndpointRules.addressAnswers(ts, ts, sameId, null, fetchId = { null }, reachable = reachableNeverAsked))
+        assertFalse("no saved id, the address reports one", EndpointRules.addressAnswers(ts, ts, null, null, fetchId = { sameId }, reachable = reachableNeverAsked))
         // The one a dropped "wantedId != null" would let through: null equals null.
-        assertFalse("no saved id and none read", EndpointRules.addressAnswers(ts, ts, null, fetchId = { null }, reachable = reachableNeverAsked))
+        assertFalse("no saved id and none read", EndpointRules.addressAnswers(ts, ts, null, null, fetchId = { null }, reachable = reachableNeverAsked))
     }
 
     @Test
     fun `the tailscale address is never judged by reachability`() {
         // Up, but another server: reachable would say yes, and the rule must not fall back to it.
-        assertFalse(EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { otherId }, reachable = { true }))
+        assertFalse(EndpointRules.addressAnswers(ts, ts, sameId, null, fetchId = { otherId }, reachable = { true }))
     }
 
     @Test
-    fun `the saved address answers when it is reachable, and no id is read for it`() {
-        assertTrue(EndpointRules.addressAnswers(home, ts, sameId, fetchId = idNeverRead, reachable = { it == home }))
-        assertFalse(EndpointRules.addressAnswers(home, ts, sameId, fetchId = idNeverRead, reachable = { false }))
-        assertTrue("no Tailscale address saved", EndpointRules.addressAnswers(home, null, null, fetchId = idNeverRead, reachable = { true }))
+    fun `the saved address without an expected id uses reachability and never fetches an id`() {
+        assertTrue(EndpointRules.addressAnswers(home, ts, sameId, null, fetchId = idNeverRead, reachable = { it == home }))
+        assertFalse(EndpointRules.addressAnswers(home, ts, sameId, null, fetchId = idNeverRead, reachable = { false }))
+        assertTrue("no Tailscale address saved", EndpointRules.addressAnswers(home, null, null, null, fetchId = idNeverRead, reachable = { true }))
+    }
+
+    @Test
+    fun `saved address with expected id answers only for that id`() {
+        assertTrue(EndpointRules.addressAnswers(home, ts, sameId, sameId, fetchId = { sameId }, reachable = reachableNeverAsked))
+        assertFalse(EndpointRules.addressAnswers(home, ts, sameId, sameId, fetchId = { otherId }, reachable = { true }))
+        assertFalse("reply without id", EndpointRules.addressAnswers(home, ts, sameId, sameId, fetchId = { null }, reachable = { true }))
+        assertFalse("no reply", EndpointRules.addressAnswers(home, null, null, sameId, fetchId = { null }, reachable = { true }))
+    }
+
+    @Test
+    fun `identity verdict rejects only a readable different id`() {
+        val verdict = EndpointRules::identityVerdict
+        assertEquals(EndpointRules.IdentityVerdict.SAME, verdict(sameId, sameId))
+        assertEquals(EndpointRules.IdentityVerdict.DIFFERENT, verdict(sameId, otherId))
+        assertEquals(EndpointRules.IdentityVerdict.UNKNOWN, verdict(sameId, null))
+        assertEquals(EndpointRules.IdentityVerdict.UNKNOWN, verdict(null, otherId))
+        assertEquals(EndpointRules.IdentityVerdict.UNKNOWN, verdict(null, null))
+        val storedId: String? = null
+        val pairId: String? = sameId
+        assertEquals("pair-only expected id refuses a different live id", EndpointRules.IdentityVerdict.DIFFERENT,
+            verdict(storedId ?: pairId, otherId))
     }
 
     // ---- Change server from the Tailscale address (owner, 2026-11-06) ----

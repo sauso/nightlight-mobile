@@ -60,16 +60,17 @@ class MainActivity : BridgeActivity() {
          * Both are probed together under one 3 s deadline (EndpointChooser), so a launch waits once, not twice.
          */
         fun chooseAddress(context: Context, saved: String, tailscale: String?): String? {
-            // The Tailscale address only counts if the server answering there still has the id it was saved for, so an address
-            // saved for one server can never open another (a saved address handed to a different machine, say). The rule is
-            // EndpointRules.addressAnswers, shared with the network watcher's second look so the two cannot drift.
+            // Both addresses use EndpointRules.addressAnswers, shared with the watcher's second look. A known saved id must
+            // match a cookie-free raw-socket reply before the saved address can open a page; the Tailscale rule stays intact.
             val wantedId = ServerConfigPlugin.getTailscaleId(context, saved)
+            val expectedId = ServerConfigPlugin.expectedId(context, saved)
             val probe = { url: String ->
                 EndpointRules.addressAnswers(
                     url,
                     tailscale,
                     wantedId,
-                    fetchId = { EndpointProbe.fetchHealth(it, 2500)?.id },
+                    expectedId,
+                    fetchId = { if (it == tailscale) EndpointProbe.fetchHealth(it, 2500)?.id else HealthProbe(totalDeadlineMs = 2500).fetchUrl(it)?.id },
                     reachable = { ServerConfigPlugin.isReachable(it, 2500) },
                 )
             }

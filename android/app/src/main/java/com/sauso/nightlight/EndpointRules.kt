@@ -114,18 +114,30 @@ object EndpointRules {
      * watcher's second look (NetworkRoamWatcher) both use, so "answers" cannot mean two things (Codex code review of Tailscale
      * first, 2026-11-09). For the saved server's Tailscale address ([tailscale]) an answer counts only with the id that address
      * was saved for: [wantedId] must exist and [fetchId] must report exactly it. A different id, no id, or no saved id all say
-     * no (fails closed), so an address saved for one server never opens another, and [reachable] is never asked about it. Any
-     * other address counts when [reachable] says so. The two network reads are injected (production: EndpointProbe.fetchHealth's
-     * id and ServerConfigPlugin.isReachable), so this stays pure and the JVM tests run it.
+     * no (fails closed), so an address saved for one server never opens another, and [reachable] is never asked about it. For
+     * any other address with [expectedId], only that same id counts; a missing reply or id cannot open an unverified page.
+     * Without an expected id, the old [reachable] rule still applies. Network reads are injected so this stays pure.
      */
     fun addressAnswers(
         url: String,
         tailscale: String?,
         wantedId: String?,
+        expectedId: String?,
         fetchId: (String) -> String?,
         reachable: (String) -> Boolean,
     ): Boolean =
-        if (url == tailscale) wantedId != null && fetchId(url) == wantedId else reachable(url)
+        if (url == tailscale) wantedId != null && fetchId(url) == wantedId
+        else if (expectedId != null) fetchId(url) == expectedId
+        else reachable(url)
+
+    /** Only a readable different id proves a saved address has changed hands; silence preserves existing save behaviour. */
+    enum class IdentityVerdict { SAME, DIFFERENT, UNKNOWN }
+
+    fun identityVerdict(expectedId: String?, liveId: String?): IdentityVerdict = when {
+        expectedId == null || liveId == null -> IdentityVerdict.UNKNOWN
+        expectedId == liveId -> IdentityVerdict.SAME
+        else -> IdentityVerdict.DIFFERENT
+    }
 
     /**
      * Whether `save` may take a REMEMBERED server whose own address did not answer, because the Tailscale address saved for it

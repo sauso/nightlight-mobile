@@ -237,12 +237,16 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
     // On the worker: the second look at the page on screen. True = it answers; false = it is DEAD (a completed probe that did
     // not succeed, or no answer within STILL_ANSWERING_MS for the whole look: RoamRules.boundedLook); null = the look could not
     // be taken (the saved id could not be read, or the look threw), which RoamRules.target treats as "works": a doubt never
-    // reloads a page. "Answers" is EndpointRules.addressAnswers, the same rule the launch's choice uses: the Tailscale page
-    // counts only with the id it was saved for, so with no saved id it cannot pass (fails closed: the page is then left only
-    // for an address that has just answered).
+    // reloads a page. "Answers" is EndpointRules.addressAnswers, the same rule the launch's choice uses: either address
+    // with a known id counts only when it reports that id (fails closed for a changed address).
     private fun stillAnswers(context: Context, saved: String, tailscale: String, current: String): Boolean? {
         val wantedId = try {
             ServerConfigPlugin.getTailscaleId(context, saved)
+        } catch (e: Exception) {
+            return null
+        }
+        val expectedId = try {
+            ServerConfigPlugin.expectedId(context, saved)
         } catch (e: Exception) {
             return null
         }
@@ -251,7 +255,8 @@ class NetworkRoamWatcher(private val activity: MainActivity) {
                 current,
                 tailscale,
                 wantedId,
-                fetchId = { EndpointProbe.fetchHealth(it, STILL_ANSWERING_MS)?.id },
+                expectedId,
+                fetchId = { if (it == tailscale) EndpointProbe.fetchHealth(it, STILL_ANSWERING_MS)?.id else HealthProbe(totalDeadlineMs = STILL_ANSWERING_MS.toLong()).fetchUrl(it)?.id },
                 reachable = { ServerConfigPlugin.isReachable(it, STILL_ANSWERING_MS) },
             )
         }

@@ -57,15 +57,23 @@ class MovedServerRulesTest {
         assertEquals(MovedServerRules.Step.Stop, MovedServerRules.decide(old, id, null, answered))
     }
 
-    @Test fun `stored id different from answered id stops and never learns a replacement`() {
-        assertEquals(MovedServerRules.Step.Stop, MovedServerRules.decide(old, otherId, null, answered))
+    @Test fun `stored id different from answered id searches and never learns a replacement`() {
+        assertEquals(MovedServerRules.Step.Search(otherId), MovedServerRules.decide(old, otherId, null, answered))
+    }
+
+    @Test fun `pair only with a different answer searches for the stored pair id`() {
+        assertEquals(MovedServerRules.Step.Search(otherId), MovedServerRules.decide(old, null, otherId, answered))
+    }
+
+    @Test fun `pair only with the same answer learns its id`() {
+        assertEquals(MovedServerRules.Step.Learn(id), MovedServerRules.decide(old, null, id, answered))
     }
 
     @Test fun `no answer with stored id searches for it`() {
         assertEquals(MovedServerRules.Step.Search(id), MovedServerRules.decide(old, id, null, noAnswer))
     }
 
-    @Test fun `no answer without stored id uses a verified pair id`() {
+    @Test fun `no answer without stored id uses the stored pair id`() {
         assertEquals(MovedServerRules.Step.Search(id), MovedServerRules.decide(old, null, id, noAnswer))
     }
 
