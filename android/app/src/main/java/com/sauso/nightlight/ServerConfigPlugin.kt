@@ -148,12 +148,13 @@ class ServerConfigPlugin : Plugin() {
             pendingPrompt?.finish(PromptGate.Outcome.CANCELLED)
         }
 
-        // The refusals of the prompt path. None contains "Couldn't reach" or "different server", so the web app's
+        // The refusals of the prompt path, byte-identical to the iPhone app's (EndpointRules.refusal: .notAccepted and .notConfirmed),
+        // as every other refusal sentence is. Neither contains "Couldn't reach" or "different server", so the web app's
         // classifyAddRefusal (nativeBridge.js) reads each as 'refused', which the About card shows as "The app did not accept the
-        // address the server offered" (true for all three: nothing was saved).
-        private const val DECLINED_BY_PERSON = "You chose not to use this secure address"
-        private const val NOT_CONFIRMED = "The secure address was not confirmed"
-        private const val PROMPT_BUSY = "The secure address was not asked about now: another question about one is open or was shown recently"
+        // address the server offered" (true for both: nothing was saved). A gate that is BUSY (a question already open, or one shown
+        // within the last 10 minutes) uses NOT_CONFIRMED too, as on the iPhone: nothing was declined, it was just not asked now.
+        private const val DECLINED_BY_PERSON = "The secure address was not accepted on this phone"
+        private const val NOT_CONFIRMED = "The secure address was not confirmed on this phone"
 
         // The plan's wording (#20, decision 3): plain, and it says what to do next.
         private const val NOT_THE_FOUND_SERVER = "That address is not the server we found. Search again."
@@ -349,14 +350,8 @@ class ServerConfigPlugin : Plugin() {
     private fun forgetTailscale(edit: SharedPreferences.Editor, primary: String): SharedPreferences.Editor =
         edit.remove(EndpointRules.key(primary)).remove(EndpointRules.idKey(primary))
 
-    private fun refusal(check: EndpointRules.AddCheck): String = when (check) {
-        EndpointRules.AddCheck.NOT_A_TAILSCALE_ADDRESS -> "Not a Tailscale address"
-        EndpointRules.AddCheck.NOT_THIS_PAGE -> "Not available on this page"
-        EndpointRules.AddCheck.UNREADABLE_SERVER -> "Couldn't read this server's identity"
-        EndpointRules.AddCheck.UNREACHABLE_ADDRESS -> "Couldn't reach that Tailscale address"
-        EndpointRules.AddCheck.DIFFERENT_SERVER -> "That address is a different server"
-        EndpointRules.AddCheck.OK -> ""
-    }
+    // The sentences are EndpointRules.refusal (pure, pinned by a JVM test, byte-identical to iOS).
+    private fun refusal(check: EndpointRules.AddCheck): String = EndpointRules.refusal(check)
 
     // addEndpoint({ url }): the server on screen has said "you can also reach me at <url>" (the web app read it from
     // GET /api/remote-access/tailscale/address while signed in). Saved only when ALL of these hold, each fails closed
@@ -409,7 +404,7 @@ class ServerConfigPlugin : Plugin() {
             val (declinedCandidate, declinedAtWallMs) = storedDecline(primary)
             val decision = promptGate.reserve(url, declinedCandidate, declinedAtWallMs, System.currentTimeMillis(), SystemClock.elapsedRealtime())
             when (decision) {
-                PromptGate.Decision.BUSY -> call.reject(PROMPT_BUSY)
+                PromptGate.Decision.BUSY -> call.reject(NOT_CONFIRMED)
                 PromptGate.Decision.REJECT_QUIETLY -> call.reject(DECLINED_BY_PERSON)
                 PromptGate.Decision.ASK -> askThenWrite(call, primary, url, candidate.id, reference?.name, page)
             }
