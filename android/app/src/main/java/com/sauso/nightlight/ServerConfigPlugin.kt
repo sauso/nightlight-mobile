@@ -80,6 +80,127 @@ class ServerConfigPlugin : Plugin() {
         fun getTailscaleId(context: Context, primary: String): String? =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(EndpointRules.idKey(primary), null)
 
+        private fun serverIdKey(url: String) = "server_id:$url"
+        private fun movedDeclinesKey(url: String) = "moved_declines:$url"
+
+        fun getServerId(context: Context, url: String): String? =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(serverIdKey(url), null)
+
+        // The compare and write stay together on the one executor. An answer from a different device at the old
+        // address must never replace the identity previously learned there.
+        fun setServerIdIfAbsent(context: Context, url: String, id: String) {
+            sessionExecutor.execute {
+                val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                if (getSavedUrl(context) == url && p.getString(serverIdKey(url), null) == null)
+                    p.edit().putString(serverIdKey(url), id).apply()
+            }
+        }
+
+        fun getStoredName(context: Context, url: String): String? = try {
+            JSONObject(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_NAMES, "{}"))
+                .optString(url).takeIf { it.isNotBlank() }
+        } catch (e: Exception) { null }
+
+        fun getMovedDeclines(context: Context, oldUrl: String): Map<String, Long> =
+            MovedServerRules.Declines.decode(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(movedDeclinesKey(oldUrl), null))
+
+        fun recordMovedDecline(context: Context, oldUrl: String, candidateUrl: String) {
+            sessionExecutor.execute {
+                if (getSavedUrl(context) != oldUrl) return@execute
+                val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                val old = MovedServerRules.Declines.decode(p.getString(movedDeclinesKey(oldUrl), null))
+                val updated = MovedServerRules.Declines.record(old, candidateUrl, System.currentTimeMillis())
+                p.edit().putString(movedDeclinesKey(oldUrl), MovedServerRules.Declines.encode(updated)).apply()
+            }
+        }
+
+        private fun removeAddressData(p: SharedPreferences, url: String) {
+            val list = knownServersOf(p)
+            list.remove(url)
+            val names = try { JSONObject(p.getString(KEY_NAMES, "{}")) } catch (e: Exception) { JSONObject() }
+            names.remove(url)
+            p.edit().putString(KEY_KNOWN, JSONArray(list).toString()).putString(KEY_NAMES, names.toString())
+                .remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url))
+                .remove(EndpointRules.declinedKey(url)).remove(EndpointRules.declinedAtKey(url))
+                .remove(serverIdKey(url)).remove(movedDeclinesKey(url)).apply()
+        }
+
+        private fun removeAddress(context: Context, url: String) {
+            removeAddressData(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE), url)
+            SessionVault(PrefsKeyValueStore(context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)),
+                KeystoreSessionCipher()).clear(url)
+        }
+
+        private fun hasMoveDestinationLeftovers(context: Context, p: SharedPreferences, url: String): Boolean {
+            val names = try { JSONObject(p.getString(KEY_NAMES, "{}")) } catch (e: Exception) { JSONObject() }
+            val session = context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)
+            return names.has(url) || session.contains("s:$url") ||
+                listOf(EndpointRules.key(url), EndpointRules.idKey(url), EndpointRules.declinedKey(url),
+                    EndpointRules.declinedAtKey(url), serverIdKey(url), movedDeclinesKey(url)).any { p.contains(it) }
+        }
+
+        private fun clearMoveDestination(context: Context, p: SharedPreferences, url: String): Boolean {
+            return try {
+                val session = context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)
+                // A reused URL must not expose the previous server's encrypted login. Abort before the saved-URL flip
+                // if that slot exists but cannot be removed; SessionVault.clear returns false for an absent slot too.
+                if (session.contains("s:$url")) {
+                    val vault = SessionVault(PrefsKeyValueStore(session), KeystoreSessionCipher())
+                    if (!vault.clear(url) || session.contains("s:$url")) return false
+                }
+                removeAddressData(p, url)
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        // Called only after the new address answered with the wanted id. One executor task checks the current
+        // choice, writes every new-address field, flips the choice, and finally removes the old address's data.
+        fun moveServer(context: Context, oldUrl: String, newUrl: String, id: String, name: String?,
+            verifiedPairUrl: String?, mayCommit: () -> Boolean, onMoved: (Boolean) -> Unit) {
+            sessionExecutor.execute {
+                val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                val stored = getServerId(context, oldUrl)
+                val pairUrl = getTailscaleUrl(context, oldUrl)
+                val pairId = getTailscaleId(context, oldUrl)
+                val guardId = stored ?: if (pairUrl == verifiedPairUrl) pairId else null
+                if (!mayCommit() || !MovedServerRules.MoveGuard.stillValid(getSavedUrl(context), guardId, oldUrl, id)) {
+                    onMoved(false)
+                    return@execute
+                }
+                val plan = MovedServerRules.movePlan(oldUrl, newUrl, id, name, knownServersOf(p),
+                    hasMoveDestinationLeftovers(context, p, newUrl), pairUrl, pairId)
+                for (step in plan) when (step) {
+                    is MovedServerRules.MoveStep.ClearNew -> {
+                        if (!clearMoveDestination(context, p, step.url)) {
+                            onMoved(false)
+                            return@execute
+                        }
+                    }
+                    is MovedServerRules.MoveStep.AddKnown -> {
+                        val list = knownServersOf(p)
+                        list.remove(step.url)
+                        list.add(0, step.url)
+                        p.edit().putString(KEY_KNOWN, JSONArray(list).toString()).apply()
+                    }
+                    is MovedServerRules.MoveStep.SetName -> {
+                        val names = try { JSONObject(p.getString(KEY_NAMES, "{}")) } catch (e: Exception) { JSONObject() }
+                        names.put(step.url, step.name)
+                        p.edit().putString(KEY_NAMES, names.toString()).apply()
+                    }
+                    is MovedServerRules.MoveStep.SetServerId -> p.edit().putString(serverIdKey(step.url), step.id).apply()
+                    is MovedServerRules.MoveStep.CarryPair -> p.edit()
+                        .putString(EndpointRules.key(step.url), step.pairUrl)
+                        .putString(EndpointRules.idKey(step.url), step.pairId).apply()
+                    is MovedServerRules.MoveStep.SetSavedUrl -> p.edit().putString(KEY_URL, step.url).apply()
+                    is MovedServerRules.MoveStep.RemoveOld -> removeAddress(context, step.url)
+                }
+                onMoved(true)
+            }
+        }
+
         private fun knownServersOf(prefs: SharedPreferences): MutableList<String> {
             val list = mutableListOf<String>()
             try {
@@ -331,15 +452,7 @@ class ServerConfigPlugin : Plugin() {
             // The saved login for that address goes too (it was only ever meaningful for that server). The list is read INSIDE the
             // executor, so a save() queued just before this one is not lost (Opus review).
             sessionExecutor.execute {
-                val list = knownServers()
-                list.remove(url)
-                val names = storedNames()
-                names.remove(url)
-                // The declined secure address goes too (the "ask once" memory belongs to that server).
-                prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url))
-                    .remove(EndpointRules.declinedKey(url)).remove(EndpointRules.declinedAtKey(url))
-                    .putString(KEY_NAMES, namesJson(names)).apply()
-                sessionVault.clear(url)
+                removeAddress(context, url)
                 call.resolve()
             }
             return
@@ -760,6 +873,8 @@ class ServerConfigPlugin : Plugin() {
                     edit.apply()
                     rememberServer(url)
                     rememberName(url, result.health?.name)
+                    // A found card uses the strict no-redirect probe and proves this exact address's id.
+                    if (getServerId(context, url) == null) prefs().edit().putString(serverIdKey(url), expectId).apply()
                     call.resolve(JSObject().put("url", url))
                 }
                 HealthProbe.Outcome.CONNECT_FAILED, HealthProbe.Outcome.TIMED_OUT ->
@@ -799,7 +914,10 @@ class ServerConfigPlugin : Plugin() {
     @PluginMethod
     fun restart(call: PluginCall) {
         call.resolve()
-        activity?.runOnUiThread { activity.recreate() }
+        activity?.runOnUiThread {
+            AudioService.stopForServerChange(activity)
+            activity.recreate()
+        }
     }
 
     // "Look for my Nightlight" (#20). Starts a search and resolves { started, onWifi } at once; found servers

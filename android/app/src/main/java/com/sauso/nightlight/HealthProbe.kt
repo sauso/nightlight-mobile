@@ -10,8 +10,8 @@ import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 
 /**
- * The one network request discovery makes on its own: `GET http://<ip>:<port>/api/health` to an address a device on
- * the LAN announced, to check that a Nightlight with the announced id really answers there (#20, design 7.5).
+ * The raw-socket health request for discovery and saved-address move checks: `GET
+ * http://<ip>:<port>/api/health` to a private LAN address, to read a Nightlight id without cookies or redirects.
  *
  * java.net only, no Android imports, so the JVM unit tests run it against a real local socket server
  * (HealthProbeTest): a rule like "redirects are not followed" is only proven by a test that makes a request.
@@ -101,8 +101,16 @@ class HealthProbe(
         return check(target.first, target.second, expectedId)
     }
 
+    /** Read a strict health reply when the saved address has no expected id yet; only a UUID-shaped id is usable. */
+    fun fetchUrl(url: String?): DiscoveryRules.Health? {
+        val target = DiscoveryRules.parseFoundUrl(url) ?: return null
+        return checkInternal(target.first, target.second, null).health
+    }
+
     /** Probe and say why it ended. Never throws. */
-    fun check(host: String, port: Int, expectedId: String): Result {
+    fun check(host: String, port: Int, expectedId: String): Result = checkInternal(host, port, expectedId)
+
+    private fun checkInternal(host: String, port: Int, expectedId: String?): Result {
         if (!addressPolicy(host)) return Result(Outcome.REFUSED_ADDRESS, null)
         if (port !in 1..65535) return Result(Outcome.BAD_PORT, null)
         val octets = DiscoveryRules.parseIpv4(host) ?: return Result(Outcome.REFUSED_ADDRESS, null)
@@ -153,7 +161,7 @@ class HealthProbe(
 
     private class Head(val status: Int, val contentLength: Long?, val chunked: Boolean)
 
-    private fun readReply(socket: Socket, deadline: Long, expectedId: String): Result {
+    private fun readReply(socket: Socket, deadline: Long, expectedId: String?): Result {
         val input = socket.getInputStream()
         val received = ByteArrayOutputStream()
         val chunk = ByteArray(READ_CHUNK)
@@ -201,7 +209,8 @@ class HealthProbe(
         if (end > all.size) return Result(Outcome.BAD_RESPONSE, null) // the connection closed before the body ended
         val body = String(all, bodyStart, end - bodyStart, StandardCharsets.UTF_8)
         val health = DiscoveryRules.parseHealth(body) ?: return Result(Outcome.NOT_NIGHTLIGHT, null)
-        if (!DiscoveryRules.matches(health, expectedId)) return Result(Outcome.ID_MISMATCH, null)
+        if (!DiscoveryRules.isPlausibleId(health.id) ||
+            (expectedId != null && !DiscoveryRules.matches(health, expectedId))) return Result(Outcome.ID_MISMATCH, null)
         return Result(Outcome.VERIFIED, health)
     }
 

@@ -1,6 +1,7 @@
 package com.sauso.nightlight
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -110,6 +111,22 @@ class PromptGateTest {
         gate.release()
         assertEquals("shown and released, still inside the cooldown", busy, gate.reserve(another, null, null, wallNow, now + 3 + minute))
         assertEquals("the cooldown counts from when it was shown", ask, gate.reserve(another, null, null, wallNow, now + 3 + 10 * minute))
+        gate.release()
+    }
+
+    @Test
+    fun `different prompt gates share the screen slot but keep separate cooldowns`() {
+        val secure = PromptGate()
+        val moved = PromptGate()
+        assertEquals(ask, secure.reserve(candidate, null, null, wallNow, now))
+        assertTrue(PromptGate.isAnyShowing())
+        assertEquals(busy, moved.reserve(another, null, null, wallNow, now))
+        secure.shown(now)
+        secure.release()
+        assertFalse(PromptGate.isAnyShowing())
+        assertEquals(ask, moved.reserve(another, null, null, wallNow, now + 1))
+        moved.release()
+        assertEquals(busy, secure.reserve(candidate, null, null, wallNow, now + 1))
     }
 
     @Test
@@ -127,6 +144,7 @@ class PromptGateTest {
         val gate = PromptGate()
         assertEquals(quiet, gate.reserve(candidate, candidate, wallNow - minute, wallNow, now))
         assertEquals("asked straight after the quiet refusal", ask, gate.reserve(another, candidate, wallNow - minute, wallNow, now + 1))
+        gate.release()
     }
 
     @Test

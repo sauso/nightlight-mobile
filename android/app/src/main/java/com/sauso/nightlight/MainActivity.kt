@@ -27,6 +27,9 @@ class MainActivity : BridgeActivity() {
     // Re-chooses the address when the network changes (NetworkRoamWatcher). Made in onCreate, started in onStart, stopped in
     // onStop: it only runs while the activity is started.
     private var roamWatcher: NetworkRoamWatcher? = null
+    private var movedServerCheck: MovedServerCheck? = null
+    @Volatile var movedPromptResumed = false
+        private set
 
     companion object {
         // Every recreate() this app makes for its own reasons: a main-frame load error (below, which falls back to the setup
@@ -156,6 +159,7 @@ class MainActivity : BridgeActivity() {
         }
 
         roamWatcher = NetworkRoamWatcher(this)
+        movedServerCheck = MovedServerCheck(this)
     }
 
     // The network watcher runs only while the activity is started: it needs the page on screen, and a check while the app is
@@ -165,12 +169,24 @@ class MainActivity : BridgeActivity() {
     override fun onStart() {
         super.onStart()
         if (ServerConfigPlugin.getSavedUrl(this) != null) roamWatcher?.start()
+        movedServerCheck?.start()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        movedPromptResumed = true
+    }
+
+    override fun onPause() {
+        movedPromptResumed = false
+        super.onPause()
     }
 
     // Stopped BEFORE the activity is: anything still queued or running is dead on arrival from here on. onStop also runs before
     // every recreate(), so a replaced activity's watcher can never recreate its successor.
     override fun onStop() {
         roamWatcher?.stop()
+        movedServerCheck?.stop()
         super.onStop()
     }
 
@@ -180,6 +196,7 @@ class MainActivity : BridgeActivity() {
     // 2026-11-09). The page the next activity loads asks again at its own start.
     override fun onDestroy() {
         roamWatcher?.stop()
+        movedServerCheck?.stop()
         ServerConfigPlugin.cancelPending()
         super.onDestroy()
     }
