@@ -63,6 +63,18 @@ enum DiscoveryRules {
         return "http://\(host):\(port)"
     }
 
+    /// NWBrowser may omit the final dot, while NetService expects a fully qualified Bonjour type.
+    /// Keep the browser's original coordinates for state keys; normalize only at the resolve boundary.
+    static func netServiceType(_ type: String) -> String {
+        return type.hasSuffix(".") ? type : type + "."
+    }
+
+    /// NetService expects a dotted domain; an empty browser domain means the local Bonjour domain.
+    static func netServiceDomain(_ domain: String) -> String {
+        if domain.isEmpty { return "local." }
+        return domain.hasSuffix(".") ? domain : domain + "."
+    }
+
     /// Accept only the canonical URL that `serverUrl` makes: strict IPv4, port 1...65535 without leading zero,
     /// and no path, credentials, query or fragment. Whether the address may be contacted is the probe's policy.
     static func parseFoundUrl(_ url: String?) -> (host: String, port: Int)? {

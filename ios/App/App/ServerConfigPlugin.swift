@@ -27,7 +27,8 @@ import Network
 ///   Capacitor.Plugins.ServerConfig.getSession()   -> { token }, or { token: null } for EVERY refusal
 ///   Capacitor.Plugins.ServerConfig.clearSession({ token? })  -> { cleared }
 ///   Capacitor.Plugins.ServerConfig.startDiscovery() / stopDiscovery() -> look on the local Wi-Fi
-///   events serverFound { id, name, url, fingerprint }, serverLost { id }, discoveryFailed { message }
+///   events serverFound { id, name, url, fingerprint }, serverLost { id }, discoveryFailed { message },
+///          discoveryStatus { text } (counts and numeric errors only)
 ///
 /// The shapes are exactly Android's: the web app turns its Tailscale features on by whether `addEndpoint` and
 /// `list().names` exist (nativeBridge.js), so the About card, the "Away from home" notice and the sync work here as
@@ -275,6 +276,9 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         case .failed(let message):
             notifyListeners("discoveryFailed", data: ["message": message])
             stopSearch()
+        case .status(let text):
+            // Use the same committed bundled-page gate as cards; diagnostics belong only on setup.
+            notifyListeners("discoveryStatus", data: ["text": text])
         }
     }
 

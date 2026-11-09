@@ -32,6 +32,8 @@ address outside the local network is unaffected.
 Search finds private IPv4 addresses only. It finds nothing on IPv6-only networks, or when the Wi-Fi blocks multicast
 or isolates devices from one another. The iOS search, its permission prompt and denial message, and discovery across
 different home networks still need a test on a phone; the Simulator build alone cannot confirm them.
+When nothing is found, the screen shows a one-line technical summary you can share when asking for help: counts and
+error codes only, with no address or name.
 
 ## Two addresses for one server (Android)
 

@@ -66,6 +66,14 @@ func runDiscoveryRulesTests() {
         checkEqual(DiscoveryRules.serverUrl("192.168.1.50", 4000), "http://192.168.1.50:4000")
     }
 
+    test("NetService coordinates end in one dot") {
+        checkEqual(DiscoveryRules.netServiceType("_nightlight._tcp"), "_nightlight._tcp.")
+        checkEqual(DiscoveryRules.netServiceType("_nightlight._tcp."), "_nightlight._tcp.")
+        checkEqual(DiscoveryRules.netServiceDomain("local"), "local.")
+        checkEqual(DiscoveryRules.netServiceDomain("local."), "local.")
+        checkEqual(DiscoveryRules.netServiceDomain(""), "local.")
+    }
+
     // Kotlin currently has no parseFoundUrl unit test; these cover the pure parser being added for save-time use.
     test("parseFoundUrl accepts only a canonical IPv4 URL with an explicit port") {
         let found = DiscoveryRules.parseFoundUrl("http://192.168.1.50:4000")
