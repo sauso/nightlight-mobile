@@ -252,6 +252,31 @@ class EndpointRulesTest {
     private val idNeverRead: (String) -> String? = { throw AssertionError("an id was read for $it") }
 
     @Test
+    fun `only exact private IPv4 URLs have a saved id check`() {
+        assertTrue(EndpointRules.idCheckedAddress("http://192.168.1.50:4000"))
+        for (url in listOf(null, "http://server.example.test:4000", "https://192.168.1.50:4000",
+            "http://192.168.1.50", "http://8.8.8.8:4000", "http://user@192.168.1.50:4000",
+            "http://192.168.1.50:4000/path")) {
+            assertFalse("id checked $url", EndpointRules.idCheckedAddress(url))
+        }
+    }
+
+    @Test
+    fun `saved id accessor scopes both stored and pair ids to private IPv4 URLs`() {
+        assertEquals(sameId, EndpointRules.expectedIdForAddress(home, sameId, otherId))
+        assertEquals(otherId, EndpointRules.expectedIdForAddress(home, null, otherId))
+        assertEquals(null, EndpointRules.expectedIdForAddress("http://server.example.test:4000", sameId, otherId))
+        assertEquals(null, EndpointRules.expectedIdForAddress("https://192.168.1.50:4000", null, otherId))
+    }
+
+    @Test
+    fun `forget clears only the active saved address`() {
+        assertTrue(EndpointRules.forgetClearsActive(home, home))
+        assertFalse(EndpointRules.forgetClearsActive(home, "http://192.168.1.51:4000"))
+        assertFalse(EndpointRules.forgetClearsActive(null, home))
+    }
+
+    @Test
     fun `the tailscale address answers when it reports the id it was saved for`() {
         assertTrue(EndpointRules.addressAnswers(ts, ts, sameId, otherId, fetchId = { sameId }, reachable = reachableNeverAsked))
     }
@@ -276,6 +301,15 @@ class EndpointRulesTest {
         assertTrue(EndpointRules.addressAnswers(home, ts, sameId, null, fetchId = idNeverRead, reachable = { it == home }))
         assertFalse(EndpointRules.addressAnswers(home, ts, sameId, null, fetchId = idNeverRead, reachable = { false }))
         assertTrue("no Tailscale address saved", EndpointRules.addressAnswers(home, null, null, null, fetchId = idNeverRead, reachable = { true }))
+    }
+
+    @Test
+    fun `non matching saved URL uses legacy reachability even with a pair id`() {
+        val hostname = "http://server.example.test:4000"
+        assertTrue(EndpointRules.addressAnswers(hostname, ts, sameId, sameId,
+            fetchId = idNeverRead, reachable = { it == hostname }))
+        assertFalse(EndpointRules.addressAnswers(hostname, ts, sameId, sameId,
+            fetchId = idNeverRead, reachable = { false }))
     }
 
     @Test

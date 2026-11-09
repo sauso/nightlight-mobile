@@ -37,8 +37,7 @@ object MovedServerRules {
      * learns the answer as a replacement, even when the pair is the only identity available.
      */
     fun decide(savedUrl: String?, storedId: String?, pairId: String?, probe: Probe): Step {
-        val saved = DiscoveryRules.parseFoundUrl(savedUrl) ?: return Step.Skip
-        if (!DiscoveryRules.isPrivateIpv4(saved.first)) return Step.Skip
+        if (!EndpointRules.idCheckedAddress(savedUrl)) return Step.Skip
         return when (probe) {
             is Probe.Answered -> {
                 val id = probe.id ?: return Step.Stop

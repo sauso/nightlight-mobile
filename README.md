@@ -37,14 +37,15 @@ error codes only, with no address or name.
 
 ## If your server's address changes (Android)
 
-At launch, when the saved address has a known server id, the app opens it only if a strict health check reports that
-same id. If another server answers there, or the address no longer answers, the app shows the bundled setup screen
-and searches your Wi-Fi for the real server. When it finds that id at a new private IPv4 address, a native
+At launch, when a saved private IPv4 `http://ip:port` address has a known server id, the app opens it only if a strict
+health check reports that same id. If another server answers there, or the address no longer answers, the app shows
+the bundled setup screen and searches your Wi-Fi for the real server. When it finds that id at a new private IPv4 address, a native
 prompt shows the old and new addresses, the offered name and an eight-character code. Check the new address on your
 server or router before tapping **Use new address**: the name, id and code are public identifiers, not proof. **Not
 now** leaves the saved address alone. A server saved before this release learns its id the first time its saved
-address answers; if it moved before its id was learned and had no Tailscale pair, use **Look for my Nightlight**.
-A save onto a remembered address now answered by a different server is refused.
+private IPv4 address answers; if it moved before its id was learned and had no Tailscale pair, use **Look for my
+Nightlight**.
+A save onto a remembered private IPv4 address now answered by a different server is refused.
 
 This is trust on first use: an address with no stored id and no Tailscale pair is unprotected until its id is learned;
 if another device holds the address at that first learn, its id would be learned. The id is public and is not
@@ -57,6 +58,8 @@ multicast or isolates devices. Android 7–13 resolves one address per host at a
 so discovery can miss an otherwise reachable server. A server behind a Docker bridge may not be announced. The first
 verified card for an id wins, so compare the address before accepting. You sign in once at the new origin. The move
 flow still needs confirmation on a phone.
+A later main-frame navigation or reload of the saved address while the app stays open is not re-verified; the error
+page's **Try again** and Android's load-error recovery rebuild the activity and re-check it.
 
 ## If your server's address changes (iOS)
 

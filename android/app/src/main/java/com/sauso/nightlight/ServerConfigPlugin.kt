@@ -86,9 +86,10 @@ class ServerConfigPlugin : Plugin() {
         fun getServerId(context: Context, url: String): String? =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(serverIdKey(url), null)
 
-        // A pair's stored id still identifies this saved address before the first direct id learn.
+        // A pair's stored id still identifies a private IPv4 saved address before the first direct id learn. Other URL
+        // forms cannot be read by HealthProbe and must keep their legacy launch and save behaviour.
         fun expectedId(context: Context, savedUrl: String): String? =
-            getServerId(context, savedUrl) ?: getTailscaleId(context, savedUrl)
+            EndpointRules.expectedIdForAddress(savedUrl, getServerId(context, savedUrl), getTailscaleId(context, savedUrl))
 
         // The compare and write stay together on the one executor. An answer from a different device at the old
         // address must never replace the identity previously learned there.
@@ -124,10 +125,14 @@ class ServerConfigPlugin : Plugin() {
             list.remove(url)
             val names = try { JSONObject(p.getString(KEY_NAMES, "{}")) } catch (e: Exception) { JSONObject() }
             names.remove(url)
-            p.edit().putString(KEY_KNOWN, JSONArray(list).toString()).putString(KEY_NAMES, names.toString())
+            val edit = p.edit().putString(KEY_KNOWN, JSONArray(list).toString()).putString(KEY_NAMES, names.toString())
                 .remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url))
                 .remove(EndpointRules.declinedKey(url)).remove(EndpointRules.declinedAtKey(url))
-                .remove(serverIdKey(url)).remove(movedDeclinesKey(url)).apply()
+                .remove(serverIdKey(url)).remove(movedDeclinesKey(url))
+            // Forget and the saved choice belong in one preferences edit, so a later launch cannot see an active URL
+            // whose remembered id has already gone. Move cleanup sees the new active URL and leaves it alone.
+            if (EndpointRules.forgetClearsActive(p.getString(KEY_URL, null), url)) edit.remove(KEY_URL)
+            edit.apply()
         }
 
         private fun removeAddress(context: Context, url: String) {
@@ -441,8 +446,8 @@ class ServerConfigPlugin : Plugin() {
         call.resolve(ret)
     }
 
-    // Drop a server from the remembered list (does not touch the active choice). Its Tailscale address goes with it:
-    // it was only ever meaningful for that server.
+    // Drop a server from the remembered list and clear the active choice when it is that server. Its Tailscale address
+    // goes with it: it was only ever meaningful for that server.
     // ONLY from the bundled setup page (callerIsBundledPage, as startDiscovery and stopDiscovery): its ✕ is the one caller. Codex
     // code review of the PR #37 prompt delta, 2026-11-09: forget clears the "ask once" decline, so a hostile page at the plain-http
     // saved address could otherwise forget the active server and offer the same address again at once, defeating the 7-day quiet
@@ -763,8 +768,9 @@ class ServerConfigPlugin : Plugin() {
     // Set-Cookie the answer carried through Capacitor's process-wide cookie handler. HealthProbe follows no redirect
     // (the 200 must come from that address itself), sends and stores no cookies, uses no proxy, and accepts only the
     // exact `http://<private IPv4>:<port>` form discovery produces. Without expectId (a typed address, a saved-server
-    // tap) the old reachability path remains, but a URL with a stored id or pair id refuses a different strict id
-    // before saving. Present but not a string is refused, not ignored, so the found-server check cannot silently skip.
+    // tap) the old reachability path remains, but a private IPv4 URL with a stored id or pair id refuses a different
+    // strict id before saving. Other URL forms keep the old save flow. Present but not a string is refused, not ignored,
+    // so the found-server check cannot silently skip.
     @PluginMethod
     fun save(call: PluginCall) {
         val raw = call.getString("url")?.trim().orEmpty()
