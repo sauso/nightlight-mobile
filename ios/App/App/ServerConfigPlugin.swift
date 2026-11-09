@@ -48,6 +48,8 @@ enum ServerConfigStore {
     // the setup page can list "Name" with the address under it (owner, 2026-11-06). The same key and shape as Android's
     // KEY_NAMES. Only for remembered servers (EndpointRules.mayRememberName).
     private static let keyNames = "server_names"
+    private static let keyMovedDeclines = "moved_declines:"
+    private static let keyServerId = "server_id:"
 
     // ONE first-in-first-out queue for every write that reads, changes and writes back (the saved address, the known list,
     // the names, the Tailscale pair), the twin of Android's session executor: two saves finishing together cannot lose each
@@ -90,8 +92,8 @@ enum ServerConfigStore {
         knownServers = list
     }
 
-    /// Drop a server from the remembered list. Its name and its Tailscale address (with the id it was saved for) go with it,
-    /// as on Android: they were only ever meaningful for that server.
+    /// Drop every per-address item, including the sign-in slot. Used on the writes queue by both the bundled-page forget
+    /// and the native move; the latter cannot call the page-gated plugin method.
     static func forget(_ url: String) {
         var list = knownServers
         list.removeAll { $0 == url }
@@ -101,6 +103,56 @@ enum ServerConfigStore {
         writeNames(names)
         forgetTailscale(for: url)
         clearDeclinedTailscale(for: url)
+        clearServerId(for: url)
+        defaults.removeObject(forKey: keyMovedDeclines + url)
+        _ = KeychainSessionStore.vault.clear(url)
+    }
+
+    /// A move may land on a URL that belonged to another server. Check raw keys so even a stale or invalid pair/decline
+    /// cannot survive the saved-URL flip; a matching stored id alone is safe to leave in place.
+    static func hasMoveDestinationLeftovers(_ url: String, wantedId: String) -> Bool {
+        if knownServers.contains(url) || storedNames[url] != nil ||
+            defaults.object(forKey: EndpointRules.key(url)) != nil ||
+            defaults.object(forKey: EndpointRules.idKey(url)) != nil ||
+            defaults.object(forKey: EndpointRules.declinedKey(url)) != nil ||
+            defaults.object(forKey: EndpointRules.declinedAtKey(url)) != nil ||
+            defaults.object(forKey: keyMovedDeclines + url) != nil ||
+            serverId(for: url).map({ $0 != wantedId }) == true { return true }
+        // An unavailable Keychain read must still cause a clear attempt before the move can commit.
+        return KeychainSessionStore.vault.load(url) != .nothing
+    }
+
+    /// Clear the destination before writing it. If its vault slot cannot be removed, keep the saved URL at the old
+    /// address so launch cannot reuse the other server's sign-in.
+    static func clearMoveDestination(_ url: String) -> Bool {
+        guard KeychainSessionStore.vault.clear(url) != .unavailable else { return false }
+        forget(url)
+        return true
+    }
+
+    /// The id belongs to the exact address that answered a strict health probe. A later occupant must not replace it.
+    /// Call setServerId only on writes, after that probe; reads may use UserDefaults from a worker thread.
+    static func serverId(for url: String) -> String? {
+        return defaults.string(forKey: keyServerId + url)
+    }
+
+    static func setServerId(_ id: String, for url: String) {
+        guard EndpointProbe.isPlausibleId(id) else { return }
+        if let existing = serverId(for: url), existing != id { return }
+        defaults.set(id, forKey: keyServerId + url)
+    }
+
+    static func clearServerId(for url: String) {
+        defaults.removeObject(forKey: keyServerId + url)
+    }
+
+    static func movedDeclines(for old: String) -> MovedServerRules.Declines.Map {
+        guard let text = defaults.string(forKey: keyMovedDeclines + old) else { return [:] }
+        return MovedServerRules.Declines.decode(text)
+    }
+
+    static func setMovedDeclines(_ map: MovedServerRules.Declines.Map, for old: String) {
+        defaults.set(MovedServerRules.Declines.encode(map), forKey: keyMovedDeclines + old)
     }
 
     /// The secure address the person declined for `primary` (an explicit "Don't use it"), with when, or nil (none, or an
@@ -565,7 +617,6 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         ServerConfigStore.writes.async {
             ServerConfigStore.forget(url)
-            _ = KeychainSessionStore.vault.clear(url)
             call.resolve()
         }
     }
@@ -963,7 +1014,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         writeSaved(url, liveId: liveId, name: name, call: call)
     }
 
-    private static func writeSaved(_ url: String, liveId: String?, name: String?, call: CAPPluginCall) {
+    private static func writeSaved(_ url: String, liveId: String?, name: String?, strictId: String? = nil, call: CAPPluginCall) {
         ServerConfigStore.writes.async {
             ServerConfigStore.savedURL = url
             // The iOS twin of Android's dropTailscaleIfAnotherServer: the stale pair goes, and with it the sign-in saved for this
@@ -974,6 +1025,8 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             ServerConfigStore.remember(url)
             ServerConfigStore.rememberName(url, name)
+            // The typed path's loose "ok" reply is not an identity check. Only found-server's strict probe supplies this.
+            if let id = strictId { ServerConfigStore.setServerId(id, for: url) }
             call.resolve(["url": url])
         }
     }
@@ -996,7 +1049,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
                 call.reject("That address is not the server we found. Search again.")
                 return
             }
-            ServerConfigPlugin.writeSaved(url, liveId: live.id, name: live.name, call: call)
+            ServerConfigPlugin.writeSaved(url, liveId: live.id, name: live.name, strictId: live.id, call: call)
         }
     }
 
@@ -1083,10 +1136,9 @@ private final class OnceReply {
     }
 }
 
-/// The app's one "Use this secure address?" prompt (addendum of 2026-11-09, the owner's "ask once", and its review; Codex code
-/// reviews of PR #38). Process-wide, NOT per plugin: every rebuild registers a new ServerConfigPlugin, and the gate (one prompt
-/// at a time, at most one per 10 minutes) must hold across them. The rules are PromptGate's (pure, run by ios/Tests); this is
-/// the glue (the state, the clocks, the alert), which only an iPhone can test.
+/// The app's one on-screen address prompt. Process-wide, NOT per plugin: every rebuild registers a new ServerConfigPlugin.
+/// Secure and moved offers share the alert slot but keep separate 10-minute cooldowns and decline stores. PromptGate's pure
+/// rules guard the secure-address flow (ios/Tests); this class owns UIKit and the process-local state.
 ///
 /// Threads: `reserve` runs off the main thread; `present`, `finish` and `cancelPending` run ON the main thread (UIKit, the
 /// button handlers, the main-thread timeout, AppRestart.rebuildRoot). The state is behind one lock, never held while calling out.
@@ -1101,14 +1153,20 @@ final class AddressPrompt {
         let serial: Int
     }
 
+    private enum Kind: Equatable { case secure, moved }
+
     // The prompt reserved or on screen. A number per prompt, so a late timeout or a late button can only ever end its own.
     private final class Pending {
         let serial: Int
+        let kind: Kind
         let completion: (PromptGate.Outcome) -> Void
+        let onShown: (() -> Void)?
         var alert: UIAlertController? = nil
 
-        init(serial: Int, completion: @escaping (PromptGate.Outcome) -> Void) {
+        init(serial: Int, kind: Kind, onShown: (() -> Void)?, completion: @escaping (PromptGate.Outcome) -> Void) {
             self.serial = serial
+            self.kind = kind
+            self.onShown = onShown
             self.completion = completion
         }
     }
@@ -1119,23 +1177,40 @@ final class AddressPrompt {
     private var current: Pending? = nil
     // When a prompt was last SHOWN in this run (monotonic ms), for the 10-minute cooldown. Set when the alert is presented, not
     // when it is reserved, so a prompt that could not be shown (no screen, the app inactive) does not hold the next one back.
-    private var lastShownAtMs: Int64? = nil
+    private var lastSecureShownAtMs: Int64? = nil
+    private var lastMovedShownAtMs: Int64? = nil
     private var nextSerial: Int = 0
 
     private init() {}
 
+    var isBusy: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return current != nil
+    }
+
     /// Decides (PromptGate.decide) and, on ask, reserves the one prompt slot, in ONE locked step, so two offers arriving
     /// together cannot both be asked about (addendum review: "the gate reserves atomically"). `completion` is kept only on ask.
     func reserve(candidate: String, decline: PromptGate.DeclineRecord?, completion: @escaping (PromptGate.Outcome) -> Void) -> Reservation {
+        return reserve(kind: .secure, candidate: candidate, decline: decline, onShown: nil, completion: completion)
+    }
+
+    /// The moved-address flow has its own cooldown and decline map, but reserves the same on-screen slot.
+    func reserveMoved(completion: @escaping (PromptGate.Outcome) -> Void) -> Reservation {
+        return reserve(kind: .moved, candidate: "", decline: nil, onShown: nil, completion: completion)
+    }
+
+    private func reserve(kind: Kind, candidate: String, decline: PromptGate.DeclineRecord?, onShown: (() -> Void)?, completion: @escaping (PromptGate.Outcome) -> Void) -> Reservation {
         lock.lock()
         defer { lock.unlock() }
+        let lastShown = kind == .secure ? lastSecureShownAtMs : lastMovedShownAtMs
         let decision: PromptGate.Decision = PromptGate.decide(candidate: candidate, decline: decline, nowWallMs: AddressPrompt.wallClockMs(),
-                                                              lastPromptAtMs: lastShownAtMs, nowMs: AddressPrompt.monotonicMs(), showing: current != nil)
+                                                              lastPromptAtMs: lastShown, nowMs: AddressPrompt.monotonicMs(), showing: current != nil)
         if decision != .ask {
             return Reservation(decision: decision, serial: 0)
         }
         nextSerial += 1
-        current = Pending(serial: nextSerial, completion: completion)
+        current = Pending(serial: nextSerial, kind: kind, onShown: onShown, completion: completion)
         return Reservation(decision: .ask, serial: nextSerial)
     }
 
@@ -1143,6 +1218,10 @@ final class AddressPrompt {
     /// already, no window or root controller, another screen already on top, the app not active), it ends as not answered:
     /// refused, the slot released, NO decline stored (fail closed, addendum review).
     func present(_ serial: Int, message: String) {
+        present(serial, title: AddressPrompt.title, message: message, declineButton: "Don't use it", acceptButton: "Use it")
+    }
+
+    func present(_ serial: Int, title: String, message: String, declineButton: String, acceptButton: String) {
         if !isCurrent(serial) { return }
         let delegate: AppDelegate? = UIApplication.shared.delegate as? AppDelegate
         let root: UIViewController? = delegate?.window?.rootViewController
@@ -1151,13 +1230,13 @@ final class AddressPrompt {
             finish(serial, .notAnswered, dismissAlert: false)
             return
         }
-        let alert = UIAlertController(title: AddressPrompt.title, message: message, preferredStyle: .alert)
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         // Both buttons are `.default`, with no `.cancel` one, on purpose: UIKit maps a `.cancel` action to the Escape key of an
         // iPad keyboard, and a decline is stored only for a real tap on "Don't use it" (addendum review). Unconfirmed on a device.
-        alert.addAction(UIAlertAction(title: "Don't use it", style: .default, handler: { (_: UIAlertAction) -> Void in
+        alert.addAction(UIAlertAction(title: declineButton, style: .default, handler: { (_: UIAlertAction) -> Void in
             AddressPrompt.shared.finish(serial, .declined, dismissAlert: false)
         }))
-        alert.addAction(UIAlertAction(title: "Use it", style: .default, handler: { (_: UIAlertAction) -> Void in
+        alert.addAction(UIAlertAction(title: acceptButton, style: .default, handler: { (_: UIAlertAction) -> Void in
             AddressPrompt.shared.finish(serial, .accepted, dismissAlert: false)
         }))
         markShown(serial, alert: alert)
@@ -1192,6 +1271,8 @@ final class AddressPrompt {
     /// AppRestart.rebuildRoot, on the main thread, just BEFORE the root view controller is replaced (addendum review): the alert
     /// is presented by that root, and a call left waiting would hang the web app's start-up ask.
     func cancelPending() {
+        // AppRestart calls this before every root rebuild, including an explicit restart. Stop a native search too.
+        MovedServerCheck.shared.stop()
         lock.lock()
         let serial: Int? = current?.serial
         lock.unlock()
@@ -1199,6 +1280,13 @@ final class AddressPrompt {
             AddressPrompt.log("withdrawn: the screen is being rebuilt; nothing stored")
             finish(pendingSerial, .notAnswered, dismissAlert: true)
         }
+    }
+
+    func cancelMovedPending() {
+        lock.lock()
+        let serial: Int? = current?.kind == .moved ? current?.serial : nil
+        lock.unlock()
+        if let pendingSerial = serial { finish(pendingSerial, .notAnswered, dismissAlert: true) }
     }
 
     private func isCurrent(_ serial: Int) -> Bool {
@@ -1209,10 +1297,16 @@ final class AddressPrompt {
 
     private func markShown(_ serial: Int, alert: UIAlertController) {
         lock.lock()
-        defer { lock.unlock() }
-        guard let pending = current, pending.serial == serial else { return }
+        guard let pending = current, pending.serial == serial else { lock.unlock(); return }
         pending.alert = alert
-        lastShownAtMs = AddressPrompt.monotonicMs()
+        if pending.kind == .secure {
+            lastSecureShownAtMs = AddressPrompt.monotonicMs()
+        } else {
+            lastMovedShownAtMs = AddressPrompt.monotonicMs()
+        }
+        let onShown = pending.onShown
+        lock.unlock()
+        onShown?()
     }
 
     /// The prompt's text: the saved server's own address the offer came from, the FULL secure host, and when to accept it

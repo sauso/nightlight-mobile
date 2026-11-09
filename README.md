@@ -50,6 +50,25 @@ so discovery can miss an otherwise reachable server. A server behind a Docker br
 verified card for an id wins, so compare the address before accepting. You sign in once at the new origin. The move
 flow still needs confirmation on a phone.
 
+## If your server's address changes (iOS)
+
+At most once every five minutes while the app is active, it checks a saved private IPv4 `http://ip:port` address on
+Wi-Fi or Ethernet. If that address answers, the check makes one background health request and stops. Only if it does
+not answer and the server's id is known does the app search for the same server for up to 10 seconds. When it finds a
+different private IPv4 address, a native prompt shows the saved and new addresses, the server name and an eight-character
+code. The id, name and code are public identifiers, not proof that the server is yours: check the new address against
+your server or router
+before choosing **Use new address**. **Not now** leaves the saved address alone and quiets that candidate for seven days.
+A server saved before this release learns its id on the first start when its saved address still answers. After a move,
+sign in once at the new address.
+
+Known limits: another device taking the saved address is not detected before the app opens it; this requires a separate
+launch-path check. A saved hostname or `https://` address is not moved by this search. IPv6-only networks, Wi-Fi that
+blocks multicast or isolates devices, and servers hidden behind a Docker bridge may not be found. A server with no id
+learned before it moves (and no verified Tailscale pair) needs **Look for my Nightlight** on the setup screen. Discovery
+offers one card per id, so a false first card can hide a real one for that search. The moved-address prompt and reconnect
+still need confirmation on a phone.
+
 ## Two addresses for one server (Android)
 
 The address you set the app up with stays the **saved** address. If the server has Tailscale and its secure address on, the
