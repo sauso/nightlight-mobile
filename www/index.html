@@ -217,7 +217,7 @@
 
     <label for="server">Server address</label>
     <input id="server" type="url" inputmode="url" autocapitalize="none" autocorrect="off"
-           spellcheck="false" placeholder="nightlight.example.com" autofocus />
+           spellcheck="false" placeholder="nightlight.example.com" />
     <p class="hint">The same address you use in your browser — a domain or IP address, e.g. 192.168.1.50:4000.</p>
 
     <button id="connect">Connect</button>
@@ -555,10 +555,14 @@
 
   if (canLook()) {
     findSection.hidden = false;
-    // Owner's iPad, 2026-11-09: autofocus opens the keyboard over this section on launch.
-    input.blur();
     lookButton.addEventListener('click', startLooking);
     searchAgain.addEventListener('click', startLooking);
+  } else {
+    // The address box used to carry the `autofocus` attribute. On the owner's iPad (2026-11-09) that opened the keyboard
+    // over the "Look for my Nightlight" section on every launch, and a blur() after load did not undo it (the focus lands
+    // after the script runs). So the box is focused from here only when there is no search to show; where the search
+    // exists, the person sees it first and the address box is one tap away.
+    input.focus();
   }
 
   button.addEventListener('click', () => connect(input.value));
