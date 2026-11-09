@@ -37,6 +37,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // The network watcher stops here: it moves between the server's addresses only while the app is in the foreground
         // (NetworkRoamWatcher), and anything it still has waiting or running is dead from this moment.
         NetworkRoamWatcher.shared.didEnterBackground()
+        MovedServerCheck.shared.stop()
         // Browsing and probing are useful only while the bundled setup page is on screen.
         ServerConfigPlugin.stopDiscoveryForBackground()
     }
@@ -53,6 +54,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // first activation does it). Fired again without a trip to the background (Control Center, a call banner, the app
         // switcher) it does nothing while the watcher is already running (NetworkRoamWatcher.didBecomeActive).
         NetworkRoamWatcher.shared.didBecomeActive()
+        MovedServerCheck.shared.runIfDue()
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
