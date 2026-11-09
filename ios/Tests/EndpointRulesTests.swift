@@ -16,6 +16,29 @@ func runEndpointRulesTests() {
     let otherId = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
     let known: [String] = [home, "https://nightlight.example.com"]
 
+    test("launchChoice opens only a strictly matching known server") {
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: sameId, liveId: sameId)), home)
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: sameId, liveId: otherId)), nil)
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: sameId, liveId: nil)), nil)
+        // With no expected id launchChoice can open immediately; no probe is needed to form this verdict.
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: nil, liveId: nil)), home)
+    }
+
+    test("identityVerdict refuses only a different answered id") {
+        check(EndpointRules.identityVerdict(expectedId: sameId, liveId: otherId) == .different,
+              "a different device must refuse the save")
+        check(EndpointRules.identityVerdict(expectedId: sameId, liveId: sameId) == .same,
+              "the same server should proceed")
+        check(EndpointRules.identityVerdict(expectedId: sameId, liveId: nil) == .unknown,
+              "no reply keeps the earlier save behavior")
+        check(EndpointRules.identityVerdict(expectedId: nil, liveId: otherId) == .unknown,
+              "no stored identity keeps the earlier save behavior")
+    }
+
     test("a plain https ts-net name is accepted, with or without extra labels") {
         check(EndpointRules.isTailscaleUrl("https://nightlight-1.example-tailnet.ts.net"), "two labels")
         check(EndpointRules.isTailscaleUrl("https://nightlight.tail1234.ts.net"), "a tailnet name")

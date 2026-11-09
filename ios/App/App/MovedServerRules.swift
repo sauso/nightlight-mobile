@@ -32,19 +32,20 @@ enum MovedServerRules {
     }
 
     /// A typed hostname, HTTPS URL or public IP must never be moved by local discovery. An answer without a usable id cannot
-    /// establish identity. A different id at the old address must never replace the one already stored there.
+    /// establish identity. The stored address id wins over a stored pair id; a different occupant triggers a search for it
+    /// and must never replace it, even when the pair is the only known identity.
     static func decide(savedUrl: String?, storedId: String?, pairId: String?, probe: Probe) -> Step {
         guard let saved = DiscoveryRules.parseFoundUrl(savedUrl), EndpointRules.isPrivateIpv4(saved.host) else {
             return .skip
         }
+        let expected = storedId ?? pairId
         switch probe {
         case .answered(let id):
             guard let id = id, EndpointProbe.isPlausibleId(id) else { return .stop }
-            if storedId == nil { return .learn(id) }
-            // Both a matching id and a changed occupant stop. In particular, the latter must never learn over a saved id.
-            return .stop
+            if let wanted = expected, id != wanted { return .search(wanted) }
+            return storedId == nil ? .learn(id) : .stop
         case .noAnswer:
-            guard let wanted = storedId ?? pairId else { return .stop }
+            guard let wanted = expected else { return .stop }
             return .search(wanted)
         }
     }

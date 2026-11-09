@@ -34,17 +34,23 @@ func runMovedServerRulesTests() {
         checkEqual(MovedServerRules.decide(savedUrl: old, storedId: id, pairId: nil,
                                            probe: .answered(id: id)), .stop)
     }
-    test("decide: stored id differs from answer, stops and never learns over it") {
+    test("decide: stored id differs from answer, searches and never learns over it") {
         checkEqual(MovedServerRules.decide(savedUrl: old, storedId: id, pairId: nil,
-                                           probe: .answered(id: otherId)), .stop)
+                                           probe: .answered(id: otherId)), .search(id))
         check(MovedServerRules.decide(savedUrl: old, storedId: id, pairId: otherId,
                                       probe: .answered(id: otherId)) != .learn(otherId), "replaced the saved id")
+    }
+    test("decide: pair-only identity learns the same id but searches for a different one") {
+        checkEqual(MovedServerRules.decide(savedUrl: old, storedId: nil, pairId: id,
+                                           probe: .answered(id: otherId)), .search(id))
+        checkEqual(MovedServerRules.decide(savedUrl: old, storedId: nil, pairId: id,
+                                           probe: .answered(id: id)), .learn(id))
     }
     test("decide: NoAnswer with stored id searches for it") {
         checkEqual(MovedServerRules.decide(savedUrl: old, storedId: id, pairId: nil,
                                            probe: .noAnswer), .search(id))
     }
-    test("decide: NoAnswer with only a verified pair id searches for it") {
+    test("decide: NoAnswer with only a stored pair id searches for it") {
         checkEqual(MovedServerRules.decide(savedUrl: old, storedId: nil, pairId: id,
                                            probe: .noAnswer), .search(id))
     }

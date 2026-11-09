@@ -52,9 +52,15 @@ flow still needs confirmation on a phone.
 
 ## If your server's address changes (iOS)
 
+At launch, when the saved address has a known server id (stored for that address or in its Tailscale pair), the app
+opens that address only after a strict health reply identifies the same server. A different server or no strict answer
+loads the bundled setup screen, which lists your saved server and offers **Look for my Nightlight**. Saving an address
+that answers with a different id is refused before it changes the saved server or Tailscale pair. Away from home, a
+dead saved address with a known id now shows setup instead of the **Can't reach your server** page.
+
 At most once every five minutes while the app is active, it checks a saved private IPv4 `http://ip:port` address on
-Wi-Fi or Ethernet. If that address answers, the check makes one background health request and stops. Only if it does
-not answer and the server's id is known does the app search for the same server for up to 10 seconds. When it finds a
+Wi-Fi or Ethernet. If the address answers with a different id, or does not answer, and the expected id is known, the
+app searches for the same server for up to 10 seconds. When it finds a
 different private IPv4 address, a native prompt shows the saved and new addresses, the server name and an eight-character
 code. The id, name and code are public identifiers, not proof that the server is yours: check the new address against
 your server or router
@@ -62,12 +68,14 @@ before choosing **Use new address**. **Not now** leaves the saved address alone 
 A server saved before this release learns its id on the first start when its saved address still answers. After a move,
 sign in once at the new address.
 
-Known limits: another device taking the saved address is not detected before the app opens it; this requires a separate
-launch-path check. A saved hostname or `https://` address is not moved by this search. IPv6-only networks, Wi-Fi that
-blocks multicast or isolates devices, and servers hidden behind a Docker bridge may not be found. A server with no id
-learned before it moves (and no verified Tailscale pair) needs **Look for my Nightlight** on the setup screen. Discovery
-offers one card per id, so a false first card can hide a real one for that search. The moved-address prompt and reconnect
-still need confirmation on a phone.
+Known limits: with no stored id and no Tailscale pair, the address is unprotected until its first strict reply is
+learned. A device holding the address at that first learn would become the remembered identity. The id is public,
+not authentication: a deliberate impersonator that copies it is not stopped. Typing an `https://` address remains
+the stronger path. A saved hostname or `https://` address is not moved by the local search. IPv6-only networks,
+Wi-Fi that blocks multicast or isolates devices, and servers hidden behind a Docker bridge may not be found. If the
+server's id legitimately changes, remove the saved server on the setup screen and add it again. Discovery offers one
+card per id, so a false first card can hide a real one for that search. The launch choice, moved-address prompt and
+reconnect still need confirmation on a phone.
 
 ## Two addresses for one server (Android)
 

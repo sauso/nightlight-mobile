@@ -10,8 +10,8 @@ final class MovedServerCheck {
     private struct Offer {
         let old: String
         let wanted: String
-        let verifiedPairUrl: String?
-        let verifiedPairId: String?
+        let pairUrl: String?
+        let pairId: String?
         let newUrl: String
         let name: String
         let fingerprint: String
@@ -89,22 +89,17 @@ final class MovedServerCheck {
         let stored = ServerConfigStore.serverId(for: old)
         let live = EndpointProbe.fetchHealth(old, timeout: TimeInterval(MovedServerRules.PROBE_TIMEOUT_MS) / 1000)
         guard isCurrent(ticket) else { end(); return }
-        var pairUrl: String?
-        var pairId: String?
-        if live == nil, let url = ServerConfigStore.tailscaleURL(for: old),
-           let id = ServerConfigStore.tailscaleId(for: old),
-           EndpointProbe.addressAnswers(url, tailscale: url, wantedId: id,
-                                        timeout: TimeInterval(MovedServerRules.PROBE_TIMEOUT_MS) / 1000) {
-            pairUrl = url
-            pairId = id
-        }
-        guard isCurrent(ticket) else { end(); return }
+        // The pair's stored id identifies this saved address even if Tailscale is offline now.
+        // No second network request is needed to decide whether to search or learn.
+        let pairUrl = ServerConfigStore.tailscaleURL(for: old)
+        let pairId = ServerConfigStore.tailscaleId(for: old)
         let probe: MovedServerRules.Probe = live.map { .answered(id: $0.id) } ?? .noAnswer
         switch MovedServerRules.decide(savedUrl: old, storedId: stored, pairId: pairId, probe: probe) {
         case .learn(let id):
             ServerConfigStore.writes.async {
                 // A switch between the reply and the write must not learn the id for a different active choice.
-                if ServerConfigStore.savedURL == old, ServerConfigStore.serverId(for: old) == nil {
+                if ServerConfigStore.savedURL == old, ServerConfigStore.serverId(for: old) == nil,
+                   ServerConfigStore.expectedId(for: old).map({ $0 == id }) ?? true {
                     ServerConfigStore.setServerId(id, for: old)
                 }
             }
@@ -148,7 +143,7 @@ final class MovedServerCheck {
             }
             discovery?.stop()
             discovery = nil
-            let offer = Offer(old: old, wanted: wanted, verifiedPairUrl: pairUrl, verifiedPairId: pairId,
+            let offer = Offer(old: old, wanted: wanted, pairUrl: pairUrl, pairId: pairId,
                               newUrl: card.url, name: card.name, fingerprint: card.fingerprint)
             show(offer, ticket: ticket)
         case .failed:
@@ -204,10 +199,10 @@ final class MovedServerCheck {
         guard isCurrent(ticket), let health = live, health.id == offer.wanted else { end(); return }
         ServerConfigStore.writes.async { [weak self] in
             let currentId = ServerConfigStore.serverId(for: offer.old)
-            let pairStillSaved = offer.verifiedPairId == offer.wanted &&
-                ServerConfigStore.tailscaleURL(for: offer.old) == offer.verifiedPairUrl &&
-                ServerConfigStore.tailscaleId(for: offer.old) == offer.verifiedPairId
-            let effectiveId = currentId ?? (pairStillSaved ? offer.verifiedPairId : nil)
+            let pairStillSaved = offer.pairId == offer.wanted &&
+                ServerConfigStore.tailscaleURL(for: offer.old) == offer.pairUrl &&
+                ServerConfigStore.tailscaleId(for: offer.old) == offer.pairId
+            let effectiveId = currentId ?? (pairStillSaved ? offer.pairId : nil)
             guard MovedServerRules.MoveGuard.stillValid(currentSavedUrl: ServerConfigStore.savedURL,
                     currentStoredId: effectiveId, expectedOldUrl: offer.old, expectedId: offer.wanted),
                    self?.isCurrent(ticket) == true else {
