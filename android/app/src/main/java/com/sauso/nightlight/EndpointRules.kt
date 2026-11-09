@@ -63,6 +63,17 @@ object EndpointRules {
     }
 
     /**
+     * Whether addEndpoint's final write may go ahead, decided AGAIN at the write (Codex code review of the PR #37 prompt delta,
+     * 2026-11-09): "no prompt needed" is first decided on the page shown BEFORE the identity probes, which take seconds, and a
+     * hostile http page that is https for a moment then (or whose WebView URL is still a provisional one) must not slip an
+     * unconfirmed save through. So at the write [needsConfirmation] is recomputed on the page shown NOW and the secure address
+     * saved NOW ([needsConfirmationNow]). A write the person confirmed ([accepted]: "Use it" for this very call) goes ahead
+     * whatever the page shows now; any other write goes ahead only when no confirmation is needed now. Otherwise it is refused
+     * (NOT_CONFIRMED): nothing is written and no decline is stored.
+     */
+    fun mayWriteAddress(accepted: Boolean, needsConfirmationNow: Boolean): Boolean = accepted || !needsConfirmationNow
+
+    /**
      * True when [url]'s host can only be reached from a local network: a private IPv4 address (10/8, 172.16/12, 192.168/16) or
      * a `.local` name. A public name or address (a domain with HTTPS, say) is NOT local-only: it answers on mobile data too.
      * Anything that does not parse is not local-only.

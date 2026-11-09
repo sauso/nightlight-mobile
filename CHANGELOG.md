@@ -41,7 +41,9 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   for both addresses, the secure address asks you to sign in once. The first time the app learns a secure address (or a
   different one) from your server's plain `http` address, it asks you to confirm it and shows the full name: tap Use it only
   if you have just turned on the secure address in your server's Settings → Remote Access and the name matches. Don't use it
-  keeps your saved address only, and the app does not ask about that address again for a week.
+  keeps what you had before (your saved address, or the secure address already saved), and the app does not ask about that
+  address again for a week. It asks at most once every 10 minutes, so another question can wait up to that long. A server can
+  now be forgotten only from the setup screen.
 
 ## [0.9.0] - 2026-11-08
 

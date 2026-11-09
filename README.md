@@ -32,13 +32,16 @@ server's Settings → Remote Access and the name matches; the web app's own "sav
 now opens ahead of the saved one, and the server id the app checks is public, so a device that answers at a plain `http` address
 (where the network can be faked) could otherwise offer its own address. The details (`EndpointRules.needsConfirmation`,
 `PromptGate`):
-- **Don't use it** keeps only the saved address, and the app does not ask about that same address again for **7 days**; then it
-  asks once more. A different address is asked about at once.
+- **Don't use it** keeps what was saved before: the saved address only, or, when the offer was a change, the secure address
+  already saved. The app does not ask about that same address again for **7 days**; then it asks once more. A different
+  address is asked about the next time it is offered, once the 10-minute limit below allows.
 - The back button and a tap outside do not close the question, so only a tap answers it. If it gets no answer within
   **2 minutes**, or the app closes while it shows, nothing is saved or remembered: the next start asks again. At most one
-  question shows at a time, and at most one every **10 minutes** (counted from when one was shown).
+  question shows at a time, and at most one every **10 minutes** (counted from when one was shown), so a question about a
+  different address, or the next start's question, can wait up to 10 minutes.
 - Never asked: an address that is already saved, and an offer made from an `https` page (including the secure address itself),
-  which the network cannot fake. Forgetting the server forgets a decline too.
+  which the network cannot fake. The app decides this again just before it saves, on the page shown then. Forgetting the server
+  (the ✕ on the setup screen; only the setup screen can do it) forgets a decline too.
 - The three numbers are judgements, not measurements. Known limits: accepting a hostile address leaves you exposed as before;
   the question cannot prove the name is yours, it only shows it and says when to accept; a phone that already holds a secure
   address is not asked about it again.

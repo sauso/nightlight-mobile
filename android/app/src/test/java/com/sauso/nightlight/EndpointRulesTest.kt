@@ -226,6 +226,25 @@ class EndpointRulesTest {
         }
     }
 
+    @Test
+    fun `the write decides again: only a confirmed write ignores what the page shows now`() {
+        // (accepted, needs confirmation now) -> may write. Codex code review of the PR #37 prompt delta.
+        assertTrue("accepted, not needed now", EndpointRules.mayWriteAddress(accepted = true, needsConfirmationNow = false))
+        assertTrue("not asked, not needed now", EndpointRules.mayWriteAddress(accepted = false, needsConfirmationNow = false))
+        assertFalse("not asked, but needed now: refused", EndpointRules.mayWriteAddress(accepted = false, needsConfirmationNow = true))
+        assertTrue("accepted, and needed now: the person already said yes", EndpointRules.mayWriteAddress(accepted = true, needsConfirmationNow = true))
+    }
+
+    @Test
+    fun `a page that turned http before the write needs confirmation again`() {
+        // The case the re-check exists for: decided on an https page, written while an http page shows.
+        val decidedOn = "https://nightlight.example.com/#/live"
+        val shownAtWrite = "http://192.168.1.50:4000/#/live"
+        assertFalse(EndpointRules.needsConfirmation(decidedOn, null, ts))
+        assertFalse(EndpointRules.mayWriteAddress(accepted = false, needsConfirmationNow = EndpointRules.needsConfirmation(shownAtWrite, null, ts)))
+        assertFalse("unreadable at the write", EndpointRules.mayWriteAddress(accepted = false, needsConfirmationNow = EndpointRules.needsConfirmation(null, null, ts)))
+    }
+
     // ---- addressAnswers: what "answers" means, for the launch's choice and the watcher's second look alike ----
 
     // Network reads that must not happen: each fails the test if it is called.

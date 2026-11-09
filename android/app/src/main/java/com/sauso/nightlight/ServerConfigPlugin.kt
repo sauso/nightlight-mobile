@@ -316,8 +316,16 @@ class ServerConfigPlugin : Plugin() {
 
     // Drop a server from the remembered list (does not touch the active choice). Its Tailscale address goes with it:
     // it was only ever meaningful for that server.
+    // ONLY from the bundled setup page (callerIsBundledPage, as startDiscovery and stopDiscovery): its ✕ is the one caller. Codex
+    // code review of the PR #37 prompt delta, 2026-11-09: forget clears the "ask once" decline, so a hostile page at the plain-http
+    // saved address could otherwise forget the active server and offer the same address again at once, defeating the 7-day quiet
+    // period. Refused with the existing "Not available on this page" (EndpointRules.refusal), no new sentence.
     @PluginMethod
     fun forget(call: PluginCall) {
+        if (!callerIsBundledPage()) {
+            call.reject(refusal(EndpointRules.AddCheck.NOT_THIS_PAGE))
+            return
+        }
         val url = call.getString("url")
         if (url != null) {
             // The saved login for that address goes too (it was only ever meaningful for that server). The list is read INSIDE the
@@ -456,11 +464,20 @@ class ServerConfigPlugin : Plugin() {
     // [accepted]: the person tapped "Use it", which also clears any stored decline.
     private fun writeEndpoint(call: PluginCall, primary: String, url: String, id: String, name: String?, page: String, accepted: Boolean) {
         sessionExecutor.execute {
-            if (getSavedUrl(context) != primary || !SessionRules.sameOrigin(webViewUrlOnMainThread(), page)) {
+            // ONE read of the page shown now (bounded: webViewUrlOnMainThread waits at most PAGE_CHECK_TIMEOUT_MS; unreadable is
+            // null, which fails both checks below), used for the origin check and for the confirmation decision.
+            val shownNow = webViewUrlOnMainThread()
+            if (getSavedUrl(context) != primary || !SessionRules.sameOrigin(shownNow, page)) {
                 call.reject(refusal(EndpointRules.AddCheck.NOT_THIS_PAGE))
                 return@execute
             }
             val previous = getTailscaleUrl(context, primary)
+            // The confirmation decision, made again here on the page shown NOW and the secure address saved NOW (Codex code review
+            // of the PR #37 prompt delta: the first decision was made seconds earlier, before the identity probes).
+            if (!EndpointRules.mayWriteAddress(accepted, EndpointRules.needsConfirmation(shownNow, previous, url))) {
+                call.reject(refusal(EndpointRules.AddCheck.NOT_CONFIRMED))
+                return@execute
+            }
             val edit = prefs().edit().putString(EndpointRules.key(primary), url).putString(EndpointRules.idKey(primary), id)
             if (accepted) edit.remove(EndpointRules.declinedKey(primary)).remove(EndpointRules.declinedAtKey(primary))
             edit.apply()
