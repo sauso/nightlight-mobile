@@ -8,7 +8,8 @@ import java.util.concurrent.locks.ReentrantLock
  * the home network, the plain-http saved address still answered (through the tailnet), so the app stayed on it and two-way
  * talk, which needs HTTPS, could not work although the secure address was right there. The Tailscale address only counts when
  * the server there reports the id it was saved for; the caller's probe checks that (MainActivity.chooseAddress), so an
- * unverified Tailscale address is never opened. With no Tailscale address saved nothing changes: only the saved one is probed.
+ * unverified Tailscale address is never opened. With no Tailscale address saved, only the saved one is probed; its caller
+ * checks a known saved id before treating it as an answer.
  *
  * Both addresses are probed AT ONCE, under one deadline for the whole decision, so a launch waits once, not once per address.
  * [decide] is the rule, re-applied every time an answer arrives or a time limit is reached:
@@ -26,7 +27,8 @@ import java.util.concurrent.locks.ReentrantLock
  * daemon) and its late answer changes nothing, the next decision included (each decision keeps its own answers).
  *
  * Pure Kotlin with no Android imports. The probe is injected: production passes an id-checked health read for the Tailscale
- * address and ServerConfigPlugin.isReachable for the saved one. A probe that throws counts as FAILED.
+ * address and a strict id read for a saved address with a known id (legacy reachability otherwise). A probe that throws
+ * counts as FAILED.
  */
 class EndpointChooser(
     private val probe: (String) -> Boolean,

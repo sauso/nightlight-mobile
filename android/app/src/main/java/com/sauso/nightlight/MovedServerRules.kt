@@ -32,20 +32,21 @@ object MovedServerRules {
     }
 
     /**
-     * A typed hostname, HTTPS URL or public address is outside this feature. An answering saved address never
-     * starts discovery; especially, a different id must never overwrite the id already learned for this address.
-     * [pairId] is supplied only after that pair's Tailscale endpoint answered with its id.
+     * A typed hostname, HTTPS URL or public address is outside this feature. The identity is the stored id, or the
+     * Tailscale pair's stored id when there is none. A different answer starts a search for that identity and never
+     * learns the answer as a replacement, even when the pair is the only identity available.
      */
     fun decide(savedUrl: String?, storedId: String?, pairId: String?, probe: Probe): Step {
-        val saved = DiscoveryRules.parseFoundUrl(savedUrl) ?: return Step.Skip
-        if (!DiscoveryRules.isPrivateIpv4(saved.first)) return Step.Skip
+        if (!EndpointRules.idCheckedAddress(savedUrl)) return Step.Skip
         return when (probe) {
             is Probe.Answered -> {
                 val id = probe.id ?: return Step.Stop
+                if (!DiscoveryRules.isPlausibleId(id)) return Step.Stop
+                val expected = storedId ?: pairId
                 when {
-                    storedId != null -> Step.Stop
-                    DiscoveryRules.isPlausibleId(id) -> Step.Learn(id)
-                    else -> Step.Stop
+                    storedId == null && (pairId == null || id == pairId) -> Step.Learn(id)
+                    id == expected -> Step.Stop
+                    else -> Step.Search(expected!!)
                 }
             }
             Probe.NoAnswer -> {
@@ -123,9 +124,13 @@ object MovedServerRules {
     }
 
     object Throttle {
-        /** A process gets one check per five minutes; a missing previous run permits its first check. */
-        fun mayRun(nowMs: Long, lastRunMs: Long?): Boolean =
-            lastRunMs == null || nowMs - lastRunMs >= CHECK_INTERVAL_MS
+        /** Only the saved address refused by this launch can bypass its next routine throttle. */
+        fun skipOnceFor(refusedUrl: String?, savedUrl: String?): Boolean =
+            refusedUrl != null && savedUrl != null && refusedUrl == savedUrl
+
+        /** A refused launch gets one check now; routine foreground checks keep the five-minute process throttle. */
+        fun mayRun(nowMs: Long, lastRunMs: Long?, skipOnce: Boolean = false): Boolean =
+            skipOnce || lastRunMs == null || nowMs - lastRunMs >= CHECK_INTERVAL_MS
     }
 
     object Declines {

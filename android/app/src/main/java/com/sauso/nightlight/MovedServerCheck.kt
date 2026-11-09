@@ -21,6 +21,23 @@ class MovedServerCheck(private val activity: MainActivity) {
         private val runLock = Any()
         private var lastRunMs: Long? = null
         private var inFlight = false
+        private var refusedUrl: String? = null
+        private var suppressNextLaunchRefusalFor: String? = null
+
+        fun noteLaunchChoice(savedUrl: String?, refusedKnownServer: Boolean) {
+            synchronized(runLock) {
+                // An accepted move rebuilds the root at its verified new address. If that one launch probe
+                // fails transiently, the check's own recreate must not start another urgent search.
+                val ownRestart = savedUrl != null && suppressNextLaunchRefusalFor == savedUrl
+                suppressNextLaunchRefusalFor = null
+                // Every launch result replaces the previous request, including a successful or empty launch.
+                refusedUrl = if (refusedKnownServer && !ownRestart) savedUrl else null
+            }
+        }
+
+        private fun noteAcceptedMoveRestart(newUrl: String) {
+            synchronized(runLock) { suppressNextLaunchRefusalFor = newUrl }
+        }
     }
 
     private val generation = AtomicInteger()
@@ -58,40 +75,41 @@ class MovedServerCheck(private val activity: MainActivity) {
         if (!d.isAvailable) { d.release(); return } // LocalNetwork fails open; NSD still must exist.
         synchronized(runLock) {
             val now = SystemClock.elapsedRealtime()
-            if (inFlight || !MovedServerRules.Throttle.mayRun(now, lastRunMs)) { d.release(); return }
+            // A different saved server cannot inherit this launch's bypass, even if its routine check is throttled.
+            if (refusedUrl != null && refusedUrl != old) refusedUrl = null
+            val skipOnce = MovedServerRules.Throttle.skipOnceFor(refusedUrl, old)
+            if (inFlight || !MovedServerRules.Throttle.mayRun(now, lastRunMs, skipOnce)) { d.release(); return }
+            // Consume only as this run starts. Earlier exits leave the same URL pending, e.g. off Wi-Fi then back on.
+            refusedUrl = null
             inFlight = true
             lastRunMs = now
         }
         running = true
         discovery = d
-        // The saved URL is probed strictly once. A different answering id ends the check without learning it.
+        // The saved URL is probed strictly once. A different answering id starts discovery for the stored identity.
         val health = healthProbe.fetchUrl(old)
         if (!current(gen)) { endRun(); return }
         val stored = ServerConfigPlugin.getServerId(context, old)
         val pairUrl = ServerConfigPlugin.getTailscaleUrl(context, old)
         val pairStoredId = ServerConfigPlugin.getTailscaleId(context, old)
-        val pairVerified = if (health == null && stored == null && pairUrl != null && pairStoredId != null &&
-            EndpointRules.addressAnswers(pairUrl, pairUrl, pairStoredId,
-                fetchId = { EndpointProbe.fetchHealth(it, MovedServerRules.PROBE_TIMEOUT_MS.toInt())?.id },
-                reachable = { false })) pairStoredId else null
         if (!current(gen)) { endRun(); return }
         val probe = if (health == null) MovedServerRules.Probe.NoAnswer else MovedServerRules.Probe.Answered(health.id)
-        when (val step = MovedServerRules.decide(old, stored, pairVerified, probe)) {
+        when (val step = MovedServerRules.decide(old, stored, pairStoredId, probe)) {
             is MovedServerRules.Step.Learn -> {
                 ServerConfigPlugin.setServerIdIfAbsent(context, old, step.id)
                 endRun()
             }
-            is MovedServerRules.Step.Search -> search(gen, old, step.wantedId, pairUrl.takeIf { pairVerified != null })
+            is MovedServerRules.Step.Search -> search(gen, old, step.wantedId, pairUrl)
             MovedServerRules.Step.Stop, MovedServerRules.Step.Skip -> endRun()
         }
     }
 
-    private fun search(gen: Int, old: String, wanted: String, verifiedPairUrl: String?) {
+    private fun search(gen: Int, old: String, wanted: String, pairUrlAtCheck: String?) {
         val d = discovery ?: run { endRun(); return }
         if (!current(gen)) { endRun(); return }
         val listener = object : ServerDiscovery.Listener {
             override fun onServerFound(generation: Int, found: DiscoveryState.Found) {
-                worker.post { onFoundCard(gen, old, wanted, verifiedPairUrl, found) }
+                worker.post { onFoundCard(gen, old, wanted, pairUrlAtCheck, found) }
             }
             override fun onServerLost(generation: Int, id: String) {}
             override fun onDiscoveryFailed(generation: Int, message: String) {
@@ -104,7 +122,7 @@ class MovedServerCheck(private val activity: MainActivity) {
         worker.postDelayed(timeout, MovedServerRules.SEARCH_BOUND_MS)
     }
 
-    private fun onFoundCard(gen: Int, old: String, wanted: String, verifiedPairUrl: String?, card: DiscoveryState.Found) {
+    private fun onFoundCard(gen: Int, old: String, wanted: String, pairUrlAtCheck: String?, card: DiscoveryState.Found) {
         if (!current(gen) || !running || discovery == null) return
         if (!MovedServerRules.acceptCandidate(wanted, old, card.id, card.url)) return
         val context = activity.applicationContext
@@ -120,14 +138,14 @@ class MovedServerCheck(private val activity: MainActivity) {
         val prompt = SecureAddressPrompt(onShown = { gate.shown(SystemClock.elapsedRealtime()) }) { result ->
             pendingPrompt = null
             gate.release()
-            worker.post { handleOutcome(gen, old, wanted, verifiedPairUrl, card, result) }
+            worker.post { handleOutcome(gen, old, wanted, pairUrlAtCheck, card, result) }
         }
         pendingPrompt = prompt
         prompt.show(activity, message, MovedServerRules.PROMPT_TITLE,
             MovedServerRules.USE_NEW_ADDRESS_BUTTON, MovedServerRules.NOT_NOW_BUTTON, requireResumed = true)
     }
 
-    private fun handleOutcome(gen: Int, old: String, wanted: String, verifiedPairUrl: String?,
+    private fun handleOutcome(gen: Int, old: String, wanted: String, pairUrlAtCheck: String?,
         card: DiscoveryState.Found, result: PromptGate.Outcome) {
         if (!current(gen)) { endRun(); return }
         when (result) {
@@ -140,11 +158,12 @@ class MovedServerCheck(private val activity: MainActivity) {
                 val live = healthProbe.fetchUrl(card.url)
                 if (!current(gen) || live?.id != wanted) { endRun(); return }
                 ServerConfigPlugin.moveServer(activity.applicationContext, old, card.url, wanted, live.name,
-                    verifiedPairUrl, mayCommit = { current(gen) }) { moved ->
+                    pairUrlAtCheck, mayCommit = { current(gen) }) { moved ->
                     if (moved) activity.runOnUiThread {
                         if (current(gen)) {
                             MainActivity.recreateLog.noteRecreate(MainActivity.recreateClockMs())
                             AudioService.stopForServerChange(activity)
+                            noteAcceptedMoveRestart(card.url)
                             activity.recreate()
                         }
                     }

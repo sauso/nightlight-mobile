@@ -110,22 +110,53 @@ object EndpointRules {
     fun tailscaleGraceMs(vpnPresent: Boolean): Long = if (vpnPresent) TAILSCALE_GRACE_MS else TAILSCALE_GRACE_NO_VPN_MS
 
     /**
+     * The raw-socket identity probe accepts only discovery's exact private IPv4 URL. Keep typed hostnames, HTTPS and
+     * other saved URL forms on their old reachability path, even if they have a stored id or Tailscale pair.
+     */
+    fun idCheckedAddress(url: String?): Boolean =
+        DiscoveryRules.parseFoundUrl(url)?.first?.let { DiscoveryRules.isPrivateIpv4(it) } == true
+
+    /** A remembered id applies to the saved address only when the strict probe can read that address. */
+    fun expectedIdForAddress(url: String?, storedId: String?, pairId: String?): String? =
+        if (idCheckedAddress(url)) storedId ?: pairId else null
+
+    /** A refused launch needs one immediate search only when it refused a known, strictly checked saved server. */
+    fun launchRefusalRequestsCheck(savedUrl: String?, expectedId: String?, chosenUrl: String?): Boolean =
+        chosenUrl == null && expectedId != null && idCheckedAddress(savedUrl)
+
+    /** Forgetting the active server must also remove the choice that would reopen it without its id. */
+    fun forgetClearsActive(savedUrl: String?, forgottenUrl: String): Boolean = savedUrl == forgottenUrl
+
+    /**
      * Whether [url] answers as this server: the ONE rule the launch's choice (MainActivity.chooseAddress) and the network
      * watcher's second look (NetworkRoamWatcher) both use, so "answers" cannot mean two things (Codex code review of Tailscale
      * first, 2026-11-09). For the saved server's Tailscale address ([tailscale]) an answer counts only with the id that address
      * was saved for: [wantedId] must exist and [fetchId] must report exactly it. A different id, no id, or no saved id all say
-     * no (fails closed), so an address saved for one server never opens another, and [reachable] is never asked about it. Any
-     * other address counts when [reachable] says so. The two network reads are injected (production: EndpointProbe.fetchHealth's
-     * id and ServerConfigPlugin.isReachable), so this stays pure and the JVM tests run it.
+     * no (fails closed), so an address saved for one server never opens another, and [reachable] is never asked about it. For
+     * a saved private IPv4 address with [expectedId], only that same id counts; a missing reply or id cannot open an
+     * unverified page. Other URL forms and addresses without an expected id use the old [reachable] rule. Network reads
+     * are injected so this stays pure.
      */
     fun addressAnswers(
         url: String,
         tailscale: String?,
         wantedId: String?,
+        expectedId: String?,
         fetchId: (String) -> String?,
         reachable: (String) -> Boolean,
     ): Boolean =
-        if (url == tailscale) wantedId != null && fetchId(url) == wantedId else reachable(url)
+        if (url == tailscale) wantedId != null && fetchId(url) == wantedId
+        else if (expectedId != null && idCheckedAddress(url)) fetchId(url) == expectedId
+        else reachable(url)
+
+    /** Only a readable different id proves a saved address has changed hands; silence preserves existing save behaviour. */
+    enum class IdentityVerdict { SAME, DIFFERENT, UNKNOWN }
+
+    fun identityVerdict(expectedId: String?, liveId: String?): IdentityVerdict = when {
+        expectedId == null || liveId == null -> IdentityVerdict.UNKNOWN
+        expectedId == liveId -> IdentityVerdict.SAME
+        else -> IdentityVerdict.DIFFERENT
+    }
 
     /**
      * Whether `save` may take a REMEMBERED server whose own address did not answer, because the Tailscale address saved for it

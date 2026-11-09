@@ -86,6 +86,11 @@ class ServerConfigPlugin : Plugin() {
         fun getServerId(context: Context, url: String): String? =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(serverIdKey(url), null)
 
+        // A pair's stored id still identifies a private IPv4 saved address before the first direct id learn. Other URL
+        // forms cannot be read by HealthProbe and must keep their legacy launch and save behaviour.
+        fun expectedId(context: Context, savedUrl: String): String? =
+            EndpointRules.expectedIdForAddress(savedUrl, getServerId(context, savedUrl), getTailscaleId(context, savedUrl))
+
         // The compare and write stay together on the one executor. An answer from a different device at the old
         // address must never replace the identity previously learned there.
         fun setServerIdIfAbsent(context: Context, url: String, id: String) {
@@ -120,10 +125,14 @@ class ServerConfigPlugin : Plugin() {
             list.remove(url)
             val names = try { JSONObject(p.getString(KEY_NAMES, "{}")) } catch (e: Exception) { JSONObject() }
             names.remove(url)
-            p.edit().putString(KEY_KNOWN, JSONArray(list).toString()).putString(KEY_NAMES, names.toString())
+            val edit = p.edit().putString(KEY_KNOWN, JSONArray(list).toString()).putString(KEY_NAMES, names.toString())
                 .remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url))
                 .remove(EndpointRules.declinedKey(url)).remove(EndpointRules.declinedAtKey(url))
-                .remove(serverIdKey(url)).remove(movedDeclinesKey(url)).apply()
+                .remove(serverIdKey(url)).remove(movedDeclinesKey(url))
+            // Forget and the saved choice belong in one preferences edit, so a later launch cannot see an active URL
+            // whose remembered id has already gone. Move cleanup sees the new active URL and leaves it alone.
+            if (EndpointRules.forgetClearsActive(p.getString(KEY_URL, null), url)) edit.remove(KEY_URL)
+            edit.apply()
         }
 
         private fun removeAddress(context: Context, url: String) {
@@ -159,13 +168,14 @@ class ServerConfigPlugin : Plugin() {
         // Called only after the new address answered with the wanted id. One executor task checks the current
         // choice, writes every new-address field, flips the choice, and finally removes the old address's data.
         fun moveServer(context: Context, oldUrl: String, newUrl: String, id: String, name: String?,
-            verifiedPairUrl: String?, mayCommit: () -> Boolean, onMoved: (Boolean) -> Unit) {
+            pairUrlAtCheck: String?, mayCommit: () -> Boolean, onMoved: (Boolean) -> Unit) {
             sessionExecutor.execute {
                 val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 val stored = getServerId(context, oldUrl)
                 val pairUrl = getTailscaleUrl(context, oldUrl)
                 val pairId = getTailscaleId(context, oldUrl)
-                val guardId = stored ?: if (pairUrl == verifiedPairUrl) pairId else null
+                // The pair need not answer now; its stored id is the identity, provided the pair has not changed since the check.
+                val guardId = stored ?: if (pairUrl == pairUrlAtCheck) pairId else null
                 if (!mayCommit() || !MovedServerRules.MoveGuard.stillValid(getSavedUrl(context), guardId, oldUrl, id)) {
                     onMoved(false)
                     return@execute
@@ -273,6 +283,7 @@ class ServerConfigPlugin : Plugin() {
         // The plan's wording (#20, decision 3): plain, and it says what to do next.
         private const val NOT_THE_FOUND_SERVER = "That address is not the server we found. Search again."
         private const val NOT_ON_THIS_PAGE = "Looking for servers is only available on the setup screen."
+        private const val ADDRESS_TAKEN = "That address now belongs to a different server. Look for your Nightlight, or type its new address."
 
         // How long the plugin thread waits for the main thread to read the WebView's URL (callerIsBundledPage).
         // The main thread answers in microseconds unless it is busy; if it is busy for a whole second the call is
@@ -435,8 +446,8 @@ class ServerConfigPlugin : Plugin() {
         call.resolve(ret)
     }
 
-    // Drop a server from the remembered list (does not touch the active choice). Its Tailscale address goes with it:
-    // it was only ever meaningful for that server.
+    // Drop a server from the remembered list and clear the active choice when it is that server. Its Tailscale address
+    // goes with it: it was only ever meaningful for that server.
     // ONLY from the bundled setup page (callerIsBundledPage, as startDiscovery and stopDiscovery): its ✕ is the one caller. Codex
     // code review of the PR #37 prompt delta, 2026-11-09: forget clears the "ask once" decline, so a hostile page at the plain-http
     // saved address could otherwise forget the active server and offer the same address again at once, defeating the 7-day quiet
@@ -757,8 +768,9 @@ class ServerConfigPlugin : Plugin() {
     // Set-Cookie the answer carried through Capacitor's process-wide cookie handler. HealthProbe follows no redirect
     // (the 200 must come from that address itself), sends and stores no cookies, uses no proxy, and accepts only the
     // exact `http://<private IPv4>:<port>` form discovery produces. Without expectId (a typed address, a saved-server
-    // tap) this behaves exactly as before. Present but not a string is refused, not ignored, so a caller that meant
-    // to ask for the check cannot silently skip it.
+    // tap) the old reachability path remains, but a private IPv4 URL with a stored id or pair id refuses a different
+    // strict id before saving. Other URL forms keep the old save flow. Present but not a string is refused, not ignored,
+    // so the found-server check cannot silently skip.
     @PluginMethod
     fun save(call: PluginCall) {
         val raw = call.getString("url")?.trim().orEmpty()
@@ -800,13 +812,21 @@ class ServerConfigPlugin : Plugin() {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
                     conn.disconnect()
                     if (code == 200 && body.contains("\"ok\"")) {
-                        // A Tailscale address saved for this address belongs to the server it was saved for. Read who answers here
-                        // now (only when there is one to check), so another machine that took this address over does not keep it.
-                        val liveId = if (getTailscaleId(context, url) != null) EndpointProbe.fetchHealth(url, 3000)?.id else null
+                        // A loose 200 can come from an address that changed hands. When we already know its id, check this exact
+                        // private LAN URL with the cookie-free, no-redirect socket before any save or pair drop.
+                        val expectedAtProbe = expectedId(context, url)
+                        val liveId = if (expectedAtProbe != null) HealthProbe(totalDeadlineMs = 3000).fetchUrl(url)?.id else null
                         // The name the server sent in the same reply (null when it sent none, or an older server with no id).
                         val name = DiscoveryRules.parseHealth(body)?.name
                         // On the session executor: the saved address is part of what a saved session is bound to (see addEndpoint).
                         sessionExecutor.execute {
+                            val expectedNow = expectedId(context, url)
+                            if (EndpointRules.identityVerdict(expectedNow, liveId) == EndpointRules.IdentityVerdict.DIFFERENT ||
+                                (expectedAtProbe == null && expectedNow != null)) {
+                                // The second case closes a concurrent first learn between the loose reply and this queued write.
+                                call.reject(ADDRESS_TAKEN)
+                                return@execute
+                            }
                             val edit = prefs().edit().putString(KEY_URL, url)
                             dropTailscaleIfAnotherServer(edit, url, liveId)
                             edit.apply()
@@ -849,9 +869,9 @@ class ServerConfigPlugin : Plugin() {
         }.start()
     }
 
-    // When the saved address is confirmed, drop the Tailscale address saved for it if the server now answering there is not the one
-    // it was saved for (EndpointRules.pairStillValid: a readable different id only). Also clears that address's saved login, which was
-    // bound to it. Runs on the session executor with the editor the caller is about to apply.
+    // A legacy pair may still need dropping when the saved address answers with a different id. Callers first reject that
+    // case when an expected id exists; this remains as the pair cleanup for any save that can proceed. The bound login goes
+    // with the pair. Runs on the session executor with the editor the caller is about to apply.
     private fun dropTailscaleIfAnotherServer(edit: SharedPreferences.Editor, url: String, liveId: String?) {
         if (!EndpointRules.pairStillValid(getTailscaleId(context, url), liveId)) {
             forgetTailscale(edit, url)
@@ -864,9 +884,22 @@ class ServerConfigPlugin : Plugin() {
     // a redirect, not a Nightlight, not a found-server address at all) gets "not the server we found".
     private fun saveFoundServer(call: PluginCall, url: String, expectId: String) {
         Thread {
+            // A card can point at a remembered address. Check its saved identity before the card's own id check, so a
+            // different readable server gets the same refusal as a typed save, with no preference or list mutation.
+            val expectedAtProbe = expectedId(context, url)
+            if (expectedAtProbe != null && EndpointRules.identityVerdict(expectedAtProbe,
+                    HealthProbe().fetchUrl(url)?.id) == EndpointRules.IdentityVerdict.DIFFERENT) {
+                call.reject(ADDRESS_TAKEN)
+                return@Thread
+            }
             val result = HealthProbe().checkUrl(url, expectId)
             when (result.outcome) {
                 HealthProbe.Outcome.VERIFIED -> sessionExecutor.execute {
+                    // A found card may target a remembered URL. Its id must also agree with that URL's saved identity.
+                    if (EndpointRules.identityVerdict(expectedId(context, url), expectId) == EndpointRules.IdentityVerdict.DIFFERENT) {
+                        call.reject(ADDRESS_TAKEN)
+                        return@execute
+                    }
                     // expectId is the id the server at this address just proved to have, so it is the live id for the pair check.
                     val edit = prefs().edit().putString(KEY_URL, url)
                     dropTailscaleIfAnotherServer(edit, url, expectId)
@@ -892,10 +925,8 @@ class ServerConfigPlugin : Plugin() {
         // The Tailscale address is KEPT (owner, 2026-11-06). It used to go with the server being left, so it could not wait around
         // for whatever was saved at that address next; but then Change server, used while on the Tailscale address (away from
         // home), threw away the only way back in: the setup page lists the saved HOME address, which cannot answer on cellular.
-        // The stale-address risk is closed where it arises instead: save() compares the id at the home address with the one the
-        // Tailscale address was saved for and drops the pair when another server answers there (EndpointRules.pairStillValid).
-        // Known limit: that runs on a save from the setup screen, not at every launch (the launch gate reads no id at the home address),
-        // so a home address that changed hands can still open the old server through Tailscale until it is next connected to there.
+        // The launch gate checks a known id before opening the home address. On save, a readable different id refuses the
+        // address before any pair can be dropped; a silent address keeps the pair so reconnect still works away from home.
         // forget(url), the explicit "forget this server", still removes it.
         sessionExecutor.execute {
             // Read inside the executor: a save() queued just before this one has landed by now, so the right address is cleared.

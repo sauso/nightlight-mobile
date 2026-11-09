@@ -252,30 +252,109 @@ class EndpointRulesTest {
     private val idNeverRead: (String) -> String? = { throw AssertionError("an id was read for $it") }
 
     @Test
+    fun `only exact private IPv4 URLs have a saved id check`() {
+        assertTrue(EndpointRules.idCheckedAddress("http://192.168.1.50:4000"))
+        for (url in listOf(null, "http://server.example.test:4000", "https://192.168.1.50:4000",
+            "http://192.168.1.50", "http://8.8.8.8:4000", "http://user@192.168.1.50:4000",
+            "http://192.168.1.50:4000/path")) {
+            assertFalse("id checked $url", EndpointRules.idCheckedAddress(url))
+        }
+    }
+
+    @Test
+    fun `saved id accessor scopes both stored and pair ids to private IPv4 URLs`() {
+        assertEquals(sameId, EndpointRules.expectedIdForAddress(home, sameId, otherId))
+        assertEquals(otherId, EndpointRules.expectedIdForAddress(home, null, otherId))
+        assertEquals(null, EndpointRules.expectedIdForAddress("http://server.example.test:4000", sameId, otherId))
+        assertEquals(null, EndpointRules.expectedIdForAddress("https://192.168.1.50:4000", null, otherId))
+    }
+
+    @Test
+    fun `known id refusal of checked saved address requests an immediate check`() {
+        // Android's chooser returns null both for a different id and for no answer.
+        assertTrue(EndpointRules.launchRefusalRequestsCheck(home, sameId, null))
+    }
+
+    @Test
+    fun `opening the same or another address does not request an immediate check`() {
+        assertFalse(EndpointRules.launchRefusalRequestsCheck(home, sameId, home))
+        assertFalse(EndpointRules.launchRefusalRequestsCheck(home, sameId, ts))
+    }
+
+    @Test
+    fun `setup without an expected id does not request an immediate check`() {
+        assertFalse(EndpointRules.launchRefusalRequestsCheck(home, null, null))
+    }
+
+    @Test
+    fun `refusal of a non checked address does not request an immediate check`() {
+        assertFalse(EndpointRules.launchRefusalRequestsCheck("https://192.168.1.50:4000", sameId, null))
+        assertFalse(EndpointRules.launchRefusalRequestsCheck("http://server.example.test:4000", sameId, null))
+    }
+
+    @Test
+    fun `forget clears only the active saved address`() {
+        assertTrue(EndpointRules.forgetClearsActive(home, home))
+        assertFalse(EndpointRules.forgetClearsActive(home, "http://192.168.1.51:4000"))
+        assertFalse(EndpointRules.forgetClearsActive(null, home))
+    }
+
+    @Test
     fun `the tailscale address answers when it reports the id it was saved for`() {
-        assertTrue(EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { sameId }, reachable = reachableNeverAsked))
+        assertTrue(EndpointRules.addressAnswers(ts, ts, sameId, otherId, fetchId = { sameId }, reachable = reachableNeverAsked))
     }
 
     @Test
     fun `a wrong id, no id or no saved id is not an answer from the tailscale address`() {
-        assertFalse("another server's id", EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { otherId }, reachable = reachableNeverAsked))
-        assertFalse("no id read", EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { null }, reachable = reachableNeverAsked))
-        assertFalse("no saved id, the address reports one", EndpointRules.addressAnswers(ts, ts, null, fetchId = { sameId }, reachable = reachableNeverAsked))
+        assertFalse("another server's id", EndpointRules.addressAnswers(ts, ts, sameId, null, fetchId = { otherId }, reachable = reachableNeverAsked))
+        assertFalse("no id read", EndpointRules.addressAnswers(ts, ts, sameId, null, fetchId = { null }, reachable = reachableNeverAsked))
+        assertFalse("no saved id, the address reports one", EndpointRules.addressAnswers(ts, ts, null, null, fetchId = { sameId }, reachable = reachableNeverAsked))
         // The one a dropped "wantedId != null" would let through: null equals null.
-        assertFalse("no saved id and none read", EndpointRules.addressAnswers(ts, ts, null, fetchId = { null }, reachable = reachableNeverAsked))
+        assertFalse("no saved id and none read", EndpointRules.addressAnswers(ts, ts, null, null, fetchId = { null }, reachable = reachableNeverAsked))
     }
 
     @Test
     fun `the tailscale address is never judged by reachability`() {
         // Up, but another server: reachable would say yes, and the rule must not fall back to it.
-        assertFalse(EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { otherId }, reachable = { true }))
+        assertFalse(EndpointRules.addressAnswers(ts, ts, sameId, null, fetchId = { otherId }, reachable = { true }))
     }
 
     @Test
-    fun `the saved address answers when it is reachable, and no id is read for it`() {
-        assertTrue(EndpointRules.addressAnswers(home, ts, sameId, fetchId = idNeverRead, reachable = { it == home }))
-        assertFalse(EndpointRules.addressAnswers(home, ts, sameId, fetchId = idNeverRead, reachable = { false }))
-        assertTrue("no Tailscale address saved", EndpointRules.addressAnswers(home, null, null, fetchId = idNeverRead, reachable = { true }))
+    fun `the saved address without an expected id uses reachability and never fetches an id`() {
+        assertTrue(EndpointRules.addressAnswers(home, ts, sameId, null, fetchId = idNeverRead, reachable = { it == home }))
+        assertFalse(EndpointRules.addressAnswers(home, ts, sameId, null, fetchId = idNeverRead, reachable = { false }))
+        assertTrue("no Tailscale address saved", EndpointRules.addressAnswers(home, null, null, null, fetchId = idNeverRead, reachable = { true }))
+    }
+
+    @Test
+    fun `non matching saved URL uses legacy reachability even with a pair id`() {
+        val hostname = "http://server.example.test:4000"
+        assertTrue(EndpointRules.addressAnswers(hostname, ts, sameId, sameId,
+            fetchId = idNeverRead, reachable = { it == hostname }))
+        assertFalse(EndpointRules.addressAnswers(hostname, ts, sameId, sameId,
+            fetchId = idNeverRead, reachable = { false }))
+    }
+
+    @Test
+    fun `saved address with expected id answers only for that id`() {
+        assertTrue(EndpointRules.addressAnswers(home, ts, sameId, sameId, fetchId = { sameId }, reachable = reachableNeverAsked))
+        assertFalse(EndpointRules.addressAnswers(home, ts, sameId, sameId, fetchId = { otherId }, reachable = { true }))
+        assertFalse("reply without id", EndpointRules.addressAnswers(home, ts, sameId, sameId, fetchId = { null }, reachable = { true }))
+        assertFalse("no reply", EndpointRules.addressAnswers(home, null, null, sameId, fetchId = { null }, reachable = { true }))
+    }
+
+    @Test
+    fun `identity verdict rejects only a readable different id`() {
+        val verdict = EndpointRules::identityVerdict
+        assertEquals(EndpointRules.IdentityVerdict.SAME, verdict(sameId, sameId))
+        assertEquals(EndpointRules.IdentityVerdict.DIFFERENT, verdict(sameId, otherId))
+        assertEquals(EndpointRules.IdentityVerdict.UNKNOWN, verdict(sameId, null))
+        assertEquals(EndpointRules.IdentityVerdict.UNKNOWN, verdict(null, otherId))
+        assertEquals(EndpointRules.IdentityVerdict.UNKNOWN, verdict(null, null))
+        val storedId: String? = null
+        val pairId: String? = sameId
+        assertEquals("pair-only expected id refuses a different live id", EndpointRules.IdentityVerdict.DIFFERENT,
+            verdict(storedId ?: pairId, otherId))
     }
 
     // ---- Change server from the Tailscale address (owner, 2026-11-06) ----
