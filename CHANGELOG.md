@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-10
+
 ### Added
 - **Android: find your server after its local address changes.** When a saved private IPv4 address stops answering,
   the app searches Wi-Fi for the same server id and asks before saving a new address. Existing saved servers learn
@@ -17,12 +19,11 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   Switching to another server now also stops background listening that was running for the old one.
 - **iOS: Your server moved.** If a saved local address stops answering on Wi-Fi, the app can find the same server at a new
   private IPv4 address and ask before switching. It rechecks the server when you accept, carries a matching Tailscale pair,
-  and asks you to sign in once at the new address. This still needs confirmation on a phone.
+  and asks you to sign in once at the new address.
 - **iOS: Look for my Nightlight.** The setup screen can find a server on your Wi-Fi and check it again when you tap
   Connect. Search needs Local Network access and finds private IPv4 addresses only. Networks that isolate devices or
   block multicast may find nothing; you can still type the address, but a local address also needs Local Network
-  access. A Tailscale address outside the local network is unaffected. The iOS search and permission flow still need
-  a test on a phone.
+  access. A Tailscale address outside the local network is unaffected.
 - **iOS: one sign-in for both of your server's addresses.** On an iPhone, the home address and the Tailscale address used to
   ask for a sign-in each. The app now keeps your sign-in in the iPhone's Keychain and hands it to the Tailscale address (only
   that address) the first time you open it there, so signing in once at home is enough, as on Android. It is kept for the
@@ -72,6 +73,7 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   now be forgotten only from the setup screen.
 
 ### Fixed
+- Android: the app no longer opens a saved local address that has been taken over by a different server (it shows the setup screen and looks for your server immediately, even after a recent check; see the README).
 - iOS: the app no longer opens a saved local address that has been taken over by a different server (it shows the setup screen and immediately looks for your server, even if its routine check ran recently; see the README)
 
 ## [0.9.0] - 2026-11-08
