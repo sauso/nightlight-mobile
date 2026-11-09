@@ -75,6 +75,12 @@ enum DiscoveryRules {
         return domain.hasSuffix(".") ? domain : domain + "."
     }
 
+    /// NetService's delegate dictionary uses "NSNetServicesErrorCode" and "NSNetServicesErrorDomain".
+    /// Reading "errorCode" discarded every code, so a genuine timeout could neither be reported nor retried.
+    static func netServiceErrorCode(_ error: [String: Any]) -> Int? {
+        return (error["NSNetServicesErrorCode"] as? NSNumber)?.intValue
+    }
+
     /// Accept only the canonical URL that `serverUrl` makes: strict IPv4, port 1...65535 without leading zero,
     /// and no path, credentials, query or fragment. Whether the address may be contacted is the probe's policy.
     static func parseFoundUrl(_ url: String?) -> (host: String, port: Int)? {

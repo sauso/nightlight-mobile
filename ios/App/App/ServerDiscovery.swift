@@ -23,7 +23,7 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
 
     private struct ActiveResolve {
         let job: DiscoveryState<Service>.ResolveJob
-        let service: NetService
+        var service: NetService?
         let search: Int
         let watchdogDueAt: Int64
         var settleDueAt: Int64?
@@ -47,6 +47,13 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
         var nonIPv4 = 0
         var noAddresses = 0
         var resolveFailed = 0
+        var didResolveCallbacks = 0
+        var callbackAddresses = 0
+        var callbackIPv4 = 0
+        var callbackNonIPv4 = 0
+        var didNotResolveCallbacks = 0
+        var watchdogExpiries = 0
+        var settleNoIPv4 = 0
         var errorCodes: [Int] = []
         var privateIPv4 = 0
         var probes = 0
@@ -61,6 +68,9 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
                 + " · no TXT \(noTXT) bad TXT \(badTXT)"
                 + " · resolve \(resolves) ok \(resolvedIPv4) non-v4 \(nonIPv4) empty \(noAddresses)"
                 + " failed \(resolveFailed) [\(codes)]"
+                + " · callbacks didResolve \(didResolveCallbacks) addresses \(callbackAddresses)"
+                + " v4 \(callbackIPv4) non-v4 \(callbackNonIPv4) didNotResolve \(didNotResolveCallbacks)"
+                + " · watchdog \(watchdogExpiries) settle-no-v4 \(settleNoIPv4)"
                 + " · private v4 \(privateIPv4) · probes \(probes) unreachable \(unreachable)"
                 + " mismatch \(mismatch) ok \(accepted) · cards \(cards)"
         }
@@ -70,7 +80,10 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
     private let state = DiscoveryState<Service>()
     private let emit: (Event) -> Void
     private var browser: NWBrowser?
-    private var active: [ObjectIdentifier: ActiveResolve] = [:]
+    // A reserved slot exists before main-thread construction. The service is attached on this queue,
+    // or closed if stop already removed the slot.
+    private var active: [Int: ActiveResolve] = [:]
+    private var nextResolveKey = 0
     private var deferredNames: Set<String> = []
     private var timer: DispatchSourceTimer?
     private var permissionDueAt: Int64?
@@ -129,7 +142,7 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
         permissionDueAt = nil
         browser?.cancel()
         browser = nil
-        for item in active.values { close(item.service) }
+        for item in active.values { if let service = item.service { close(service) } }
         active.removeAll()
         deferredNames.removeAll()
         state.stop()
@@ -238,35 +251,58 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
         // NetService can still call back after stop; its delegate callback checks the search and job token.
         let old = active.filter { $0.value.job.name == c.name }.map { $0.key }
         for key in old {
-            if let item = active.removeValue(forKey: key) { close(item.service) }
+            if let service = active.removeValue(forKey: key)?.service { close(service) }
         }
     }
 
     private func pumpResolves(_ search: Int) {
         guard serial == search else { return }
         while let job = state.nextResolve(resolveSlots) {
-            // NWBrowser's type/domain may be undotted; NetService requires the trailing dot to resolve.
-            let s = NetService(domain: DiscoveryRules.netServiceDomain(job.payload.domain),
-                               type: DiscoveryRules.netServiceType(job.payload.type), name: job.payload.name)
+            nextResolveKey += 1
+            let key = nextResolveKey
             diagnostic.resolves += 1
             statusChanged()
             // NetService gives sockaddr bytes without opening a TCP connection. A connection-based resolve
             // could reach a public address before we can apply the private IPv4 policy.
-            s.delegate = self
             // NetService's five-second timeout may never call back. Eight seconds is a judgement, unverified
             // on a phone; the watchdog must free one of the two resolve slots even without a delegate call.
-            active[ObjectIdentifier(s)] = ActiveResolve(job: job, service: s, search: search,
-                                                        watchdogDueAt: nowMs() + 8_000, settleDueAt: nil,
-                                                        hosts: [], seenHosts: [], sawNonIPv4: false, port: 0)
-            // NetService needs a running run loop. All its operations and delegate calls use the main run loop;
-            // only immutable callback data is moved onto the discovery queue before touching DiscoveryState.
-            DispatchQueue.main.async { [weak s] in
-                guard let s = s else { return }
+            active[key] = ActiveResolve(job: job, service: nil, search: search,
+                                        watchdogDueAt: nowMs() + 8_000, settleDueAt: nil,
+                                        hosts: [], seenHosts: [], sawNonIPv4: false, port: 0)
+            // A NetService created off-main can bind to a run loop that never runs. Keep construction,
+            // delegate setup, scheduling and resolve on the main run loop's thread. The reserved slot is
+            // already visible to stop and the watchdog; registration closes a service if stop won the race.
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                // NWBrowser's type/domain may be undotted; NetService requires the trailing dot.
+                let s = NetService(domain: DiscoveryRules.netServiceDomain(job.payload.domain),
+                                   type: DiscoveryRules.netServiceType(job.payload.type), name: job.payload.name)
+                s.delegate = self
+                // Queue registration before schedule or resolve can deliver a delegate callback. A callback's
+                // queue hop then follows registration; no callback can be lost while this slot is active.
+                self.queue.async { self.register(s, key: key, search: search) }
                 s.schedule(in: .main, forMode: .common)
                 s.resolve(withTimeout: 5)
-                // A stop queued after this start queues close on main after this block.
             }
         }
+    }
+
+    private func register(_ service: NetService, key: Int, search: Int) {
+        guard var item = active[key], item.search == search, serial == search,
+              state.isResolving(item.job) else {
+            // Stop, loss or watchdog may have removed the reservation while main was creating the service.
+            close(service)
+            return
+        }
+        item.service = service
+        active[key] = item
+    }
+
+    private func key(for service: NetService) -> Int? {
+        return active.first { _, item in
+            guard let current = item.service else { return false }
+            return current === service
+        }?.key
     }
 
     private func close(_ service: NetService) {
@@ -283,13 +319,17 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
     }
 
     func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
-        let code = errorDict["errorCode"]?.intValue
+        let code = DiscoveryRules.netServiceErrorCode(errorDict.mapValues { $0 as Any })
         queue.async { [weak self] in self?.resolveFailed(sender, code: code) }
     }
 
     private func resolved(_ service: NetService, addresses: [Data], port: Int) {
-        let key = ObjectIdentifier(service)
+        guard let key = key(for: service) else { return }
         guard var item = active[key], item.search == serial else { return }
+        // Count every callback entry, including duplicates beyond the stored-host cap, so the device line
+        // shows what NetService delivered without exposing any address bytes.
+        diagnostic.didResolveCallbacks += 1
+        diagnostic.callbackAddresses += addresses.count
         // Apple may deliver more than one didResolve callback. A 500 ms settle window after the first is a
         // judgement, unverified on a device; an IPv6-only first answer must not discard a later IPv4 answer.
         if item.settleDueAt == nil { item.settleDueAt = nowMs() + 500 }
@@ -297,22 +337,25 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
         // private-address cap. Keep arrival order so a later callback can contribute new hosts.
         let limit = DiscoveryState<Service>.MAX_ADDRESSES_PER_SERVICE * 4
         for address in addresses {
-            if item.hosts.count >= limit { break }
             guard let host = ipv4(address) else {
+                diagnostic.callbackNonIPv4 += 1
                 item.sawNonIPv4 = true
                 continue
             }
+            diagnostic.callbackIPv4 += 1
+            if item.hosts.count >= limit { continue }
             guard item.seenHosts.insert(host).inserted else { continue }
             item.hosts.append(host)
         }
         if port >= 1 && port <= 65535 { item.port = port }
         active[key] = item
+        statusChanged()
         armTimer(serial)
     }
 
-    private func finishResolved(_ service: NetService) {
-        guard let item = active.removeValue(forKey: ObjectIdentifier(service)), item.search == serial else { return }
-        close(service)
+    private func finishResolved(_ key: Int) {
+        guard let item = active.removeValue(forKey: key), item.search == serial else { return }
+        if let service = item.service { close(service) }
         let job = item.job
         guard state.isResolving(job) else { return }
         if item.hosts.isEmpty {
@@ -333,21 +376,24 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
     }
 
     private func resolveFailed(_ service: NetService, code: Int?) {
-        guard let item = active[ObjectIdentifier(service)], item.search == serial else { return }
-        let timedOut = code == NetService.ErrorCode.timeoutError.rawValue
-        // A timeout can follow a useful address callback. Use those addresses once instead of throwing
-        // them away; other NetService failures retain their existing final-failure behaviour.
-        if timedOut && !item.hosts.isEmpty { finishResolved(service); return }
-        finishFailed(service, retry: timedOut, code: code)
-    }
-
-    private func finishFailed(_ service: NetService, retry: Bool, code: Int? = nil) {
-        guard let item = active.removeValue(forKey: ObjectIdentifier(service)), item.search == serial else { return }
-        close(service)
-        diagnostic.resolveFailed += 1
+        guard let key = key(for: service), let item = active[key], item.search == serial else { return }
+        diagnostic.didNotResolveCallbacks += 1
+        // The delegate uses NSNetServicesErrorCode, not "errorCode". Record even a timeout that follows
+        // useful IPv4 addresses, so the status line explains the callback independently of the outcome.
         if let code = code, !diagnostic.errorCodes.contains(code), diagnostic.errorCodes.count < 5 {
             diagnostic.errorCodes.append(code)
         }
+        let timedOut = code == NetService.ErrorCode.timeoutError.rawValue
+        // A timeout can follow a useful address callback. Use those addresses once instead of throwing
+        // them away; other NetService failures retain their existing final-failure behaviour.
+        if timedOut && !item.hosts.isEmpty { finishResolved(key); return }
+        finishFailed(key, retry: timedOut)
+    }
+
+    private func finishFailed(_ key: Int, retry: Bool) {
+        guard let item = active.removeValue(forKey: key), item.search == serial else { return }
+        if let service = item.service { close(service) }
+        diagnostic.resolveFailed += 1
         statusChanged()
         // Only an actual timeout is retried. Not-found, cancellation and other errors are final. This
         // NetService error mapping and how often a phone times out are unconfirmed until device testing.
@@ -434,15 +480,28 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
             fail("Turn on Local Network for Nightlight in Settings > Privacy & Security > Local Network, then search again.")
             return
         }
-        // The first callback starts a fixed settle deadline. The watchdog uses the same timeout outcome as a
-        // NetService timeout: collected IPv4 addresses resolve; no addresses release the slot and retry.
-        let dueServices = active.values.filter {
-            ($0.settleDueAt.map { now >= $0 } ?? false) || now >= $0.watchdogDueAt
-        }.map { $0.service }
-        for service in dueServices {
-            guard let item = active[ObjectIdentifier(service)], item.search == search else { continue }
-            if item.hosts.isEmpty { finishFailed(service, retry: true) }
-            else { finishResolved(service) }
+        // A callback starts the settle window, capped by the original watchdog deadline. This leaves the
+        // watchdog count reserved for resolves that yielded no address callback at all.
+        let dueKeys = active.filter { _, item in
+            (item.settleDueAt.map { now >= min($0, item.watchdogDueAt) } ?? false)
+                || now >= item.watchdogDueAt
+        }.map { $0.key }
+        for key in dueKeys {
+            guard let item = active[key], item.search == search else { continue }
+            if item.settleDueAt != nil {
+                if item.hosts.isEmpty {
+                    diagnostic.settleNoIPv4 += 1
+                    // The old timer path reported this only as failed, hiding an empty or IPv6-only reply.
+                    if item.sawNonIPv4 { diagnostic.nonIPv4 += 1 }
+                    else { diagnostic.noAddresses += 1 }
+                    finishFailed(key, retry: true)
+                } else {
+                    finishResolved(key)
+                }
+            } else {
+                diagnostic.watchdogExpiries += 1
+                finishFailed(key, retry: true)
+            }
         }
         _ = state.requeueDueRetries(now)
         for name in deferredNames {

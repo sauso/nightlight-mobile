@@ -74,6 +74,15 @@ func runDiscoveryRulesTests() {
         checkEqual(DiscoveryRules.netServiceDomain(""), "local.")
     }
 
+    test("NetService error code uses the documented dictionary key") {
+        checkEqual(DiscoveryRules.netServiceErrorCode(["NSNetServicesErrorCode": NSNumber(value: -72007)]), -72007)
+        check(DiscoveryRules.netServiceErrorCode([:]) == nil, "missing code")
+        check(DiscoveryRules.netServiceErrorCode(["NSNetServicesErrorCode": "wrong type"]) == nil,
+              "wrong type")
+        check(DiscoveryRules.netServiceErrorCode(["errorCode": NSNumber(value: -72007)]) == nil,
+              "old key must not be accepted")
+    }
+
     // Kotlin currently has no parseFoundUrl unit test; these cover the pure parser being added for save-time use.
     test("parseFoundUrl accepts only a canonical IPv4 URL with an explicit port") {
         let found = DiscoveryRules.parseFoundUrl("http://192.168.1.50:4000")
