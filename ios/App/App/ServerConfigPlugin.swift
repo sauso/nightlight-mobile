@@ -227,7 +227,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // Keychain read, inside the web app's 6 s wait (nativeBridge.js SESSION_ADOPT_DEADLINE_MS). A judgement, not a measurement.
     private static let sessionProbeTimeout: TimeInterval = 3
 
-    // Search and its path snapshot are owned on the main thread, where the shown WKWebView URL can be checked
+    // Search and its path snapshot are owned on the main thread, where the committed main-frame URL can be checked
     // immediately before each event. A stale callback carries an old token and cannot report into a new search.
     private static weak var activeDiscoveryOwner: ServerConfigPlugin?
     private var discovery: ServerDiscovery?
@@ -265,7 +265,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         // Never ask the writes queue for the page. This is already on main; after navigation, no found
         // address or permission message is delivered to a different page and the search is stopped.
         guard discoveryToken == token, discovery != nil else { return }
-        guard callerIsBundledPage() else { stopSearch(); return }
+        guard callerIsCommittedBundledPage() else { stopSearch(); return }
         switch event {
         case .found(let card):
             notifyListeners("serverFound", data: ["id": card.id, "name": card.name,
@@ -283,7 +283,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         // loses its JS listeners; an event also checks the page at delivery time.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self = self, self.discoveryToken == token, self.discovery != nil else { return }
-            if !self.callerIsBundledPage() { self.stopSearch(); return }
+            if !self.callerIsCommittedBundledPage() { self.stopSearch(); return }
             self.watchBundledPage(token)
         }
     }
@@ -291,7 +291,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func startDiscovery(_ call: CAPPluginCall) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { call.reject("Couldn't start looking for servers."); return }
-            guard self.callerIsBundledPage() else {
+            guard self.callerIsCommittedBundledPage() else {
                 call.reject(EndpointRules.refusal(.notThisPage))
                 return
             }
@@ -313,7 +313,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             monitor.start(queue: DispatchQueue(label: "com.sauso.nightlight.discovery-path"))
             // NWPathMonitor's first update is normally immediate. A one-second bound avoids holding a plugin
-            // call indefinitely if it does not arrive; an unknown path is a generic start failure.
+            // call indefinitely if it does not arrive; an unknown path can be retried from the page.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
                 self?.finishPathCheck(check, path: nil, call: call)
             }
@@ -330,14 +330,15 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("Couldn't start looking for servers.")
             return
         }
-        guard callerIsBundledPage() else {
+        guard callerIsCommittedBundledPage() else {
             stopSearch()
             call.reject(EndpointRules.refusal(.notThisPage))
             return
         }
         guard let path = path else {
             stopSearch()
-            call.reject("Couldn't start looking for servers.")
+            // A slow first path update is transient. A rejection makes the setup page hide search for this visit.
+            call.resolve(["started": false, "onWifi": false])
             return
         }
         let onWifi = path.status == .satisfied &&
@@ -361,7 +362,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func stopDiscovery(_ call: CAPPluginCall) {
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.callerIsBundledPage() else {
+            guard let self = self, self.callerIsCommittedBundledPage() else {
                 call.reject(EndpointRules.refusal(.notThisPage))
                 return
             }
@@ -407,13 +408,24 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     // unreadable config or an unreadable page URL is "not the bundled page". The rule itself is EndpointRules.isBundledPage
     // (pure, run by ios/Tests); the page URL is read only when the bridge is the bundled one.
     private func callerIsBundledPage() -> Bool {
+        return bundledPage(using: shownPageURL)
+    }
+
+    // Codex code review of PR #39: WKWebView.url may show a destination before it commits, while the old
+    // page still receives discovery events. Discovery alone requires the committed main-frame origin.
+    // These callers run on main, so readWebView reads directly and cannot wait on its own queue.
+    private func callerIsCommittedBundledPage() -> Bool {
+        return bundledPage(using: committedPageURL)
+    }
+
+    private func bundledPage(using pageURL: () -> String?) -> Bool {
         guard let config = bridge?.config else { return false }
         let server: URL? = config.serverURL
         let local: URL? = config.localURL
         let serverText: String? = server?.absoluteString
         let localText: String? = local?.absoluteString
         if serverText == nil || serverText != localText { return false }
-        return EndpointRules.isBundledPage(bridgeServerUrl: serverText, bridgeLocalUrl: localText, shown: shownPageURL())
+        return EndpointRules.isBundledPage(bridgeServerUrl: serverText, bridgeLocalUrl: localText, shown: pageURL())
     }
 
     // The URL the web view's main frame is showing RIGHT NOW, or nil (no bridge, no web view, nothing loaded, or the main thread
@@ -434,14 +446,15 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    // The URL of the page the web view has actually COMMITTED, for the session calls (Opus code review of PR #35, 2026-11-08, a
-    // suspicion about an Apple behaviour it was not sure of): `WKWebView.url` can already show the address of a navigation that
+    // The URL of the page the web view has actually COMMITTED, for session calls and discovery (Opus code review of PR #35,
+    // 2026-11-08, a suspicion about an Apple behaviour it was not sure of): `WKWebView.url` can show a navigation that
     // has STARTED and not finished (the known address-bar spoofing shape), while Capacitor's reply goes to the page that is
     // really showing. So the URL is returned only when the back-forward list's current item, which changes only once a new page
     // has committed, has the same ORIGIN; anything else (no current item either) is nil = "not the server's page", which refuses.
     // Fails closed, so if WebKit behaves otherwise than assumed the worst case is "sign in twice, as before", never a token for
-    // the wrong page. Used by saveSession and getSession (the two that hand something to or take something from a page), and by
-    // addEndpoint's "ask once" decision and its last check before the write (Codex code review of the PR #38 prompt delta, High:
+    // the wrong page. Used by saveSession and getSession (the two that hand something to or take something from a page),
+    // discovery, and addEndpoint's "ask once" decision and its last check before the write (Codex code review of the PR #38
+    // prompt delta, High:
     // a hostile plain-http page could start a navigation to an https URL, so WKWebView.url read https and the prompt was skipped;
     // an unreadable or uncommitted page is nil here, which ASKS). NOT by clearSession (a delete should not be refused by an odd
     // page state) and not by phase 1's checkPage, which works on a device and is left as it is.

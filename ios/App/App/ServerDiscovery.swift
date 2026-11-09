@@ -23,6 +23,12 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
     private struct ActiveResolve {
         let job: DiscoveryState<Service>.ResolveJob
         let service: NetService
+        let search: Int
+        let watchdogDueAt: Int64
+        var settleDueAt: Int64?
+        var hosts: [String]
+        var seenHosts: Set<String>
+        var port: Int
     }
 
     private let queue = DispatchQueue(label: "com.sauso.nightlight.discovery")
@@ -142,11 +148,13 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
     private func found(_ result: NWBrowser.Result, gen: Int) {
         guard let c = coordinates(result), case let .bonjour(record) = result.metadata else { return }
         var attributes: [String: Data?] = [:]
-        // entries preserves original key case and a valueless key, unlike dictionary's String values. An
-        // ambiguous id/version or a valueless id fails closed in DiscoveryRules before any address is resolved.
-        // unsure: Apple's current docs show entries and Entry.data, but do not state their iOS 15 availability.
-        // updateValue preserves a nil Data? value; subscript assignment with nil would remove that key.
-        for (key, entry) in record.entries { attributes.updateValue(entry.data, forKey: key) }
+        // `dictionary` (iOS 13) is the accessor the deployment target allows: CI's first build showed that
+        // NWTXTRecord.entries needs iOS 26.4 and Entry.data iOS 16. It gives String values, so a key with no value
+        // is missing or empty (both fail closed in DiscoveryRules: an empty `id` is not UUID-shaped, an empty `v` is
+        // not "1"), and keys that differ only in case may be merged by the framework (unsure). That loses nothing
+        // that protects the person: whatever id is read here must STILL equal the id in the server's own health
+        // reply (DiscoveryRules.matches) and again at save (expectId).
+        for (key, value) in record.dictionary { attributes[key] = Data(value.utf8) }
         guard let id = DiscoveryRules.txtId(from: attributes) else { return }
         _ = state.onFound(gen, c.name, Service(name: c.name, type: c.type, domain: c.domain, txtId: id))
     }
@@ -169,7 +177,11 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
             // NetService gives sockaddr bytes without opening a TCP connection. A connection-based resolve
             // could reach a public address before we can apply the private IPv4 policy.
             s.delegate = self
-            active[ObjectIdentifier(s)] = ActiveResolve(job: job, service: s)
+            // NetService's five-second timeout may never call back. Eight seconds is a judgement, unverified
+            // on a phone; the watchdog must free one of the two resolve slots even without a delegate call.
+            active[ObjectIdentifier(s)] = ActiveResolve(job: job, service: s, search: search,
+                                                        watchdogDueAt: nowMs() + 8_000, settleDueAt: nil,
+                                                        hosts: [], seenHosts: [], port: 0)
             // NetService needs a running run loop. All its operations and delegate calls use the main run loop;
             // only immutable callback data is moved onto the discovery queue before touching DiscoveryState.
             DispatchQueue.main.async { [weak s] in
@@ -200,14 +212,32 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
     }
 
     private func resolved(_ service: NetService, addresses: [Data], port: Int) {
-        guard let item = active.removeValue(forKey: ObjectIdentifier(service)) else { return }
+        let key = ObjectIdentifier(service)
+        guard var item = active[key], item.search == serial else { return }
+        // Apple may deliver more than one didResolve callback. A 500 ms settle window after the first is a
+        // judgement, unverified on a device; an IPv6-only first answer must not discard a later IPv4 answer.
+        if item.settleDueAt == nil { item.settleDueAt = nowMs() + 500 }
+        // Bound even a hostile responder's unique addresses before handing them to DiscoveryState's smaller
+        // private-address cap. Keep arrival order so a later callback can contribute new hosts.
+        let limit = DiscoveryState<Service>.MAX_ADDRESSES_PER_SERVICE * 4
+        for address in addresses {
+            if item.hosts.count >= limit { break }
+            guard let host = ipv4(address), item.seenHosts.insert(host).inserted else { continue }
+            item.hosts.append(host)
+        }
+        if port >= 1 && port <= 65535 { item.port = port }
+        active[key] = item
+        armTimer(serial)
+    }
+
+    private func finishResolved(_ service: NetService) {
+        guard let item = active.removeValue(forKey: ObjectIdentifier(service)), item.search == serial else { return }
         close(service)
         let job = item.job
         guard state.isResolving(job) else { return }
         // Reading sockaddr_in never opens a connection or uses DNS. IPv6 and non-private results are ignored;
         // DiscoveryState applies the private-address policy, deduplication and eight-address cap.
-        let hosts = addresses.compactMap { ipv4($0) }
-        _ = state.onResolved(job, job.payload.txtId, hosts, port, nowMs())
+        _ = state.onResolved(job, job.payload.txtId, item.hosts, item.port, nowMs())
         if state.deferredDueAt(job.name) != nil { deferredNames.insert(job.name) }
         pumpProbes(serial)
         pumpResolves(serial)
@@ -215,11 +245,19 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
     }
 
     private func resolveFailed(_ service: NetService, code: Int?) {
-        guard let item = active.removeValue(forKey: ObjectIdentifier(service)) else { return }
+        guard let item = active[ObjectIdentifier(service)], item.search == serial else { return }
+        let timedOut = code == NetService.ErrorCode.timeoutError.rawValue
+        // A timeout can follow a useful address callback. Use those addresses once instead of throwing
+        // them away; other NetService failures retain their existing final-failure behaviour.
+        if timedOut && !item.hosts.isEmpty { finishResolved(service); return }
+        finishFailed(service, retry: timedOut)
+    }
+
+    private func finishFailed(_ service: NetService, retry: Bool) {
+        guard let item = active.removeValue(forKey: ObjectIdentifier(service)), item.search == serial else { return }
         close(service)
         // Only an actual timeout is retried. Not-found, cancellation and other errors are final. This
         // NetService error mapping and how often a phone times out are unconfirmed until device testing.
-        let retry = code == NetService.ErrorCode.timeoutError.rawValue
         _ = state.resolveFailed(item.job, retry: retry, nowMs: nowMs())
         pumpResolves(serial)
         armTimer(serial)
@@ -273,7 +311,9 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
         // DiscoveryState evicts the oldest deferral at its cap; forget that name here as well so this
         // timer's index cannot grow beyond the state machine's bounded list under an announcement flood.
         deferredNames = Set(deferredNames.filter { state.deferredDueAt($0) != nil })
-        let due = ([permissionDueAt, state.nextRetryDueAt()] + deferredNames.map { state.deferredDueAt($0) }).compactMap { $0 }.min()
+        let due = ([permissionDueAt, state.nextRetryDueAt()] +
+                   deferredNames.map { state.deferredDueAt($0) } +
+                   active.values.flatMap { [$0.settleDueAt, Optional($0.watchdogDueAt)] }).compactMap { $0 }.min()
         guard let when = due else { return }
         let delay = max(Int64(0), when - nowMs())
         let next = DispatchSource.makeTimerSource(queue: queue)
@@ -291,6 +331,16 @@ final class ServerDiscovery: NSObject, NetServiceDelegate {
         if let due = permissionDueAt, now >= due {
             fail("Turn on Local Network for Nightlight in Settings > Privacy & Security > Local Network, then search again.")
             return
+        }
+        // The first callback starts a fixed settle deadline. The watchdog uses the same timeout outcome as a
+        // NetService timeout: collected IPv4 addresses resolve; no addresses release the slot and retry.
+        let dueServices = active.values.filter {
+            ($0.settleDueAt.map { now >= $0 } ?? false) || now >= $0.watchdogDueAt
+        }.map { $0.service }
+        for service in dueServices {
+            guard let item = active[ObjectIdentifier(service)], item.search == search else { continue }
+            if item.hosts.isEmpty { finishFailed(service, retry: true) }
+            else { finishResolved(service) }
         }
         _ = state.requeueDueRetries(now)
         for name in deferredNames {

@@ -10,7 +10,9 @@ On Android and iOS the first-run screen can also find your server on your home W
 you usually don't need to type the address. Nothing is saved until you tap Connect. It finds servers on private
 IPv4 addresses only (10.x, 172.16–31.x, 192.168.x), and a found server opens at its `http://` address, which is
 separate from any https address you use, so you sign in again there. Servers older than the matching Nightlight
-release are not found; the typed address always works. On Android and iOS the saved-servers list shows each server's **name** (what the server
+release are not found; you can type the address instead. On iOS, a typed home-network address also needs Local Network
+access; a Tailscale address outside the local network is unaffected. On Android and iOS the saved-servers list shows each
+server's **name** (what the server
 reports at `/api/health`, bounded by `DiscoveryRules.cleanName`, shown as text only) with its address in smaller text below; the
 phone keeps names only for servers on that list (`EndpointRules.namesForKnown`) and learns one when a server is saved, when it
 is reconnected through its Tailscale address, and at each start while signed in (`addEndpoint`), so servers saved earlier get
@@ -24,7 +26,8 @@ belongs to you.
 
 iOS needs Local Network access. The permission prompt appears the first time the app uses the local network, which may
 have happened before you search, so you may not see it again. If access is off, the search shows how to turn it on in
-**Settings > Privacy & Security > Local Network**. You can still type the server's address.
+**Settings > Privacy & Security > Local Network**. Typing a local address also needs this permission. A Tailscale
+address outside the local network is unaffected.
 
 Search finds private IPv4 addresses only. It finds nothing on IPv6-only networks, or when the Wi-Fi blocks multicast
 or isolates devices from one another. The iOS search, its permission prompt and denial message, and discovery across
