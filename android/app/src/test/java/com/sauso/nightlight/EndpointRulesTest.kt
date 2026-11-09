@@ -227,7 +227,7 @@ class EndpointRulesTest {
     }
 
     @Test
-    fun `the write decides again: only a confirmed write ignores what the page shows now`() {
+    fun `the write decides again, and only a confirmed write ignores what the page shows now`() {
         // (accepted, needs confirmation now) -> may write. Codex code review of the PR #37 prompt delta.
         assertTrue("accepted, not needed now", EndpointRules.mayWriteAddress(accepted = true, needsConfirmationNow = false))
         assertTrue("not asked, not needed now", EndpointRules.mayWriteAddress(accepted = false, needsConfirmationNow = false))
