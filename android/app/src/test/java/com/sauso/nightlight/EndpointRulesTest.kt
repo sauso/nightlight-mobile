@@ -141,20 +141,141 @@ class EndpointRulesTest {
         }
     }
 
+    // ---- The launch's grace for the Tailscale address (owner decision 2026-11-09, Tailscale first) ----
+
     @Test
-    fun `the short wait applies only when a tailscale address is saved, the phone is off the local network and the address is local-only`() {
-        val full = 3_000L
-        val saved = "http://192.168.1.50:4000"
-        assertEquals(EndpointRules.OFF_NETWORK_WAIT_MS, EndpointRules.localWaitMs(saved, ts, false, full))
-        assertEquals("on Wi-Fi: the whole wait", full, EndpointRules.localWaitMs(saved, ts, true, full))
-        assertEquals("no Tailscale address: nothing to switch to, so the saved address keeps its whole chance", full, EndpointRules.localWaitMs(saved, null, false, full))
-        assertEquals("a public saved address answers on mobile data too", full, EndpointRules.localWaitMs("https://nightlight.example.com", ts, false, full))
-        assertEquals("an unparseable saved address", full, EndpointRules.localWaitMs("nonsense", ts, false, full))
+    fun `the grace is a second, or a quarter second when the phone has no VPN`() {
+        // Literal values, so the numbers the README states are what is pinned.
+        assertEquals(1_000L, EndpointRules.TAILSCALE_GRACE_MS)
+        assertEquals(250L, EndpointRules.TAILSCALE_GRACE_NO_VPN_MS)
     }
 
     @Test
-    fun `the short wait is never longer than the full wait`() {
-        assertEquals(500L, EndpointRules.localWaitMs("http://192.168.1.50:4000", ts, false, 500L))
+    fun `a VPN on the phone keeps the full grace, and only no VPN at all shortens it`() {
+        assertEquals("a VPN is up (or the reading failed, which reads as present)", 1_000L, EndpointRules.tailscaleGraceMs(vpnPresent = true))
+        assertEquals("positively no VPN", 250L, EndpointRules.tailscaleGraceMs(vpnPresent = false))
+    }
+
+    @Test
+    fun `the grace is shorter than the whole launch decision`() {
+        // Otherwise a saved address that answered would wait the whole deadline for Tailscale, as if there were no grace.
+        assertTrue(EndpointRules.TAILSCALE_GRACE_MS < EndpointChooser.DEADLINE_MS)
+        assertTrue(EndpointRules.TAILSCALE_GRACE_NO_VPN_MS < EndpointRules.TAILSCALE_GRACE_MS)
+    }
+
+    // ---- refusal: the sentences addEndpoint rejects with, word for word ----
+
+    @Test
+    fun `every refusal sentence is pinned, byte-identical to the iPhone app's`() {
+        // The web app's About card reads these words (nativeBridge.js classifyAddRefusal), and ios/Tests pins the same sentences:
+        // a sentence reworded on one platform would show a different reason there.
+        assertEquals("Not a Tailscale address", EndpointRules.refusal(EndpointRules.AddCheck.NOT_A_TAILSCALE_ADDRESS))
+        assertEquals("Not available on this page", EndpointRules.refusal(EndpointRules.AddCheck.NOT_THIS_PAGE))
+        assertEquals("Couldn't read this server's identity", EndpointRules.refusal(EndpointRules.AddCheck.UNREADABLE_SERVER))
+        assertEquals("Couldn't reach that Tailscale address", EndpointRules.refusal(EndpointRules.AddCheck.UNREACHABLE_ADDRESS))
+        assertEquals("That address is a different server", EndpointRules.refusal(EndpointRules.AddCheck.DIFFERENT_SERVER))
+        assertEquals("The secure address was not accepted on this phone", EndpointRules.refusal(EndpointRules.AddCheck.NOT_ACCEPTED))
+        assertEquals("The secure address was not confirmed on this phone", EndpointRules.refusal(EndpointRules.AddCheck.NOT_CONFIRMED))
+        assertEquals("", EndpointRules.refusal(EndpointRules.AddCheck.OK))
+    }
+
+    @Test
+    fun `the prompt's refusals read as refused on the web, never as unreachable or another server`() {
+        for (check in listOf(EndpointRules.AddCheck.NOT_ACCEPTED, EndpointRules.AddCheck.NOT_CONFIRMED)) {
+            val sentence = EndpointRules.refusal(check)
+            assertFalse(sentence, Regex("couldn'?t reach", RegexOption.IGNORE_CASE).containsMatchIn(sentence))
+            assertFalse(sentence, Regex("different server", RegexOption.IGNORE_CASE).containsMatchIn(sentence))
+        }
+    }
+
+    // ---- needsConfirmation: when a secure address must be confirmed by the person (Codex code review of PR #37) ----
+
+    @Test
+    fun `the decline keys are per server and never the address's own keys`() {
+        assertEquals("tailscale_declined:$home", EndpointRules.declinedKey(home))
+        assertEquals("tailscale_declined_at:$home", EndpointRules.declinedAtKey(home))
+        assertFalse(EndpointRules.declinedKey(home) == EndpointRules.declinedKey("http://192.168.1.51:4000"))
+        val keys = setOf(EndpointRules.key(home), EndpointRules.idKey(home), EndpointRules.declinedKey(home), EndpointRules.declinedAtKey(home))
+        assertEquals("four different keys", 4, keys.size)
+    }
+
+    @Test
+    fun `a new or changed address is confirmed unless the page shown is https`() {
+        val httpPage = "http://192.168.1.50:4000/#/live"
+        val httpsPage = "https://nightlight.example.com/#/live"
+        val tailscalePage = "$ts/#/live"
+        // Rows: (saved secure address, page shown) -> asks? The candidate is always `ts`.
+        val rows = listOf(
+            Triple(null, httpPage, true), // first learn, from http
+            Triple(other, httpPage, true), // a change, from http
+            Triple(null, null, true), // first learn, the page could not be read: asks (fails closed)
+            Triple(other, null, true),
+            Triple(null, "about:blank", true), // not https
+            Triple(null, "http://192.168.1.50:4000/?next=https://x.example", true), // "https://" later in an http address
+            Triple(null, httpsPage, false), // an https page cannot be spoofed by the network
+            Triple(other, httpsPage, false),
+            Triple(other, "$other/#/live", false), // the page on the (old) saved secure address itself
+            Triple(null, tailscalePage, false),
+            Triple(ts, httpPage, false), // already saved: re-offered at every start, never asked again
+            Triple(ts, null, false),
+            Triple(ts, httpsPage, false),
+            Triple(ts, tailscalePage, false),
+        )
+        for ((savedTailscale, shown, asks) in rows) {
+            assertEquals("saved $savedTailscale, shown $shown", asks, EndpointRules.needsConfirmation(shown, savedTailscale, ts))
+        }
+    }
+
+    @Test
+    fun `the write decides again, and only a confirmed write ignores what the page shows now`() {
+        // (accepted, needs confirmation now) -> may write. Codex code review of the PR #37 prompt delta.
+        assertTrue("accepted, not needed now", EndpointRules.mayWriteAddress(accepted = true, needsConfirmationNow = false))
+        assertTrue("not asked, not needed now", EndpointRules.mayWriteAddress(accepted = false, needsConfirmationNow = false))
+        assertFalse("not asked, but needed now: refused", EndpointRules.mayWriteAddress(accepted = false, needsConfirmationNow = true))
+        assertTrue("accepted, and needed now: the person already said yes", EndpointRules.mayWriteAddress(accepted = true, needsConfirmationNow = true))
+    }
+
+    @Test
+    fun `a page that turned http before the write needs confirmation again`() {
+        // The case the re-check exists for: decided on an https page, written while an http page shows.
+        val decidedOn = "https://nightlight.example.com/#/live"
+        val shownAtWrite = "http://192.168.1.50:4000/#/live"
+        assertFalse(EndpointRules.needsConfirmation(decidedOn, null, ts))
+        assertFalse(EndpointRules.mayWriteAddress(accepted = false, needsConfirmationNow = EndpointRules.needsConfirmation(shownAtWrite, null, ts)))
+        assertFalse("unreadable at the write", EndpointRules.mayWriteAddress(accepted = false, needsConfirmationNow = EndpointRules.needsConfirmation(null, null, ts)))
+    }
+
+    // ---- addressAnswers: what "answers" means, for the launch's choice and the watcher's second look alike ----
+
+    // Network reads that must not happen: each fails the test if it is called.
+    private val reachableNeverAsked: (String) -> Boolean = { throw AssertionError("reachable was asked about $it") }
+    private val idNeverRead: (String) -> String? = { throw AssertionError("an id was read for $it") }
+
+    @Test
+    fun `the tailscale address answers when it reports the id it was saved for`() {
+        assertTrue(EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { sameId }, reachable = reachableNeverAsked))
+    }
+
+    @Test
+    fun `a wrong id, no id or no saved id is not an answer from the tailscale address`() {
+        assertFalse("another server's id", EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { otherId }, reachable = reachableNeverAsked))
+        assertFalse("no id read", EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { null }, reachable = reachableNeverAsked))
+        assertFalse("no saved id, the address reports one", EndpointRules.addressAnswers(ts, ts, null, fetchId = { sameId }, reachable = reachableNeverAsked))
+        // The one a dropped "wantedId != null" would let through: null equals null.
+        assertFalse("no saved id and none read", EndpointRules.addressAnswers(ts, ts, null, fetchId = { null }, reachable = reachableNeverAsked))
+    }
+
+    @Test
+    fun `the tailscale address is never judged by reachability`() {
+        // Up, but another server: reachable would say yes, and the rule must not fall back to it.
+        assertFalse(EndpointRules.addressAnswers(ts, ts, sameId, fetchId = { otherId }, reachable = { true }))
+    }
+
+    @Test
+    fun `the saved address answers when it is reachable, and no id is read for it`() {
+        assertTrue(EndpointRules.addressAnswers(home, ts, sameId, fetchId = idNeverRead, reachable = { it == home }))
+        assertFalse(EndpointRules.addressAnswers(home, ts, sameId, fetchId = idNeverRead, reachable = { false }))
+        assertTrue("no Tailscale address saved", EndpointRules.addressAnswers(home, null, null, fetchId = idNeverRead, reachable = { true }))
     }
 
     // ---- Change server from the Tailscale address (owner, 2026-11-06) ----

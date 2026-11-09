@@ -21,31 +21,81 @@ theirs without any action. A server that has sent no name is listed by its addre
 The address you set the app up with stays the **saved** address. If the server has Tailscale and its secure address on, the
 web app asks the server for that address after sign-in and hands it to the app (`ServerConfig.addEndpoint`), which keeps it
 beside the saved one (SharedPreferences key `tailscale_for:<saved address>`). The app checks it first: it must be exactly
-`https://<name>.ts.net`, the page asking must be the saved server (or its Tailscale address), and `/api/health` at the new
+`https://<name>.ts.net`, the page asking must be the saved server (or its Tailscale address) and really be showing that address, and `/api/health` at the new
 address must report the same server id as the page's server (the id is saved with the address, and the address is opened at
-launch only if the server there still reports it). Forgetting a server (the ✕ on the setup page) removes its Tailscale address; **Change server** keeps it, so on the setup page a remembered server whose home address does not answer (you are on mobile data) is reconnected through its Tailscale address, once that address answers with the id it was saved for (`EndpointRules.canReconnectViaTailscale`). Only the bundled setup page can use that reconnect (a page on a server cannot). The address is dropped when the saved address is next confirmed from the setup screen (a save, not every launch: the launch gate does not read the home address's id) and a different server answers there (`EndpointRules.pairStillValid`). Off Wi-Fi and Ethernet, with a home-network-only saved address (`EndpointRules.isLocalOnlyAddress`) and a Tailscale address saved, the saved address is waited for about 1 second instead of 3 (`EndpointRules.localWaitMs`, `LocalNetwork`). At launch `MainActivity` probes both addresses at once and
-opens the saved one if it answers within 3 seconds, else the Tailscale one (`EndpointChooser`); a quick Tailscale answer
-never beats a slower home answer. The rules are unit-tested on the JVM (`EndpointRulesTest`, `EndpointChooserTest`,
-`EndpointProbeTest`); the plugin glue and the launch gate need a phone (see the PR's checklist). iOS does the same, with the
-limits listed in [Two addresses for one server (iOS)](#two-addresses-for-one-server-ios).
+launch only if the server there still reports it). Forgetting a server (the ✕ on the setup page) removes its Tailscale address; **Change server** keeps it, so on the setup page a remembered server whose home address does not answer (you are on mobile data) is reconnected through its Tailscale address, once that address answers with the id it was saved for (`EndpointRules.canReconnectViaTailscale`). Only the bundled setup page can use that reconnect (a page on a server cannot). The address is dropped when the saved address is next confirmed from the setup screen (a save, not every launch: the launch gate does not read the home address's id) and a different server answers there (`EndpointRules.pairStillValid`).
+
+**The app asks once before it saves a new secure address.** When the app learns a secure address for the first time, or a
+different one, while the page on screen is a plain `http` address, it asks "Use this secure address?" and shows the saved
+address the offer came from and the full secure name. Tap **Use it** only if you have just turned on the secure address in your
+server's Settings → Remote Access and the name matches; the web app's own "saved" notice follows. Why: a saved secure address
+now opens ahead of the saved one, and the server id the app checks is public, so a device that answers at a plain `http` address
+(where the network can be faked) could otherwise offer its own address. The details (`EndpointRules.needsConfirmation`,
+`PromptGate`):
+- **Don't use it** keeps what was saved before: the saved address only, or, when the offer was a change, the secure address
+  already saved. The app does not ask about that same address again for **7 days**; then it asks once more. A different
+  address is asked about the next time it is offered, once the 10-minute limit below allows.
+- The back button and a tap outside do not close the question, so only a tap answers it. If it gets no answer within
+  **2 minutes**, or the app closes while it shows, nothing is saved or remembered: the next start asks again. At most one
+  question shows at a time, and at most one every **10 minutes** (counted from when one was shown), so a question about a
+  different address, or the next start's question, can wait up to 10 minutes.
+- Never asked: an address that is already saved, and an offer made from an `https` page (including the secure address itself),
+  which the network cannot fake. The app decides this again just before it saves, on the page shown then. Forgetting the server
+  (the ✕ on the setup screen; only the setup screen can do it) forgets a decline too.
+- The three numbers are judgements, not measurements. Known limits: accepting a hostile address leaves you exposed as before;
+  the question cannot prove the name is yours, it only shows it and says when to accept; a phone that already holds a secure
+  address is not asked about it again.
+
+**Which address opens: Tailscale first.** When a Tailscale address is saved, the app opens it whenever it answers, and the
+saved address only when it does not. (It used to be the other way round. On a phone hotspot with Tailscale on, the plain `http`
+saved address still answered through Tailscale, so the app never used the secure address, which two-way talk needs.) At launch
+`MainActivity` probes both addresses at once, for at most 3 seconds in all (`EndpointChooser`):
+- a Tailscale answer, with the id it was saved for, opens Tailscale whenever it comes within those 3 seconds;
+- a saved answer waits a short **grace** for Tailscale, counted from the start: **1 second**, or **0.25 seconds** when the phone
+  has no VPN at all (`EndpointRules.tailscaleGraceMs`, `VpnPresent`). A Tailscale failure (refused, no such name, a certificate
+  error) ends the grace at once. Both numbers are judgements, not measurements: Tailscale that is on and healthy answers well
+  inside a second, and with Tailscale off the saved address should not wait more than a quarter of a second. The VPN reading
+  can only shorten the wait (if it cannot be read, the phone counts as having a VPN), so a wrong reading never opens a wrong
+  address;
+- when neither answers, the setup page opens, as before.
+
+With no Tailscale address saved nothing changes: only the saved address is probed, with no grace. Known limits: a Tailscale
+connection that is slow to wake (relayed, or idle for a while) can miss the grace, so that launch opens the saved address and
+the app moves to Tailscale the next time it comes to the front (below). At home with Tailscale on, the app now reaches the
+server through the server's own Tailscale node instead of directly; the extra load that puts on the server for video has not
+been measured, and the app still uses the saved address whenever Tailscale does not answer. If you signed in before the app
+kept one sign-in for both addresses (next section), the Tailscale address asks you to sign in once.
+
+The rules are unit-tested on the JVM (`EndpointRulesTest`, `EndpointChooserTest`, `EndpointProbeTest`); the plugin glue, the VPN
+reading and the launch gate need a phone (see the PR's checklist). iOS does the same, with the limits listed in
+[Two addresses for one server (iOS)](#two-addresses-for-one-server-ios).
 
 ### When you change network (Android)
 
-Leave home with the app open and, when Wi-Fi turns to mobile data, the app moves to the Tailscale address by itself within a few
-seconds, with no restart (when a Tailscale address is saved, as above, and the Tailscale app on the phone is connected).
-Coming home, it does not move back while you are using it (the Tailscale address keeps working on Wi-Fi). It moves back to the
-home address the next time the app comes to the front (opened again, or the screen turned back on), and never while it is in
-Picture-in-Picture. It does so a few seconds after the app comes to the front (a settle wait plus the check), so something typed
-in those first seconds (a sign-in code, say) can be lost: a known limit. Either move reloads the app onto its home screen, so a video you were watching
-starts again. Sign-in carries across as described in the next section: moving back home asks you to sign in only if you never
-signed in on the home address.
+When a Tailscale address is saved (as above) the app keeps you on an address that works, and prefers Tailscale:
+- **The page stops answering:** the app moves to the other address within a few seconds, with no restart. Leave home on the
+  saved address and, when Wi-Fi turns to mobile data, it moves to Tailscale (when the Tailscale app on the phone is connected);
+  switch Tailscale off while its page is open and it moves to the saved address. This happens on any network change and when
+  the app comes to the front, even in Picture-in-Picture: a page that no longer answers has nothing left to lose.
+- **The page still works:** it is left alone, with one exception. A working page on the saved address moves up to Tailscale the
+  next time the app comes to the front (opened again, or the screen turned back on), never while it is in Picture-in-Picture
+  and never in the middle of use. A working Tailscale page never moves to the saved address.
+
+Before any move the app looks once more at the page on screen, waiting about 1.5 seconds for an answer, to tell a page that works
+from one that has stopped answering; if that look cannot be taken, the page counts as working. Known limits: a page that is merely slower than
+that look counts as stopped and moves to the address that has just answered; and the move to Tailscale at a start happens a few
+seconds after the app comes to the front (a settle wait plus the checks), so something typed in those first seconds (a sign-in
+code, say) can be lost. Either move reloads the app onto its home screen, so a video you were watching starts again. Sign-in
+carries across as described in the next section: moving to the saved address asks you to sign in only if you never signed in
+there.
 
 How it works: while the app is in the foreground, `NetworkRoamWatcher` listens for changes to the phone's default network (a new
 network, a lost one, or a change between Wi-Fi, mobile data, Ethernet and VPN). It waits about 2 seconds for the network to
 settle, then makes the same choice the launch makes (`MainActivity.chooseAddress`). If that picks the other address from the page
-on screen, the activity is recreated, which re-runs the launch. Coming to the front runs the same check once. The saved address
-is never rewritten. Only a page on one of the two addresses is moved: the setup page and the "Can't reach your server" page are
-left alone, since they already offer a retry and your saved servers.
+on screen, it takes the second look at the page on screen and `RoamRules.target` decides; a move recreates the activity, which
+re-runs the launch. Coming to the front runs the same check once. The saved address is never rewritten. Only a page on one of
+the two addresses is moved: the setup page and the "Can't reach your server" page are left alone, since they already offer a
+retry and your saved servers.
 
 - **Nothing answering yet** (Tailscale still reconnecting, say): it checks again at about 3, 6, 12 and 25 seconds, then waits for
   the next network change or the next time the app comes to the front.
@@ -56,8 +106,10 @@ left alone, since they already offer a retry and your saved servers.
 - **Not covered**: the watcher runs only while the app is in the foreground. Listening with the screen off on a network that has
   stopped working is not rescued; the app chooses again when you next bring it to the front. All the numbers above are
   judgements, not measurements.
-- **Tested**: the rules are unit-tested on the JVM (`RoamRulesTest`). The watcher and the `MainActivity` glue need a phone (see
-  the PR's checklist). The iPhone app does the same: see [When you change network (iOS)](#when-you-change-network-ios).
+- **Tested**: the rules are unit-tested on the JVM (`RoamRulesTest`, including the second look's time limit and the last
+  Picture-in-Picture check; `EndpointRulesTest` for what counts as an answer). The watcher's wiring and the `MainActivity` glue
+  need a phone (see the PR's checklist). The iPhone app does the same: see
+  [When you change network (iOS)](#when-you-change-network-ios).
 
 ## One sign-in across the two addresses (Android)
 

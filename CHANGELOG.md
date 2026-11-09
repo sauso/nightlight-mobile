@@ -32,6 +32,19 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   playing in the background on a network that has stopped working, nothing is rescued until you next open the app. Needs
   the Tailscale address the iPhone app learned in 0.9.0; with none saved, nothing changes.
 
+### Changed
+- **Android: the app now opens your server's secure Tailscale address first when it has one, and your saved address if that
+  does not answer.** Nothing changes without a secure address. With Tailscale switched off on the phone, opening the saved
+  address waits at most about a quarter of a second longer (a second if another VPN is on). If Tailscale is slow to answer
+  when the app starts, the app opens the saved address and moves to the secure one the next time you open it. While you use
+  the app it only switches address when the page on screen stops answering. If you signed in before the app kept one sign-in
+  for both addresses, the secure address asks you to sign in once. The first time the app learns a secure address (or a
+  different one) from your server's plain `http` address, it asks you to confirm it and shows the full name: tap Use it only
+  if you have just turned on the secure address in your server's Settings → Remote Access and the name matches. Don't use it
+  keeps what you had before (your saved address, or the secure address already saved), and the app does not ask about that
+  address again for a week. It asks at most once every 10 minutes, so another question can wait up to that long. A server can
+  now be forgotten only from the setup screen.
+
 ## [0.9.0] - 2026-11-08
 
 ### Added
