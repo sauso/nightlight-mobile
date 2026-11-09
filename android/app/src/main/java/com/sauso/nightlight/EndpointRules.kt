@@ -1,8 +1,9 @@
 package com.sauso.nightlight
 
 /**
- * The rules for a server's second address, the one the phone uses away from home (owner, 2026-11-06: the phone tries the
- * local address first and falls back to the server's Tailscale address, which the server tells it about).
+ * The rules for a server's second address: its secure Tailscale address, which the server tells the phone about (owner,
+ * 2026-11-06). Since the owner decision of 2026-11-09 ("we go Tailscale first") the phone opens that address first when it
+ * answers and uses the saved address when it does not (EndpointChooser); before that, the saved address came first.
  *
  * Pure Kotlin with no Android imports, so the JVM unit tests run exactly this code.
  *
@@ -33,9 +34,51 @@ object EndpointRules {
     fun idKey(primary: String): String = "tailscale_id:$primary"
 
     /**
+     * The keys of the secure address the person DECLINED for the saved server [primary], and of when (wall-clock ms): the
+     * "ask once" prompt's memory (PromptGate; the addendum to the Tailscale-first plan, 2026-11-09). Kept beside the Tailscale
+     * pair, removed with the server (forget), replaced by a later decline and cleared by an accept.
+     */
+    fun declinedKey(primary: String): String = "tailscale_declined:$primary"
+    fun declinedAtKey(primary: String): String = "tailscale_declined_at:$primary"
+
+    // An https page: the scheme, then a host. Anchored at the start, so "https://" inside an http page's path or query does not count.
+    private val HTTPS_PAGE = Regex("^https://[^/?#\\s]+", RegexOption.IGNORE_CASE)
+
+    /**
+     * Whether saving [candidate] as the saved server's secure address must first be confirmed by the person (Codex code review
+     * of PR #37, rated High twice; the owner chose "ask once in the app", 2026-11-09). Under Tailscale first a secure address
+     * that is saved opens AHEAD of the saved one, at home too, and the only check on it is an id that is PUBLIC: a device that
+     * answers at a plain-http saved address (where the network can be spoofed) could plant its own `https://<x>.ts.net` and show
+     * a fake sign-in page there. So the person is asked when BOTH hold:
+     *  - [candidate] differs from the secure address already saved ([savedTailscale]): a first learn or a change. The address
+     *    already saved is re-offered at every start and is never asked about again;
+     *  - the page actually SHOWN ([shownPageUrl], not the bridge's configured address: the addendum review) is not https. An
+     *    https page cannot be spoofed by the network, which includes the page on the saved secure address itself. A page that
+     *    could not be read (null) counts as not https: it asks (fails closed).
+     */
+    fun needsConfirmation(shownPageUrl: String?, savedTailscale: String?, candidate: String): Boolean {
+        if (candidate == savedTailscale) return false
+        val shownIsHttps = shownPageUrl != null && HTTPS_PAGE.containsMatchIn(shownPageUrl.trim())
+        return !shownIsHttps
+    }
+
+    /**
+     * Whether addEndpoint's final write may go ahead, decided AGAIN at the write (Codex code review of the PR #37 prompt delta,
+     * 2026-11-09): "no prompt needed" is first decided on the page shown BEFORE the identity probes, which take seconds, and a
+     * hostile http page that is https for a moment then (or whose WebView URL is still a provisional one) must not slip an
+     * unconfirmed save through. So at the write [needsConfirmation] is recomputed on the page shown NOW and the secure address
+     * saved NOW ([needsConfirmationNow]). A write the person confirmed ([accepted]: "Use it" for this very call) goes ahead
+     * whatever the page shows now; any other write goes ahead only when no confirmation is needed now. Otherwise it is refused
+     * (NOT_CONFIRMED): nothing is written and no decline is stored.
+     */
+    fun mayWriteAddress(accepted: Boolean, needsConfirmationNow: Boolean): Boolean = accepted || !needsConfirmationNow
+
+    /**
      * True when [url]'s host can only be reached from a local network: a private IPv4 address (10/8, 172.16/12, 192.168/16) or
      * a `.local` name. A public name or address (a domain with HTTPS, say) is NOT local-only: it answers on mobile data too.
-     * Anything that does not parse is not local-only (so the ordinary wait applies).
+     * Anything that does not parse is not local-only.
+     * Nothing on Android calls this since the launch went Tailscale first (its short off-Wi-Fi wait for the saved address went);
+     * it stays, with its tests, for the planned iPhone "Find server" port (Codex plan review of Tailscale first, 2026-11-09).
      */
     fun isLocalOnlyAddress(url: String?): Boolean {
         if (url == null) return false
@@ -47,21 +90,42 @@ object EndpointRules {
         return DiscoveryRules.isPrivateIpv4(host) || host.lowercase().endsWith(".local")
     }
 
-    // How long a launch waits for a saved address that says nothing, when the phone cannot be on its network (below). A
-    // judgement, not a measurement: a reachable home server answers in milliseconds and even a slow Wi-Fi in well under a
-    // second, so this is generous for a phone that merely just joined Wi-Fi, and short enough that the Tailscale fallback
-    // opens in about a second instead of three.
-    const val OFF_NETWORK_WAIT_MS = 1_000L
+    // How long a saved address that has ANSWERED waits for the Tailscale one at launch (EndpointChooser's grace), counted from
+    // the start of the decision. A judgement, not a measurement (owner decision 2026-11-09, Tailscale first): Tailscale switched
+    // on and healthy answers in well under a second, so a second is enough for it to win; a Tailscale path that is cold (relayed,
+    // or the first request after a while idle) can take longer, and then the launch opens the saved address and the next
+    // foreground start moves it to Tailscale (RoamRules.target, the upgrade).
+    const val TAILSCALE_GRACE_MS = 1_000L
+
+    // The same grace when the phone positively has no VPN at all (VpnPresent), so a Tailscale answer is not expected. A judgement,
+    // not a measurement: with Tailscale off, opening the saved address should not be held up by more than a quarter of a second.
+    const val TAILSCALE_GRACE_NO_VPN_MS = 250L
 
     /**
-     * How long the launch gate waits for the saved address before it uses the Tailscale one. The short wait applies only when
-     * ALL of: a Tailscale address is saved (otherwise there is nothing to switch to, so the saved address keeps its whole
-     * chance), the phone is not on Wi-Fi or Ethernet, and the saved address is one only a local network can answer. Every other
-     * case waits the full [fullMs]. Away from home on mobile data, a home address cannot answer: waiting three seconds for it
-     * was the pause the owner saw on the first phone test (2026-11-06).
+     * The grace for this launch. The VPN reading is a hint that can only SHORTEN the wait (its failure reads as "present", the
+     * full grace): if it is wrong, the worst case is that a slower but valid Tailscale answer loses to the saved address, which
+     * is the saved-first behaviour the app had before; the app never opens an unverified Tailscale address because of it
+     * (Codex plan review of Tailscale first, 2026-11-09).
      */
-    fun localWaitMs(saved: String?, tailscale: String?, onLocalNetwork: Boolean, fullMs: Long): Long =
-        if (tailscale != null && !onLocalNetwork && isLocalOnlyAddress(saved)) minOf(OFF_NETWORK_WAIT_MS, fullMs) else fullMs
+    fun tailscaleGraceMs(vpnPresent: Boolean): Long = if (vpnPresent) TAILSCALE_GRACE_MS else TAILSCALE_GRACE_NO_VPN_MS
+
+    /**
+     * Whether [url] answers as this server: the ONE rule the launch's choice (MainActivity.chooseAddress) and the network
+     * watcher's second look (NetworkRoamWatcher) both use, so "answers" cannot mean two things (Codex code review of Tailscale
+     * first, 2026-11-09). For the saved server's Tailscale address ([tailscale]) an answer counts only with the id that address
+     * was saved for: [wantedId] must exist and [fetchId] must report exactly it. A different id, no id, or no saved id all say
+     * no (fails closed), so an address saved for one server never opens another, and [reachable] is never asked about it. Any
+     * other address counts when [reachable] says so. The two network reads are injected (production: EndpointProbe.fetchHealth's
+     * id and ServerConfigPlugin.isReachable), so this stays pure and the JVM tests run it.
+     */
+    fun addressAnswers(
+        url: String,
+        tailscale: String?,
+        wantedId: String?,
+        fetchId: (String) -> String?,
+        reachable: (String) -> Boolean,
+    ): Boolean =
+        if (url == tailscale) wantedId != null && fetchId(url) == wantedId else reachable(url)
 
     /**
      * Whether `save` may take a REMEMBERED server whose own address did not answer, because the Tailscale address saved for it
@@ -99,8 +163,33 @@ object EndpointRules {
     fun namesForKnown(stored: Map<String, String>, knownServers: List<String>): Map<String, String> =
         knownServers.mapNotNull { url -> stored[url]?.takeIf { it.isNotBlank() }?.let { url to it } }.toMap()
 
-    /** Why addEndpoint accepted or refused a request. Reported so a test (and a log line) can tell the refusals apart. */
-    enum class AddCheck { OK, NOT_A_TAILSCALE_ADDRESS, NOT_THIS_PAGE, UNREADABLE_SERVER, UNREACHABLE_ADDRESS, DIFFERENT_SERVER }
+    /**
+     * Why addEndpoint accepted or refused a request. Reported so a test (and a log line) can tell the refusals apart.
+     * NOT_ACCEPTED and NOT_CONFIRMED are the "ask once" prompt's (PromptGate): the person declined the address (now, or less than
+     * a week ago), or the question ended without an answer or could not be asked now.
+     */
+    enum class AddCheck {
+        OK, NOT_A_TAILSCALE_ADDRESS, NOT_THIS_PAGE, UNREADABLE_SERVER, UNREACHABLE_ADDRESS, DIFFERENT_SERVER, NOT_ACCEPTED, NOT_CONFIRMED
+    }
+
+    /**
+     * The sentence addEndpoint rejects with. BYTE-IDENTICAL to iOS's EndpointRules.refusal, and pinned word for word by
+     * EndpointRulesTest on Android and ios/Tests on iOS: the web app's About card reads the reason from these words
+     * (nativeBridge.js classifyAddRefusal: "Couldn't reach" -> unreachable, "different server" -> different, anything else ->
+     * refused, shown as "The app did not accept the address the server offered"), so a sentence reworded on one platform would
+     * show a different reason there. The two prompt sentences contain neither phrase, so both read as 'refused' (moved here from
+     * ServerConfigPlugin so a JVM test can pin them; the iOS strings were set first, 2026-11-09).
+     */
+    fun refusal(check: AddCheck): String = when (check) {
+        AddCheck.NOT_A_TAILSCALE_ADDRESS -> "Not a Tailscale address"
+        AddCheck.NOT_THIS_PAGE -> "Not available on this page"
+        AddCheck.UNREADABLE_SERVER -> "Couldn't read this server's identity"
+        AddCheck.UNREACHABLE_ADDRESS -> "Couldn't reach that Tailscale address"
+        AddCheck.DIFFERENT_SERVER -> "That address is a different server"
+        AddCheck.NOT_ACCEPTED -> "The secure address was not accepted on this phone"
+        AddCheck.NOT_CONFIRMED -> "The secure address was not confirmed on this phone"
+        AddCheck.OK -> ""
+    }
 
     /**
      * The checks that need no network: the address has the one accepted shape, and the page asking is the saved server or the
@@ -123,8 +212,11 @@ object EndpointRules {
      * The check that needs the network's answers: the server the page is on ([reference]) and the offered address
      * ([candidate]) both reported an id, and it is the same one. This is an identity CLAIM, not proof: /api/health is public, so
      * a page that is itself hostile can name an address that repeats the id. That page is the server the person chose to use,
-     * so it could already show anything; what it cannot do is change the saved address, and the address is opened only when
-     * the saved one is not answering.
+     * so it could already show anything; what it cannot do is change the saved address. Since Tailscale first (owner decision
+     * 2026-11-09) an accepted address is opened AHEAD of the saved one whenever it answers with that id, at home too, where
+     * before it was opened only when the saved address did not answer: such a page's address therefore wins more launches
+     * than it used to. Codex's code review of PR #37 rated that High, so a NEW or CHANGED address offered from a page that is
+     * not https is now confirmed by the person first ([needsConfirmation], PromptGate); one they accept is trusted as before.
      */
     fun checkIdentity(reference: DiscoveryRules.Health?, candidate: DiscoveryRules.Health?): AddCheck {
         if (reference == null) return AddCheck.UNREADABLE_SERVER

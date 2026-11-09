@@ -6,7 +6,8 @@ import android.net.NetworkCapabilities
 
 /**
  * Whether this phone is on a local network at all: Wi-Fi or Ethernet. Mobile data only means a home-network address cannot
- * answer, which the launch gate (MainActivity, EndpointRules.localWaitMs) and the "Look for my Nightlight" search both use.
+ * answer, which the "Look for my Nightlight" search uses. (The launch gate used it too until it went Tailscale first, owner
+ * decision 2026-11-09; it now reads VpnPresent instead.)
  *
  * FAILS OPEN (true) when the check itself fails: it only chooses how long to wait or which message to show, and the
  * ordinary rules stand either way. Needs ACCESS_NETWORK_STATE (AndroidManifest.xml). Glue over ConnectivityManager: no JVM

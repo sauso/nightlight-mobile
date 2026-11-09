@@ -45,29 +45,36 @@ class MainActivity : BridgeActivity() {
         private val REQUEST_ORIGIN = Regex("^https?://(?:[A-Za-z0-9._-]+|\\[[0-9A-Fa-f:.]+\\])(?::\\d{1,5})?$")
 
         /**
-         * Which of the server's addresses to open: [saved] if it answers, else [tailscale] (when one is saved), else null.
+         * Which of the server's addresses to open: [tailscale] (when one is saved) if it answers with the id it was saved for,
+         * else [saved] if it answers, else null. Tailscale first, the saved address as the fallback (owner decision
+         * 2026-11-09): see EndpointChooser for why and for the exact rule. With no Tailscale address saved, only [saved] is
+         * probed and nothing waits for a second address, as before.
          * The launch gate (onCreate) and the network watcher (NetworkRoamWatcher) both call THIS, so the address the app
          * moves to when the network changes is exactly the one a fresh launch would open. Blocks for up to
          * EndpointChooser.DEADLINE_MS: never call it on the main thread except from the launch gate, which has always waited
          * here (the splash screen is showing).
          *
-         * Both are probed together under one 3 s deadline (EndpointChooser), so being away from home waits once, not twice.
+         * Both are probed together under one 3 s deadline (EndpointChooser), so a launch waits once, not twice.
          */
         fun chooseAddress(context: Context, saved: String, tailscale: String?): String? {
             // The Tailscale address only counts if the server answering there still has the id it was saved for, so an address
-            // saved for one server can never open another (a saved address handed to a different machine, say).
+            // saved for one server can never open another (a saved address handed to a different machine, say). The rule is
+            // EndpointRules.addressAnswers, shared with the network watcher's second look so the two cannot drift.
             val wantedId = ServerConfigPlugin.getTailscaleId(context, saved)
             val probe = { url: String ->
-                if (url == tailscale) {
-                    wantedId != null && EndpointProbe.fetchHealth(url, 2500)?.id == wantedId
-                } else {
-                    ServerConfigPlugin.isReachable(url, 2500)
-                }
+                EndpointRules.addressAnswers(
+                    url,
+                    tailscale,
+                    wantedId,
+                    fetchId = { EndpointProbe.fetchHealth(it, 2500)?.id },
+                    reachable = { ServerConfigPlugin.isReachable(it, 2500) },
+                )
             }
-            // Off Wi-Fi with a home-network-only saved address, that address cannot answer, so it is waited for only briefly
-            // (EndpointRules.localWaitMs); otherwise the full 3 s, as before.
-            val localWait = EndpointRules.localWaitMs(saved, tailscale, LocalNetwork.isOn(context), EndpointChooser.DEADLINE_MS)
-            return EndpointChooser(probe, localDeadlineMs = localWait).choose(saved, tailscale)
+            // How long a saved answer waits for Tailscale: 1 s, or a quarter second when the phone positively has no VPN, so a
+            // Tailscale that is switched off costs a launch at most that (EndpointRules.tailscaleGraceMs). VpnPresent fails
+            // open ("present", the full second): the reading can only shorten the wait, never open a wrong address.
+            val grace = EndpointRules.tailscaleGraceMs(VpnPresent.isOn(context))
+            return EndpointChooser(probe, tailscaleGraceMs = grace).choose(saved, tailscale)
         }
     }
 
@@ -101,10 +108,13 @@ class MainActivity : BridgeActivity() {
         // instead of stranding the WebView on a long connection timeout (a blank screen). If reachable,
         // load it; a server that then dies MID-session is caught by the errorPath page (see below).
         //
-        // A server can have a second address: the Tailscale one it told this phone about (ServerConfig.addEndpoint). The saved
-        // address is tried first and the Tailscale one is the fallback (owner, 2026-11-06: local first, so at home the phone
-        // never depends on Tailscale). The choice itself is chooseAddress (companion), shared with NetworkRoamWatcher, which
-        // makes the same choice again when the network changes and recreates the activity to land here if it differs.
+        // A server can have a second address: the Tailscale one it told this phone about (ServerConfig.addEndpoint). Tailscale
+        // first, the saved address is the fallback (owner decision 2026-11-09, reversing the local-first rule of 2026-11-06: on a
+        // hotspot the plain-http saved address still answered through the tailnet, so the secure address, which two-way talk
+        // needs, was never used). At home the phone now goes through the server's Tailscale node when Tailscale is on, and falls
+        // back to the saved address when it does not answer, so home use does not depend on it. The choice itself is
+        // chooseAddress (companion), shared with NetworkRoamWatcher, which makes the same choice again when the network changes
+        // and recreates the activity to land here if RoamRules allows the move.
         // The SAVED address is never rewritten by this: only the address the bridge opens differs.
         val savedUrl = ServerConfigPlugin.getSavedUrl(this)
         if (savedUrl != null) {
@@ -165,8 +175,12 @@ class MainActivity : BridgeActivity() {
     }
 
     // In case onStop did not run first. stop() is safe to call twice.
+    // A "Use this secure address?" prompt still showing ends here as "not answered" (no decline stored), BEFORE the window goes,
+    // so a rebuild (a roam, Change server) cannot leave the web app waiting for an answer (the addendum review of Tailscale first,
+    // 2026-11-09). The page the next activity loads asks again at its own start.
     override fun onDestroy() {
         roamWatcher?.stop()
+        ServerConfigPlugin.cancelPending()
         super.onDestroy()
     }
 
