@@ -113,8 +113,8 @@ Settings → Remote Access and the name matches. Why: the server id the app comp
 answers at a plain-`http` address could offer its own secure address, and since the app now opens the secure address first,
 that address would be opened first. The rules (`EndpointRules.needsConfirmation`, `PromptGate`):
 - **Asked only** when the offered address differs from the one already saved AND the page is not `https`. "The page" is the one
-  the web view has actually finished loading, not one it has only started to load; a page that cannot be read counts as plain
-  `http`. The same address, offered again at every start, is never asked about; nor is an offer from an `https` page, the secure
+  the web view has committed: its address must agree, by origin, with the back-forward list's current page, so an address the web
+  view shows only because it has started to load another page does not count; a page that cannot be read counts as plain `http`. The same address, offered again at every start, is never asked about; nor is an offer from an `https` page, the secure
   page itself included. Removing the address (`removeEndpoint`) is never asked: it only returns the app to the saved address.
 - **Use it** saves the address as before. **Don't use it** saves nothing: the app keeps what it had (the saved address, and the
   secure address it already had if the offer was a change), and it does not ask about that same address again for **7 days**
