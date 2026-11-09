@@ -23,6 +23,9 @@
 		AA11AA11AA11AA11AA11B302 /* KeychainSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11B301 /* KeychainSessionStore.swift */; };
 		AA11AA11AA11AA11AA11B402 /* RoamRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11B401 /* RoamRules.swift */; };
 		AA11AA11AA11AA11AA11B502 /* NetworkRoamWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11B501 /* NetworkRoamWatcher.swift */; };
+		BB22BB22BB22BB22BB22C102 /* DiscoveryRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22BB22BB22BB22BB22C101 /* DiscoveryRules.swift */; };
+		BB22BB22BB22BB22BB22C202 /* DiscoveryState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22BB22BB22BB22BB22C201 /* DiscoveryState.swift */; };
+		BB22BB22BB22BB22BB22C302 /* ServerDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22BB22BB22BB22BB22C301 /* ServerDiscovery.swift */; };
 		504EC30D1FED79650016851F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30B1FED79650016851F /* Main.storyboard */; };
 		504EC30F1FED79650016851F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30E1FED79650016851F /* Assets.xcassets */; };
 		504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC3101FED79650016851F /* LaunchScreen.storyboard */; };
@@ -46,6 +49,9 @@
 		AA11AA11AA11AA11AA11B301 /* KeychainSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainSessionStore.swift; sourceTree = "<group>"; };
 		AA11AA11AA11AA11AA11B401 /* RoamRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoamRules.swift; sourceTree = "<group>"; };
 		AA11AA11AA11AA11AA11B501 /* NetworkRoamWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkRoamWatcher.swift; sourceTree = "<group>"; };
+		BB22BB22BB22BB22BB22C101 /* DiscoveryRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryRules.swift; sourceTree = "<group>"; };
+		BB22BB22BB22BB22BB22C201 /* DiscoveryState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryState.swift; sourceTree = "<group>"; };
+		BB22BB22BB22BB22BB22C301 /* ServerDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerDiscovery.swift; sourceTree = "<group>"; };
 		504EC30C1FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		504EC30E1FED79650016851F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		504EC3111FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
@@ -100,6 +106,9 @@
 				AA11AA11AA11AA11AA11B301 /* KeychainSessionStore.swift */,
 				AA11AA11AA11AA11AA11B401 /* RoamRules.swift */,
 				AA11AA11AA11AA11AA11B501 /* NetworkRoamWatcher.swift */,
+				BB22BB22BB22BB22BB22C101 /* DiscoveryRules.swift */,
+				BB22BB22BB22BB22BB22C201 /* DiscoveryState.swift */,
+				BB22BB22BB22BB22BB22C301 /* ServerDiscovery.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
@@ -204,6 +213,9 @@
 				AA11AA11AA11AA11AA11B302 /* KeychainSessionStore.swift in Sources */,
 				AA11AA11AA11AA11AA11B402 /* RoamRules.swift in Sources */,
 				AA11AA11AA11AA11AA11B502 /* NetworkRoamWatcher.swift in Sources */,
+				BB22BB22BB22BB22BB22C102 /* DiscoveryRules.swift in Sources */,
+				BB22BB22BB22BB22BB22C202 /* DiscoveryState.swift in Sources */,
+				BB22BB22BB22BB22BB22C302 /* ServerDiscovery.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -37,6 +37,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // The network watcher stops here: it moves between the server's addresses only while the app is in the foreground
         // (NetworkRoamWatcher), and anything it still has waiting or running is dead from this moment.
         NetworkRoamWatcher.shared.didEnterBackground()
+        // Browsing and probing are useful only while the bundled setup page is on screen.
+        ServerConfigPlugin.stopDiscoveryForBackground()
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {

@@ -1,7 +1,8 @@
 import Foundation
 
 // main.swift: the entry point of the ios/Tests program (see TestSupport.swift for why there is one). CI builds it with
-//   swiftc ios/App/App/EndpointRules.swift ios/App/App/EndpointProbe.swift ios/App/App/EndpointChooser.swift
+//   swiftc ios/App/App/EndpointRules.swift ios/App/App/EndpointProbe.swift ios/App/App/DiscoveryRules.swift
+//          ios/App/App/DiscoveryState.swift ios/App/App/EndpointChooser.swift
 //          ios/App/App/SessionRules.swift ios/App/App/SessionVault.swift ios/App/App/KeychainLogic.swift
 //          ios/App/App/RoamRules.swift ios/Tests/*.swift
 // and runs it (build-ios.yml). It needs no network, no Simulator, no Keychain and no Capacitor. Exit status: 0 when every
@@ -9,6 +10,8 @@ import Foundation
 
 runEndpointRulesTests()
 runEndpointProbeTests()
+runDiscoveryRulesTests()
+runDiscoveryStateTests()
 runEndpointChooserTests()
 runSessionRulesTests()
 runSessionVaultTests()

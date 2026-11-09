@@ -6,15 +6,34 @@ server, whose address you enter in-app on first launch — nothing is baked in) 
 adds the native pieces the web app can't do on its own: keeping audio playing while
 the screen is off / the app is backgrounded, and runtime server selection.
 
-On Android the first-run screen can also find your server on your home Wi-Fi (**Look for my Nightlight**), so
+On Android and iOS the first-run screen can also find your server on your home Wi-Fi (**Look for my Nightlight**), so
 you usually don't need to type the address. Nothing is saved until you tap Connect. It finds servers on private
 IPv4 addresses only (10.x, 172.16–31.x, 192.168.x), and a found server opens at its `http://` address, which is
 separate from any https address you use, so you sign in again there. Servers older than the matching Nightlight
-release are not found; the typed address always works. On Android and iOS the saved-servers list shows each server's **name** (what the server
+release are not found; you can type the address instead. On iOS, a typed home-network address also needs Local Network
+access; a Tailscale address outside the local network is unaffected. On Android and iOS the saved-servers list shows each
+server's **name** (what the server
 reports at `/api/health`, bounded by `DiscoveryRules.cleanName`, shown as text only) with its address in smaller text below; the
 phone keeps names only for servers on that list (`EndpointRules.namesForKnown`) and learns one when a server is saved, when it
 is reconnected through its Tailscale address, and at each start while signed in (`addEndpoint`), so servers saved earlier get
 theirs without any action. A server that has sent no name is listed by its address, as before.
+
+## Look for my Nightlight (iOS)
+
+On the setup screen, tap **Look for my Nightlight** to see servers that answer on your Wi-Fi. Tap **Connect** to save
+one. The app checks its address again when you tap; a server found on the network is a suggestion, not proof that it
+belongs to you.
+
+iOS needs Local Network access. The permission prompt appears the first time the app uses the local network, which may
+have happened before you search, so you may not see it again. If access is off, the search shows how to turn it on in
+**Settings > Privacy & Security > Local Network**. Typing a local address also needs this permission. A Tailscale
+address outside the local network is unaffected.
+
+Search finds private IPv4 addresses only. It finds nothing on IPv6-only networks, or when the Wi-Fi blocks multicast
+or isolates devices from one another. The iOS search, its permission prompt and denial message, and discovery across
+different home networks still need a test on a phone; the Simulator build alone cannot confirm them.
+When nothing is found, the screen shows a one-line technical summary you can share when asking for help: counts and
+error codes only, with no address or name.
 
 ## Two addresses for one server (Android)
 
