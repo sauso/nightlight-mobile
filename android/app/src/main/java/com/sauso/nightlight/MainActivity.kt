@@ -74,10 +74,9 @@ class MainActivity : BridgeActivity() {
                     reachable = { ServerConfigPlugin.isReachable(it, 2500) },
                 )
             }
-            // How long a saved answer waits for Tailscale: 1 s, or a quarter second when the phone positively has no VPN, so a
-            // Tailscale that is switched off costs a launch at most that (EndpointRules.tailscaleGraceMs). VpnPresent fails
-            // open ("present", the full second): the reading can only shorten the wait, never open a wrong address.
-            val grace = EndpointRules.tailscaleGraceMs(VpnPresent.isOn(context))
+            // A Tailscale slot with VPN off gets the short grace; a custom HTTPS slot needs no VPN, so it gets the full one.
+            // VpnPresent fails open ("present", the full second): the reading only changes timing, never the id check.
+            val grace = EndpointRules.tailscaleGraceMs(VpnPresent.isOn(context), tailscale)
             return EndpointChooser(probe, tailscaleGraceMs = grace).choose(saved, tailscale)
         }
     }

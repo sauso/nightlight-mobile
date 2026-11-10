@@ -93,20 +93,30 @@ move; a later navigation or reload of the saved address while the app stays open
 
 ## Two addresses for one server (Android)
 
-The address you set the app up with stays the **saved** address. If the server has Tailscale and its secure address on, the
-web app asks the server for that address after sign-in and hands it to the app (`ServerConfig.addEndpoint`), which keeps it
-beside the saved one (SharedPreferences key `tailscale_for:<saved address>`). The app checks it first: it must be exactly
-`https://<name>.ts.net`, the page asking must be the saved server (or its Tailscale address) and really be showing that address, and `/api/health` at the new
+Nightlight can also announce an HTTPS address on your own domain with the server's `CUSTOM_URL` setting. The phone learns it
+after sign-in, just as it learns a Tailscale address. The server offers the custom address when both are configured. The app
+keeps one secure address per saved server, tries it first, and can use a custom address without the Tailscale app. You sign in
+separately on your own domain: the app never shares a saved sign-in with a custom address, because a domain can change hands.
+Find my Nightlight still searches the local network in the same way. Navigation inside Capacitor, plugin access and background
+audio on a custom origin have not yet been confirmed on a phone.
+
+The address you set the app up with stays the **saved** address. After sign-in, the web app asks the server for its secure
+address, if configured, and hands it to the app (`ServerConfig.addEndpoint`), which keeps it beside the saved one
+(SharedPreferences key `tailscale_for:<saved address>`). The app checks it first: it must be a valid Tailscale or custom HTTPS
+origin, the page asking must be the saved server (or its saved secure address) and really be showing that address, and `/api/health` at the new
 address must report the same server id as the page's server (the id is saved with the address, and the address is opened at
-launch only if the server there still reports it). Forgetting a server (the ✕ on the setup page) removes its Tailscale address; **Change server** keeps it, so on the setup page a remembered server whose home address does not answer (you are on mobile data) is reconnected through its Tailscale address, once that address answers with the id it was saved for (`EndpointRules.canReconnectViaTailscale`). Only the bundled setup page can use that reconnect (a page on a server cannot). The address is dropped when the saved address is next confirmed from the setup screen (a save, not every launch: the launch gate does not read the home address's id) and a different server answers there (`EndpointRules.pairStillValid`).
+launch only if the server there still reports it). Forgetting a server (the ✕ on the setup page) removes its secure address; **Change server** keeps it, so on the setup page a remembered server whose home address does not answer (you are on mobile data) is reconnected through its secure address, once that address answers with the id it was saved for (`EndpointRules.canReconnectViaTailscale`). Only the bundled setup page can use that reconnect (a page on a server cannot). The address is dropped when the saved address is next confirmed from the setup screen (a save, not every launch: the launch gate does not read the home address's id) and a different server answers there (`EndpointRules.pairStillValid`).
 
 **The app asks once before it saves a new secure address.** When the app learns a secure address for the first time, or a
 different one, while the page on screen is a plain `http` address, it asks "Use this secure address?" and shows the saved
-address the offer came from and the full secure name. Tap **Use it** only if you have just turned on the secure address in your
+address the offer came from and the full secure name. For a Tailscale address, tap **Use it** only if you have just turned on the secure address in your
 server's Settings → Remote Access and the name matches; the web app's own "saved" notice follows. Why: a saved secure address
 now opens ahead of the saved one, and the server id the app checks is public, so a device that answers at a plain `http` address
 (where the network can be faked) could otherwise offer its own address. The details (`EndpointRules.needsConfirmation`,
 `PromptGate`):
+
+For an address on your own domain, the prompt shows its full host and asks you to continue only if you set it up yourself.
+The server's Settings → Remote Access page does not show that domain. The title, buttons and timing below are the same.
 - **Don't use it** keeps what was saved before: the saved address only, or, when the offer was a change, the secure address
   already saved. The app does not ask about that same address again for **7 days**; then it asks once more. A different
   address is asked about the next time it is offered, once the 10-minute limit below allows.
@@ -121,20 +131,19 @@ now opens ahead of the saved one, and the server id the app checks is public, so
   the question cannot prove the name is yours, it only shows it and says when to accept; a phone that already holds a secure
   address is not asked about it again.
 
-**Which address opens: Tailscale first.** When a Tailscale address is saved, the app opens it whenever it answers, and the
+**Which address opens: secure address first.** When a secure address is saved, the app opens it whenever it answers, and the
 saved address only when it does not. (It used to be the other way round. On a phone hotspot with Tailscale on, the plain `http`
 saved address still answered through Tailscale, so the app never used the secure address, which two-way talk needs.) At launch
 `MainActivity` probes both addresses at once, for at most 3 seconds in all (`EndpointChooser`):
-- a Tailscale answer, with the id it was saved for, opens Tailscale whenever it comes within those 3 seconds;
-- a saved answer waits a short **grace** for Tailscale, counted from the start: **1 second**, or **0.25 seconds** when the phone
-  has no VPN at all (`EndpointRules.tailscaleGraceMs`, `VpnPresent`). A Tailscale failure (refused, no such name, a certificate
-  error) ends the grace at once. Both numbers are judgements, not measurements: Tailscale that is on and healthy answers well
-  inside a second, and with Tailscale off the saved address should not wait more than a quarter of a second. The VPN reading
-  can only shorten the wait (if it cannot be read, the phone counts as having a VPN), so a wrong reading never opens a wrong
-  address;
+- a secure-address answer, with the id it was saved for, opens that address whenever it comes within those 3 seconds;
+- a saved answer waits a short **grace** for the secure address, counted from the start: **1 second**, or **0.25 seconds** for
+  Tailscale when the phone has no VPN at all (`EndpointRules.tailscaleGraceMs`, `VpnPresent`). An outright failure (refused,
+  no such name, a certificate error) ends the grace at once. Both numbers are judgements, not measurements. The VPN reading
+  can shorten only a Tailscale wait (if it cannot be read, the phone counts as having a VPN); it never skips the server-id check;
+- a custom HTTPS address gets the full **1 second** even without a VPN, because it does not need one;
 - when neither answers, the setup page opens, as before.
 
-With no Tailscale address saved nothing changes: only the saved address is probed, with no grace. Known limits: a Tailscale
+With no secure address saved nothing changes: only the saved address is probed, with no grace. Known limits: a Tailscale
 connection that is slow to wake (relayed, or idle for a while) can miss the grace, so that launch opens the saved address and
 the app moves to Tailscale the next time it comes to the front (below). At home with Tailscale on, the app now reaches the
 server through the server's own Tailscale node instead of directly; the extra load that puts on the server for video has not
@@ -147,7 +156,7 @@ reading and the launch gate need a phone (see the PR's checklist). iOS does the 
 
 ### When you change network (Android)
 
-When a Tailscale address is saved (as above) the app keeps you on an address that works, and prefers Tailscale:
+When a secure address is saved (as above) the app keeps you on an address that works, and prefers that address:
 - **The page stops answering:** the app moves to the other address within a few seconds, with no restart. Leave home on the
   saved address and, when Wi-Fi turns to mobile data, it moves to Tailscale (when the Tailscale app on the phone is connected);
   switch Tailscale off while its page is open and it moves to the saved address. This happens on any network change and when
@@ -161,8 +170,7 @@ from one that has stopped answering; if that look cannot be taken, the page coun
 that look counts as stopped and moves to the address that has just answered; and the move to Tailscale at a start happens a few
 seconds after the app comes to the front (a settle wait plus the checks), so something typed in those first seconds (a sign-in
 code, say) can be lost. Either move reloads the app onto its home screen, so a video you were watching starts again. Sign-in
-carries across as described in the next section: moving to the saved address asks you to sign in only if you never signed in
-there.
+carries across for Tailscale as described in the next section. A custom domain has its own sign-in.
 
 How it works: while the app is in the foreground, `NetworkRoamWatcher` listens for changes to the phone's default network (a new
 network, a lost one, or a change between Wi-Fi, mobile data, Ethernet and VPN). It waits about 2 seconds for the network to
@@ -187,6 +195,9 @@ retry and your saved servers.
   [When you change network (iOS)](#when-you-change-network-ios).
 
 ## One sign-in across the two addresses (Android)
+
+This sharing applies only to Tailscale. A custom domain can change hands, so the app never delivers a saved sign-in there.
+Sign in separately on your own domain, even if you already signed in at the saved address.
 
 The web app keeps its sign-in token in `localStorage`, which is per web origin, so the saved address and the Tailscale address would
 each ask. The app keeps a second, encrypted copy (`SessionVault`: AES-256-GCM with a non-exportable Android Keystore key, the file

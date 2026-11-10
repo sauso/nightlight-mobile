@@ -11,6 +11,37 @@ import org.junit.Test
  */
 class EndpointRulesTest {
 
+    private val custom = "https://nightlight.example.com"
+
+    @Test
+    fun `custom HTTPS origins mirror the server accept and refuse boundary`() {
+        val accepted = listOf(custom, "https://example.com:8443", "https://a.b1", "https://xn--bcher-kva.example",
+            "https://${"a".repeat(63)}.example", "https://example.com:1", "https://example.com:65535")
+        for (url in accepted) {
+            assertTrue(url, EndpointRules.isCustomUrl(url))
+            assertTrue(url, EndpointRules.isSecureAddress(url))
+            assertFalse(url, EndpointRules.isTailscaleUrl(url))
+        }
+        val refused = listOf(null, "", "HTTPS://example.com", "https://Example.com", "https://example.com/",
+            "https://example.com/path", "https://example.com?x=1", "https://example.com#x",
+            "https://user@example.com", "https://example.com:0", "https://example.com:65536",
+            "https://example.com:0443", "https://example.com:443", "https://192.168.1.1",
+            "https://[2001:db8::1]", "https://127.1", "https://0177.0.0.1", "https://0x7f.0.0.1",
+            "https://1.2.3.004", "https://1.2.3.0x4", "https://example.123", "https://localhost", "https://x.local",
+            "https://a.ts.net", "https://ts.net", "https://bare", "https://example.com.",
+            "https://bad_name.example", "https://bad..example", "https://${"a".repeat(64)}.example",
+            "https://${"a".repeat(61)}.${"a".repeat(61)}.${"a".repeat(61)}.${"a".repeat(61)}/",
+            "http://example.com")
+        for (url in refused) assertFalse(url, EndpointRules.isCustomUrl(url))
+        assertTrue(EndpointRules.isSecureAddress("https://a.ts.net"))
+        assertEquals("tailscale", EndpointRules.addressKind("https://a.ts.net"))
+        assertEquals("custom", EndpointRules.addressKind(custom))
+        assertEquals(null, EndpointRules.addressKind("http://example.com"))
+        assertEquals(custom, EndpointRules.validatedSlot(custom))
+        assertEquals("https://a.ts.net", EndpointRules.validatedSlot("https://a.ts.net"))
+        assertEquals(null, EndpointRules.validatedSlot("https://127.1"))
+    }
+
     @Test
     fun `a plain https ts-net name is accepted, with or without extra labels`() {
         assertTrue(EndpointRules.isTailscaleUrl("https://nightlight-1.example-tailnet.ts.net"))
@@ -74,6 +105,16 @@ class EndpointRulesTest {
     private val home = "http://192.168.1.50:4000"
     private val ts = "https://nightlight.example.ts.net"
     private val other = "https://other.example.ts.net"
+
+    @Test
+    fun `custom offers use the same saved slot and active page rules`() {
+        assertEquals(EndpointRules.AddCheck.OK, EndpointRules.checkPage(custom, home, null, home))
+        assertEquals(EndpointRules.AddCheck.OK, EndpointRules.checkPage(custom, home, custom, custom))
+        assertEquals(EndpointRules.AddCheck.NOT_THIS_PAGE, EndpointRules.checkPage(custom, home, null, custom))
+        assertTrue(EndpointRules.isActivePage(home, custom, custom))
+        assertTrue(EndpointRules.needsConfirmation(home, null, custom))
+        assertFalse(EndpointRules.needsConfirmation(home, custom, custom))
+    }
 
     @Test
     fun `the page asking must be the saved server or its saved Tailscale address`() {
@@ -154,6 +195,13 @@ class EndpointRulesTest {
     fun `a VPN on the phone keeps the full grace, and only no VPN at all shortens it`() {
         assertEquals("a VPN is up (or the reading failed, which reads as present)", 1_000L, EndpointRules.tailscaleGraceMs(vpnPresent = true))
         assertEquals("positively no VPN", 250L, EndpointRules.tailscaleGraceMs(vpnPresent = false))
+    }
+
+    @Test
+    fun `a custom slot gets the full grace without a VPN`() {
+        assertEquals(1_000L, EndpointRules.tailscaleGraceMs(false, custom))
+        assertEquals(250L, EndpointRules.tailscaleGraceMs(false, ts))
+        assertEquals(1_000L, EndpointRules.tailscaleGraceMs(true, ts))
     }
 
     @Test
@@ -305,6 +353,13 @@ class EndpointRulesTest {
     }
 
     @Test
+    fun `a custom slot answer still requires the saved server id`() {
+        assertTrue(EndpointRules.addressAnswers(custom, custom, sameId, null, { sameId }, reachableNeverAsked))
+        assertFalse(EndpointRules.addressAnswers(custom, custom, sameId, null, { otherId }, { true }))
+        assertFalse(EndpointRules.addressAnswers(custom, custom, null, null, { null }, { true }))
+    }
+
+    @Test
     fun `a wrong id, no id or no saved id is not an answer from the tailscale address`() {
         assertFalse("another server's id", EndpointRules.addressAnswers(ts, ts, sameId, null, fetchId = { otherId }, reachable = reachableNeverAsked))
         assertFalse("no id read", EndpointRules.addressAnswers(ts, ts, sameId, null, fetchId = { null }, reachable = reachableNeverAsked))
@@ -371,11 +426,17 @@ class EndpointRulesTest {
         assertFalse("not a remembered server", EndpointRules.canReconnectViaTailscale(known, "http://192.168.1.99:4000", ts, sameId, sameId))
         assertFalse("no url", EndpointRules.canReconnectViaTailscale(known, null, ts, sameId, sameId))
         assertFalse("no Tailscale address saved", EndpointRules.canReconnectViaTailscale(known, home, null, sameId, sameId))
-        assertFalse("a saved address that is not a Tailscale one", EndpointRules.canReconnectViaTailscale(known, home, "https://evil.example.com", sameId, sameId))
+        assertFalse("an invalid secure address", EndpointRules.canReconnectViaTailscale(known, home, "http://evil.example.com", sameId, sameId))
         assertFalse("no id was saved with it", EndpointRules.canReconnectViaTailscale(known, home, ts, null, sameId))
         assertFalse("the live id could not be read", EndpointRules.canReconnectViaTailscale(known, home, ts, sameId, null))
         assertFalse("another server answers there", EndpointRules.canReconnectViaTailscale(known, home, ts, sameId, otherId))
         assertFalse("nothing remembered at all", EndpointRules.canReconnectViaTailscale(emptyList(), home, ts, sameId, sameId))
+    }
+
+    @Test
+    fun `a remembered server can reconnect through a custom slot with a matching id`() {
+        assertTrue(EndpointRules.canReconnectViaTailscale(known, home, custom, sameId, sameId))
+        assertFalse(EndpointRules.canReconnectViaTailscale(known, home, custom, sameId, otherId))
     }
 
     // ---- The server's name in the saved list (owner, 2026-11-06) ----
