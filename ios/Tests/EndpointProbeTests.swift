@@ -255,6 +255,17 @@ func runEndpointProbeTests() {
               "a reply with another server's id counted")
     }
 
+    test("addressAnswers: a custom slot keeps the same strict id check") {
+        let custom = "https://nightlight.example.com"
+        check(EndpointProbe.addressAnswers(custom, tailscale: custom, wantedId: id, expectedId: nil,
+                                           readHealth: replying(validBody), reachable: { _ in false }), "matching custom id was refused")
+        check(!EndpointProbe.addressAnswers(custom, tailscale: custom, wantedId: id, expectedId: nil,
+                                            readHealth: replying(healthJson(idValue: "\"\(otherId)\"")), reachable: { _ in true }),
+              "another server's id counted")
+        check(!EndpointProbe.addressAnswers(custom, tailscale: custom, wantedId: nil, expectedId: nil,
+                                            readHealth: replying(validBody), reachable: { _ in true }), "a custom slot without an id counted")
+    }
+
     test("addressAnswers: a tailscale reply with a null or unreadable id, or no reply, never counts") {
         // `reachable` says yes throughout: only the id check may decide for the tailscale address.
         let alwaysReachable: (String) -> Bool = { (_: String) -> Bool in true }

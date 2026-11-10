@@ -68,7 +68,8 @@ enum SessionRules {
     /// the planted one, saves it again). An older web app that sends no claim gets no binding either.
     static func stampFor(_ current: Bindings, claimedTailscale: String?) -> Bindings {
         let claimed: String? = EndpointRules.offeredAddress(claimedTailscale)
-        if let value = claimed, let saved = current.tailscaleUrl, value == saved {
+        // A custom domain can change hands, so a matching custom slot is never a shared sign-in claim.
+        if let value = claimed, let saved = current.tailscaleUrl, value == saved, EndpointRules.isTailscaleUrl(value) {
             return current
         }
         return Bindings(savedUrl: current.savedUrl, tailscaleUrl: nil, tailscaleId: nil)
