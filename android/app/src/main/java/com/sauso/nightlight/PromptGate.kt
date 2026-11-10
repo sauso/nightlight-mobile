@@ -109,13 +109,16 @@ class PromptGate {
         /**
          * The prompt's text: the saved server's own address the offer came from ([savedAddress]), the FULL secure host (never
          * shortened: the name is the one thing the person can compare), and when to accept. [candidate] has the one accepted
-         * shape `https://<name>.ts.net` (EndpointRules.isTailscaleUrl), so the host is everything after the scheme.
+         * shape of a validated secure origin, so the host (and optional port) is everything after the scheme.
          */
         fun promptBody(savedAddress: String, candidate: String): String =
             "Your server at $savedAddress offered this secure address:\n\n" +
                 "${candidate.removePrefix("https://")}\n\n" +
-                "Only use it if you have just turned on the secure address in your server's Settings → Remote Access " +
-                "and the name matches the one shown there."
+                if (EndpointRules.isCustomUrl(candidate))
+                    "This is your own address for this server. Continue only if you set up this address yourself."
+                else
+                    "Only use it if you have just turned on the secure address in your server's Settings → Remote Access " +
+                        "and the name matches the one shown there."
     }
 
     /** What [decide] says: show the prompt, refuse without asking (declined recently), or refuse because one is showing or was just shown. */

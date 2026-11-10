@@ -27,8 +27,8 @@ import java.util.concurrent.TimeUnit
  *
  * From the web side (both the bundled setup/error pages and the remote app):
  *
- *   Capacitor.Plugins.ServerConfig.get()            -> { url: string | null, tailscale: string | null }
- *   Capacitor.Plugins.ServerConfig.addEndpoint({ url })   -> { added }; saves the server's Tailscale address, asking the
+ *   Capacitor.Plugins.ServerConfig.get()            -> { url, tailscale, supportsCustomUrl: true, kind }
+ *   Capacitor.Plugins.ServerConfig.addEndpoint({ url })   -> { added }; saves the server's secure address, asking the
  *                                                            person first when it is new and the page is not https (see below)
  *   Capacitor.Plugins.ServerConfig.removeEndpoint()       -> { removed }
  *   Capacitor.Plugins.ServerConfig.save({ url })    -> validates + persists, rejects if unreachable
@@ -69,11 +69,12 @@ class ServerConfigPlugin : Plugin() {
             return if (url.isNullOrBlank()) null else url
         }
 
-        // The server's Tailscale address that goes with the saved server [primary], or null (see EndpointRules).
+        // The server's secure address that goes with [primary], or null (see EndpointRules). The legacy key and getter name
+        // stay because existing installs already store Tailscale addresses there; the slot can now also hold custom HTTPS.
         fun getTailscaleUrl(context: Context, primary: String): String? {
             val url = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(EndpointRules.key(primary), null)
-            // Re-checked on read: only an address of the one accepted shape ever reaches the launch gate or the page.
-            return if (EndpointRules.isTailscaleUrl(url)) url else null
+            // Re-checked on read: only a validated secure address ever reaches launch, roaming, reconnect or the page.
+            return EndpointRules.validatedSlot(url)
         }
 
         // The server id the saved Tailscale address was saved for (see EndpointRules.idKey), or null.
@@ -408,14 +409,17 @@ class ServerConfigPlugin : Plugin() {
         prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).apply()
     }
 
-    // `url` is the saved (primary) address; `tailscale` is the Tailscale address the server told this phone about, or null.
+    // `url` is the saved (primary) address; legacy `tailscale` is the secure slot of either kind, or null.
     // Which one the page was loaded from is NOT said here: the page knows its own origin.
     @PluginMethod
     fun get(call: PluginCall) {
         val ret = JSObject()
         val saved = getSavedUrl(context)
         ret.put("url", saved)
-        ret.put("tailscale", saved?.let { getTailscaleUrl(context, it) })
+        val slot = saved?.let { getTailscaleUrl(context, it) }
+        ret.put("tailscale", slot)
+        ret.put("supportsCustomUrl", true)
+        ret.put("kind", EndpointRules.addressKind(slot))
         call.resolve(ret)
     }
 
@@ -479,9 +483,9 @@ class ServerConfigPlugin : Plugin() {
     private fun refusal(check: EndpointRules.AddCheck): String = EndpointRules.refusal(check)
 
     // addEndpoint({ url }): the server on screen has said "you can also reach me at <url>" (the web app read it from
-    // GET /api/remote-access/tailscale/address while signed in). Saved only when ALL of these hold, each fails closed
+    // GET /api/remote-access/address while signed in). Saved only when ALL of these hold, each fails closed
     // (the decisions are EndpointRules.checkPage and checkIdentity, unit-tested on the JVM):
-    //   - the url is exactly `https://<name>.ts.net`: no port, path, credentials or IP;
+    //   - the url is a Tailscale or custom HTTPS origin: no path, credentials or IP;
     //   - the page is the saved server or the Tailscale address already saved for it (bridge.serverUrl), so the bundled setup
     //     page and anything else are refused;
     //   - the page's server and the url answer /api/health with the SAME id (EndpointProbe): an address that merely looks
@@ -612,7 +616,7 @@ class ServerConfigPlugin : Plugin() {
         }
     }
 
-    // removeEndpoint(): the server has said it no longer offers a Tailscale address (Tailscale was turned off there).
+    // removeEndpoint(): the server has said it no longer offers a secure address.
     // Same page rule as addEndpoint. Resolves { removed }.
     @PluginMethod
     fun removeEndpoint(call: PluginCall) {
@@ -858,11 +862,12 @@ class ServerConfigPlugin : Plugin() {
                         prefs().edit().putString(KEY_URL, remembered).apply()
                         rememberServer(remembered)
                         rememberName(remembered, live?.name)
+                        // Keep the legacy result value for older web pages; it names the slot, not its kind.
                         call.resolve(JSObject().put("url", remembered).put("via", "tailscale"))
                     }
                     return@Thread
                 }
-                call.reject("Couldn't reach a Nightlight server at that address, or through its Tailscale address")
+                call.reject("Couldn't reach a Nightlight server at that address, or through its secure address")
                 return@Thread
             }
             call.reject("Couldn't reach a Nightlight server at that address")
