@@ -288,7 +288,7 @@ final class NetworkRoamWatcher {
             return
         }
         if !isCurrent(gen) { return }
-        let which: String = (move.address == tailscale) ? "the Tailscale address" : "the saved address"
+        let which: String = (move.address == tailscale) ? "the secure address" : "the saved address"
         let kind: String = move.escape ? "escape from a page that stopped answering" : "upgrade"
         let why: String = (trigger == .foregroundStart) ? "foreground start" : "network change"
         if !roamLog.mayRoam(nowMs: NetworkRoamWatcher.clockMs()) {

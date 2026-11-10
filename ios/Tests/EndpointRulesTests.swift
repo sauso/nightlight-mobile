@@ -388,7 +388,7 @@ func runEndpointRulesTests() {
         check(!EndpointRules.canReconnectViaTailscale(knownServers: known, url: "http://192.168.1.99:4000", tailscaleUrl: ts, wantedId: sameId, liveId: sameId), "not a remembered server")
         check(!EndpointRules.canReconnectViaTailscale(knownServers: known, url: nil, tailscaleUrl: ts, wantedId: sameId, liveId: sameId), "no url")
         check(!EndpointRules.canReconnectViaTailscale(knownServers: known, url: home, tailscaleUrl: nil, wantedId: sameId, liveId: sameId), "no Tailscale address saved")
-        check(!EndpointRules.canReconnectViaTailscale(knownServers: known, url: home, tailscaleUrl: "https://evil.example.com", wantedId: sameId, liveId: sameId), "a saved address that is not a Tailscale one")
+        check(!EndpointRules.canReconnectViaTailscale(knownServers: known, url: home, tailscaleUrl: "http://evil.example.com", wantedId: sameId, liveId: sameId), "a saved address that is not a secure (https Tailscale or custom) one")
         check(!EndpointRules.canReconnectViaTailscale(knownServers: known, url: home, tailscaleUrl: ts, wantedId: nil, liveId: sameId), "no id was saved with it")
         check(!EndpointRules.canReconnectViaTailscale(knownServers: known, url: home, tailscaleUrl: ts, wantedId: sameId, liveId: nil), "the live id could not be read")
         check(!EndpointRules.canReconnectViaTailscale(knownServers: known, url: home, tailscaleUrl: ts, wantedId: sameId, liveId: otherId), "another server answers there")

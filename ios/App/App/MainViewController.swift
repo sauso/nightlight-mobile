@@ -96,9 +96,8 @@ class MainViewController: CAPBridgeViewController {
             return EndpointProbe.addressAnswers(url, tailscale: tailscale, wantedId: wantedId,
                                                 expectedId: expectedId, timeout: timeout)
         }
-        // How long an answer from the saved address waits for the Tailscale one: 1 s, or 0.25 s when the phone positively
-        // reports no VPN (EndpointRules.tailscaleGraceMs says why; the reading is a hint that can only shorten the wait).
-        let grace: Int = EndpointRules.tailscaleGraceMs(vpnPresent: VpnSnapshot.vpnPresent())
+        // A Tailscale slot without VPN gets the short grace; a custom HTTPS slot needs no VPN and gets the full second.
+        let grace: Int = EndpointRules.tailscaleGraceMs(vpnPresent: VpnSnapshot.vpnPresent(), slotUrl: tailscale)
         let chooser = EndpointChooser(probe: probe, deadlineMs: EndpointChooser.defaultDeadlineMs, tailscaleGraceMs: grace)
         return chooser.choose(local: saved, tailscale: tailscale)
     }

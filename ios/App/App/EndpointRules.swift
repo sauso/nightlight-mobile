@@ -1,6 +1,6 @@
 import Foundation
 
-// EndpointRules.swift: the rules for a server's second address, its Tailscale address, which the server tells the phone about
+// EndpointRules.swift: the rules for a server's second address, a Tailscale or custom HTTPS address told to the phone
 // (owner, 2026-11-06). Since the owner decision of 2026-11-09 ("Tailscale first") the app opens that secure address first when
 // it answers, and the address it was set up with when that address passes the launch identity check.
 //
@@ -12,7 +12,7 @@ import Foundation
 // Xcode test target, so this is the only way the rules are run before a phone does.
 //
 // Where it is stored: the saved server (ServerConfigStore.savedURL, the address the person typed or picked) stays the PRIMARY
-// address and is never rewritten by this. The Tailscale address is kept beside it in UserDefaults under key(primary), so the
+// address and is never rewritten by this. The secure address is kept beside it in UserDefaults under key(primary), so the
 // saved address and the saved list read exactly as before (and an older app version that finds these entries ignores them).
 
 /// A `/api/health` reply that passed `EndpointProbe.parseHealth`: the server's id, and its display name if it sent a usable
@@ -88,7 +88,7 @@ enum EndpointRules {
     }
 
     // `https://<name>.ts.net`, nothing else: no port, no path, no credentials, no IP literal. The server only ever offers its
-    // Tailscale name (GET /api/remote-access/tailscale/address), and Serve answers on 443. Lower case only, the form the server
+    // Tailscale name when that kind is selected, and Serve answers on 443. Lower case only, the form the server
     // sends. 255 is the bound on a whole address, a maximum DNS name being 253. The same pattern as Android, character for
     // character.
     private static let tailscalePattern =
@@ -119,7 +119,40 @@ enum EndpointRules {
         return wholeMatch(tailscaleRegex, value)
     }
 
-    /// The UserDefaults key of the Tailscale address that belongs to the saved server `primary`. The same key as Android's
+    // The server sends a canonical HTTPS origin. Check the raw spelling: URL parsers can turn numeric DNS-looking hosts into
+    // IPv4 addresses (the CUSTOM_URL parser's WHATWG edge case). Keep these patterns equivalent to Android's EndpointRules.
+    private static let customRegex = EndpointRules.makeRegex("^https://([a-z0-9-]+(?:\\.[a-z0-9-]+)+)(?::([1-9][0-9]*))?$")
+    private static let dnsLabelRegex = EndpointRules.makeRegex("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+    private static let numericFinalRegex = EndpointRules.makeRegex("^(?:[0-9]+|0x[0-9a-f]*)$")
+
+    static func isCustomUrl(_ url: String?) -> Bool {
+        guard let value = url, value.utf16.count <= maxUrlChars else { return false }
+        let whole = NSRange(location: 0, length: value.utf16.count)
+        guard let match = customRegex.firstMatch(in: value, options: [], range: whole),
+              match.range.location == 0, match.range.length == whole.length else { return false }
+        let ns = value as NSString
+        let host = ns.substring(with: match.range(at: 1))
+        if host.utf16.count > 253 || host == "ts.net" || host.hasSuffix(".ts.net") || host.hasSuffix(".local") { return false }
+        let labels = host.components(separatedBy: ".")
+        if labels.contains(where: { !wholeMatch(dnsLabelRegex, $0) }) || wholeMatch(numericFinalRegex, labels.last ?? "") { return false }
+        let portRange = match.range(at: 2)
+        if portRange.location == NSNotFound { return true }
+        let portText = ns.substring(with: portRange)
+        // The server strips :443; accepting it here would widen the announced-origin shape.
+        guard portText != "443", let port = Int(portText) else { return false }
+        return (1...65535).contains(port)
+    }
+
+    static func isSecureAddress(_ url: String?) -> Bool { isTailscaleUrl(url) || isCustomUrl(url) }
+    /// Persisted values are rechecked before use; an old or corrupt slot must fail closed.
+    static func validatedSlot(_ url: String?) -> String? { isSecureAddress(url) ? url : nil }
+    static func addressKind(_ url: String?) -> String? {
+        if isTailscaleUrl(url) { return "tailscale" }
+        if isCustomUrl(url) { return "custom" }
+        return nil
+    }
+
+    /// The UserDefaults key of the secure address (Tailscale or custom HTTPS) for `primary`. The same key as Android's
     /// SharedPreferences key, so the two apps' stores read alike.
     static func key(_ primary: String) -> String {
         return "tailscale_for:" + primary
@@ -186,9 +219,9 @@ enum EndpointRules {
         return isPrivateIpv4(host) || host.lowercased().hasSuffix(".local")
     }
 
-    // ---- The Tailscale grace (Tailscale first, owner decision 2026-11-09) ----
+    // ---- The secure-address grace (Tailscale first, owner decision 2026-11-09) ----
     //
-    // How long a launch that already has an answer from the saved address still waits for the Tailscale address
+    // How long a launch that already has an answer from the saved address still waits for the secure address
     // (EndpointChooser's grace, counted from the start of the choice). Both are JUDGEMENTS, not measurements: Tailscale on and
     // healthy answers in well under a second, so one second lets it win when it is there; and when the phone positively has no
     // VPN (so no Tailscale answer is expected), the saved address should not be held back by more than a quarter of a second.
@@ -198,12 +231,13 @@ enum EndpointRules {
     static let defaultTailscaleGraceMs: Int = 1_000
     static let noVpnTailscaleGraceMs: Int = 250
 
-    /// The grace for this launch. The VPN reading (MainViewController's VpnSnapshot) is a HINT that can only SHORTEN the wait:
+    /// The grace for this launch. A custom slot always gets the full second. For Tailscale, the VPN reading is a HINT:
     /// it is false only when the phone positively reports no VPN, and a reading that fails counts as a VPN (fail open = the
     /// full grace). So a wrong hint can at worst let a slower but valid Tailscale answer lose to the saved address (the old
     /// saved-first behaviour), never open an address that was not verified (the id check is the probe's, unchanged).
-    static func tailscaleGraceMs(vpnPresent: Bool) -> Int {
-        return vpnPresent ? defaultTailscaleGraceMs : noVpnTailscaleGraceMs
+    static func tailscaleGraceMs(vpnPresent: Bool, slotUrl: String? = nil) -> Int {
+        // A custom origin needs no VPN; the VPN hint can shorten only a Tailscale wait.
+        return vpnPresent || isCustomUrl(slotUrl) ? defaultTailscaleGraceMs : noVpnTailscaleGraceMs
     }
 
     /// Whether `save` may take a REMEMBERED server whose own address did not answer, because the Tailscale address saved for
@@ -217,7 +251,7 @@ enum EndpointRules {
     /// this server earlier, and nothing is saved from it that was not already saved.
     static func canReconnectViaTailscale(knownServers: [String], url: String?, tailscaleUrl: String?, wantedId: String?, liveId: String?) -> Bool {
         guard let address = url, knownServers.contains(address) else { return false }
-        if !isTailscaleUrl(tailscaleUrl) { return false }
+        if !isSecureAddress(tailscaleUrl) { return false }
         guard let wanted = wantedId, let live = liveId else { return false }
         return live == wanted
     }
@@ -272,7 +306,8 @@ enum EndpointRules {
         case notConfirmed
     }
 
-    /// The sentence addEndpoint rejects with. BYTE-IDENTICAL to Android's ServerConfigPlugin.refusal: the web app's About page
+    /// The sentence addEndpoint rejects with. The legacy text says Tailscale even for a custom slot because the web app
+    /// classifies these exact words. BYTE-IDENTICAL to Android's EndpointRules.refusal: the web app's About page
     /// reads the reason from these words (nativeBridge.js classifyAddRefusal matches "Couldn't reach" and "different server"),
     /// so a reworded sentence here would show the generic reason on an iPhone only. ios/Tests pins each one.
     static func refusal(_ check: AddCheck) -> String {
@@ -306,7 +341,7 @@ enum EndpointRules {
     /// view is really showing that origin, `shown`). The bundled setup page has no server (`page` nil) and is refused, as is
     /// any other address.
     static func checkPage(url: String?, primary: String?, savedTailscale: String?, page: String?, shown: String?) -> AddCheck {
-        if !isTailscaleUrl(url) { return .notATailscaleAddress }
+        if !isSecureAddress(url) { return .notATailscaleAddress }
         if !isTrustedPage(primary: primary, savedTailscale: savedTailscale, page: page, shown: shown) { return .notThisPage }
         return .ok
     }
@@ -423,8 +458,8 @@ enum EndpointRules {
     /// so a page that is itself hostile can name an address that repeats the id. That page is the server the person chose to
     /// use, so it could already show anything; what it cannot do is change the saved address. Since Tailscale first (owner
     /// decision 2026-11-09) the address it names is opened BEFORE the saved one whenever it answers with that id, where it used
-    /// to be opened only when the saved one was not answering: still an address of the one accepted shape (`https://<name>.ts.net`),
-    /// offered by the server the person chose, and the saved sign-in still goes only to it (SessionRules), as before. Because a
+    /// to be opened only when the saved one was not answering: still a validated secure origin offered by the server the person
+    /// chose. A saved sign-in goes only to a Tailscale page, never a custom one (SessionRules). Because a
     /// plain-http page can be put there by the network, a NEW or CHANGED address offered from one is saved only after the person
     /// confirms it (needsConfirmation and PromptGate in this file; addendum of 2026-11-09, Codex code reviews of PR #38).
     static func checkIdentity(reference: ServerHealth?, candidate: ServerHealth?) -> AddCheck {
@@ -479,6 +514,20 @@ enum EndpointRules {
 /// (AddressPrompt, ServerConfigPlugin.swift) holds the state, reads the clocks and shows the alert; every rule it applies is here,
 /// so ios/Tests runs each row. Only reached when EndpointRules.needsConfirmation says to ask.
 enum PromptGate {
+
+    /// The full host is the one thing the person can compare. A custom domain is absent from Settings, so its instruction
+    /// differs from the Tailscale instruction. This is pure so the swiftc rules runner checks the wording UIKit shows.
+    static func promptBody(savedAddress: String, candidate: String) -> String {
+        let host = candidate.hasPrefix("https://") ? String(candidate.dropFirst("https://".count)) : candidate
+        let instruction: String
+        if EndpointRules.isCustomUrl(candidate) {
+            instruction = "This is your own address for this server. Continue only if you set up this address yourself."
+        } else {
+            // The wording this platform has always shown (kept byte-for-byte; Android's text differs slightly, on purpose).
+            instruction = "Only use it if you just turned on the secure address in your server's Settings \u{2192} Remote Access and this name matches."
+        }
+        return "Your server at \(savedAddress) offered this secure address:\n\n\(host)\n\n\(instruction)"
+    }
 
     /// What to do with an offer that needs confirming.
     ///  - ask: show the prompt (the glue reserves the one prompt slot in the same locked step as this decision);

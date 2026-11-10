@@ -9,6 +9,7 @@ import Foundation
 // check passed, 1 when any failed or none ran at all (a runner that runs nothing must not look like a pass).
 
 runEndpointRulesTests()
+runCustomAddressTests()
 runEndpointProbeTests()
 runDiscoveryRulesTests()
 runDiscoveryStateTests()

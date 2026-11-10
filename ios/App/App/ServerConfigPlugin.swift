@@ -10,7 +10,7 @@ import Network
 /// From the web side (same plugin + method names as Android, so `nativeBridge.js`
 /// works unchanged):
 ///
-///   Capacitor.Plugins.ServerConfig.get()          -> { url: string | null, tailscale: string | null }
+///   Capacitor.Plugins.ServerConfig.get()          -> { url, tailscale, supportsCustomUrl: true, kind }
 ///   Capacitor.Plugins.ServerConfig.list()         -> { servers: string[], active: string | null,
 ///                                                      tailscale: string | null, names: { [url]: name } }
 ///   Capacitor.Plugins.ServerConfig.save({ url, expectId? }) -> validates + persists; a found card's id is re-checked
@@ -184,11 +184,11 @@ enum ServerConfigStore {
         defaults.removeObject(forKey: EndpointRules.declinedAtKey(primary))
     }
 
-    /// The server's Tailscale address that goes with the saved server `primary`, or nil. Re-checked on read: only an address
-    /// of the one accepted shape ever reaches the launch choice or the page.
+    /// The secure address for `primary`. The legacy key and getter name remain for existing installs, but this slot can hold
+    /// custom HTTPS too. Re-check on read before launch, roaming, reconnect, or binding a session.
     static func tailscaleURL(for primary: String) -> String? {
         let value = defaults.string(forKey: EndpointRules.key(primary))
-        return EndpointRules.isTailscaleUrl(value) ? value : nil
+        return EndpointRules.validatedSlot(value)
     }
 
     /// The server id the saved Tailscale address was saved for (EndpointRules.idKey), or nil.
@@ -568,19 +568,21 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         return answer.get()
     }
 
-    // `url` is the saved (primary) address; `tailscale` is the Tailscale address the server told this phone about, or null.
+    // `url` is the saved address; legacy `tailscale` is the secure slot of either kind, or null.
     // Which one the page was loaded from is NOT said here: the page knows its own origin.
     @objc func get(_ call: CAPPluginCall) {
         let saved = ServerConfigStore.savedURL
         var urlValue: Any = NSNull()
         var tailscaleValue: Any = NSNull()
+        var kindValue: Any = NSNull()
         if let primary = saved {
             urlValue = primary
             if let tailscale = ServerConfigStore.tailscaleURL(for: primary) {
                 tailscaleValue = tailscale
+                if let kind = EndpointRules.addressKind(tailscale) { kindValue = kind }
             }
         }
-        call.resolve(["url": urlValue, "tailscale": tailscaleValue])
+        call.resolve(["url": urlValue, "tailscale": tailscaleValue, "supportsCustomUrl": true, "kind": kindValue])
     }
 
     // Previously used servers plus which one is currently active, for the setup screen's one-tap list. `names` and
@@ -654,10 +656,10 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     // addEndpoint({ url }): the server on screen has said "you can also reach me at <url>" (the web app read it from
-    // GET /api/remote-access/tailscale/address while signed in). Saved only when ALL of these hold, each fails closed (the
+    // GET /api/remote-access/address while signed in). Saved only when ALL of these hold, each fails closed (the
     // decisions are EndpointRules.checkPage and checkIdentity, run by ios/Tests in CI):
-    //   - the url is exactly `https://<name>.ts.net`: no port, path, credentials or IP;
-    //   - the bridge was built for the saved server or the Tailscale address already saved for it (pageServerURL), AND the web
+    //   - the url is a Tailscale or custom HTTPS origin: no path, credentials or IP;
+    //   - the bridge was built for the saved server or the secure address already saved for it (pageServerURL), AND the web
     //     view is really showing that origin (shownPageURL; EndpointRules.isTrustedPage says why prefix navigation makes this
     //     necessary), so the bundled setup page, a page that wandered to another host or port, and anything else are refused;
     //   - the page's server and the url answer /api/health with the SAME id (EndpointProbe): an address that merely looks right
@@ -788,7 +790,7 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    // removeEndpoint(): the server has said it no longer offers a Tailscale address (Tailscale was turned off there). Same
+    // removeEndpoint(): the server has said it no longer offers a secure address. Same
     // page rule as addEndpoint (EndpointRules.isTrustedPage, the web view's current origin included). Resolves { removed }.
     @objc func removeEndpoint(_ call: CAPPluginCall) {
         let primary = ServerConfigStore.savedURL
@@ -1062,9 +1064,9 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    // None answered. A REMEMBERED server that has a Tailscale address can still be reached through it: this is how "Change
+    // None answered. A REMEMBERED server that has a secure address can still be reached through it: this is how "Change
     // server" gets back in from cellular, where the home address cannot answer (owner, 2026-11-06). The saved address stays the
-    // one the person picked; the launch choice then opens the Tailscale address (which it tries first anyway since Tailscale
+    // one the person picked; the launch choice then opens the secure address (which it tries first anyway since Tailscale
     // first, owner decision 2026-11-09; here the saved one is not answering either).
     // ONLY from the bundled setup page, where Change server lands: any page can call save, and this path lets a call switch the
     // active server to a remembered one it could not reach before, so a page on the current server must not have it (Codex
@@ -1087,10 +1089,11 @@ public class ServerConfigPlugin: CAPPlugin, CAPBridgedPlugin {
                     ServerConfigStore.savedURL = home
                     ServerConfigStore.remember(home)
                     ServerConfigStore.rememberName(home, liveName)
+                    // Keep the legacy result value for older web pages; it names the slot, not its kind.
                     call.resolve(["url": home, "via": "tailscale"])
                 }
             } else {
-                call.reject("Couldn't reach a Nightlight server at that address, or through its Tailscale address")
+                call.reject("Couldn't reach a Nightlight server at that address, or through its secure address")
             }
         }
     }
@@ -1318,12 +1321,9 @@ final class AddressPrompt {
         onShown?()
     }
 
-    /// The prompt's text: the saved server's own address the offer came from, the FULL secure host, and when to accept it
-    /// (addendum). It can only SHOW the name and say when to accept; it cannot prove the name is the person's (README limit).
+    /// The prompt text lives in pure rules so both kinds' wording is checked by the swiftc runner.
     static func message(home: String, offered: String) -> String {
-        let host: String = URLComponents(string: offered)?.host ?? offered
-        return "Your server at " + home + " offered this secure address:\n\n" + host
-            + "\n\nOnly use it if you just turned on the secure address in your server's Settings \u{2192} Remote Access and this name matches."
+        return PromptGate.promptBody(savedAddress: home, candidate: offered)
     }
 
     // The wall clock, for the 7-day decline (it is stored and must survive restarts), in milliseconds.

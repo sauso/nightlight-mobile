@@ -11,6 +11,10 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Added
+- **iOS: use your own secure address away from home.** When the server announces a custom HTTPS address, the app saves
+  and checks it like a Tailscale address, then uses it first even without the Tailscale app. A new address from a plain HTTP
+  page still needs your approval. You sign in separately on your own domain; the app never shares a saved sign-in with it.
+  Phone behaviour on a custom origin, including background audio, still needs testing.
 - **Android: use your own secure address away from home.** When the server announces a custom HTTPS address, the app saves
   and checks it like a Tailscale address, then uses it first even without the Tailscale app. A new address from a plain HTTP
   page still needs your approval. You sign in separately on your own domain; the app never shares a saved sign-in with it.
