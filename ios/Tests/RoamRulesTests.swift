@@ -45,8 +45,19 @@ private func roamSignature(_ status: String, _ types: Set<String>, _ gateways: S
 func runRoamRulesTests() {
     let saved = RoamFixture.saved
     let tailscale = RoamFixture.tailscale
+    let custom = "https://nightlight.example.com"
     let start = RoamTrigger.foregroundStart
     let change = RoamTrigger.networkChange
+
+    test("roam: a custom slot follows the same escape and upgrade guard") {
+        checkEqual(RoamRules.currentAddress(webViewUrl: custom + "/#/live", saved: saved, tailscale: custom), custom)
+        checkEqual(RoamRules.target(trigger: change, saved: saved, tailscale: custom, current: custom, chosen: saved,
+                                    inPip: true, currentAnswers: false), RoamMove(address: saved, escape: true))
+        checkEqual(RoamRules.target(trigger: start, saved: saved, tailscale: custom, current: saved, chosen: custom,
+                                    inPip: false, currentAnswers: true), RoamMove(address: custom, escape: false))
+        check(RoamRules.target(trigger: start, saved: saved, tailscale: custom, current: saved, chosen: custom,
+                               inPip: true, currentAnswers: true) == nil, "PiP upgrade was allowed")
+    }
 
     // ---- currentAddress: which address the page on screen is on ----
 

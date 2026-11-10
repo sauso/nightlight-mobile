@@ -217,6 +217,22 @@ func runSessionRulesTests() {
         checkEqual(SessionRules.stampFor(current, claimedTailscale: " " + ts + "/ "), current, "a trailing slash and spaces are the same address")
     }
 
+    test("session: a custom slot allows its own page but never receives a shared sign-in") {
+        let custom = "https://nightlight.example.com"
+        let customBinding = Bindings(savedUrl: saved, tailscaleUrl: custom, tailscaleId: id)
+        let oldEntry = Entry(token: token, bindings: current)
+        check(SessionRules.mayAct(customBinding, bridgeUrl: custom, webViewUrl: custom + "/#/live"), "custom page lost bridge access")
+        check(!SessionRules.isTailscalePage(customBinding, bridgeUrl: custom, webViewUrl: custom + "/"),
+              "a custom page passed the Tailscale-only gate")
+        checkEqual(SessionRules.checkDelivery(page: custom, current: customBinding, entry: oldEntry, liveId: id), .notTheTailscalePage)
+        let stamp = SessionRules.stampFor(customBinding, claimedTailscale: custom)
+        checkEqual(stamp, Bindings(savedUrl: saved, tailscaleUrl: nil, tailscaleId: nil))
+        checkEqual(SessionRules.checkDelivery(page: custom, current: customBinding,
+                                             entry: Entry(token: token, bindings: stamp), liveId: id), .notTheTailscalePage)
+        checkEqual(SessionRules.checkDelivery(page: ts, current: customBinding, entry: oldEntry, liveId: id), .notTheTailscalePage)
+        check(SessionRules.mayClear(customBinding, bridgeUrl: custom, webViewUrl: custom + "/"), "custom page cannot clear its own session")
+    }
+
     test("session: no claim, a different claim or no saved Tailscale address stamps no binding, so the entry is never handed out") {
         checkEqual(SessionRules.stampFor(current, claimedTailscale: nil), savedOnly, "an older web app sends no claim")
         checkEqual(SessionRules.stampFor(current, claimedTailscale: ""), savedOnly, "the server did not offer one (409, error)")

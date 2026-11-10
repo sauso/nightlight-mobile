@@ -20,6 +20,7 @@ class RoamRulesTest {
 
     private val saved = "http://192.168.1.50:4000"
     private val tailscale = "https://nightlight.example.ts.net"
+    private val custom = "https://nightlight.example.com:8443"
     private val start = RoamRules.Trigger.FOREGROUND_START
     private val change = RoamRules.Trigger.NETWORK_CHANGE
 
@@ -33,6 +34,17 @@ class RoamRulesTest {
     @Test
     fun `a page on the tailscale address is the tailscale address`() {
         assertEquals(tailscale, RoamRules.currentAddress("https://nightlight.example.ts.net", saved, tailscale))
+    }
+
+    @Test
+    fun `a custom slot takes the same roaming paths as a tailscale slot`() {
+        assertEquals(custom, RoamRules.currentAddress("$custom/#/live", saved, custom))
+        assertEquals(RoamMove(custom, escape = true),
+            RoamRules.target(change, saved, custom, saved, custom, false, false))
+        assertEquals(RoamMove(custom, escape = false),
+            RoamRules.target(start, saved, custom, saved, custom, false, true))
+        assertEquals(RoamMove(saved, escape = true),
+            RoamRules.target(change, saved, custom, custom, saved, false, false))
     }
 
     @Test
