@@ -1,20 +1,20 @@
 package com.sauso.nightlight
 
 /**
- * The rules for a server's second address: its secure Tailscale address, which the server tells the phone about (owner,
+ * The rules for a server's second address: a secure Tailscale or custom HTTPS address, which the server tells the phone about (owner,
  * 2026-11-06). Since the owner decision of 2026-11-09 ("we go Tailscale first") the phone opens that address first when it
  * answers and uses the saved address when it does not (EndpointChooser); before that, the saved address came first.
  *
  * Pure Kotlin with no Android imports, so the JVM unit tests run exactly this code.
  *
  * Where it is stored: the saved server (ServerConfig `server_url`, the address the person typed or picked) stays the PRIMARY
- * address and is never rewritten by this. The Tailscale address is kept beside it under [key], so the old saved-server list
+ * address and is never rewritten by this. The secure address is kept beside it under [key], so the old saved-server list
  * and the old single saved URL read exactly as before (and an older app version that finds these entries ignores them).
  */
 object EndpointRules {
 
     // `https://<name>.ts.net`, nothing else: no port, no path, no credentials, no IP literal. The server only ever offers
-    // its Tailscale name (GET /api/remote-access/tailscale/address), and Serve answers on 443. Lower case only, the form the
+    // its Tailscale name when that kind is selected; Serve answers on 443. Lower case only, the form the
     // server sends. 255 is the bound on a whole address, a maximum DNS name being 253.
     private val TAILSCALE_URL = Regex("^https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\\.ts\\.net$")
     private const val MAX_URL_CHARS = 255
@@ -22,7 +22,36 @@ object EndpointRules {
     fun isTailscaleUrl(url: String?): Boolean =
         url != null && url.length <= MAX_URL_CHARS && TAILSCALE_URL.matches(url)
 
-    /** The SharedPreferences key of the Tailscale address that belongs to the saved server [primary]. */
+    // The server sends a canonical HTTPS origin. Check the raw spelling so URL parsers cannot turn numeric DNS-looking
+    // hosts into IP addresses (the CUSTOM_URL parser's WHATWG edge case).
+    private val CUSTOM_ORIGIN = Regex("^https://([a-z0-9-]+(?:\\.[a-z0-9-]+)+)(?::([1-9][0-9]*))?$")
+    private val DNS_LABEL = Regex("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+    private val NUMERIC_FINAL_LABEL = Regex("^(?:[0-9]+|0x[0-9a-f]*)$")
+
+    fun isCustomUrl(url: String?): Boolean {
+        if (url == null || url.length > MAX_URL_CHARS) return false
+        val match = CUSTOM_ORIGIN.matchEntire(url) ?: return false
+        val host = match.groupValues[1]
+        if (host.length > 253 || host == "ts.net" || host.endsWith(".ts.net") || host.endsWith(".local")) return false
+        val labels = host.split('.')
+        if (labels.any { !DNS_LABEL.matches(it) } || NUMERIC_FINAL_LABEL.matches(labels.last())) return false
+        val port = match.groupValues[2]
+        // The server strips :443; rejecting it here keeps the app's accepted input equal to its announced origin.
+        return port.isEmpty() || (port != "443" && (port.toIntOrNull() ?: 0) in 1..65535)
+    }
+
+    fun isSecureAddress(url: String?): Boolean = isTailscaleUrl(url) || isCustomUrl(url)
+
+    /** Recheck a persisted slot before launch or session binding; corrupt or old values must still fail closed. */
+    fun validatedSlot(url: String?): String? = url?.takeIf { isSecureAddress(it) }
+
+    fun addressKind(url: String?): String? = when {
+        isTailscaleUrl(url) -> "tailscale"
+        isCustomUrl(url) -> "custom"
+        else -> null
+    }
+
+    /** The SharedPreferences key of the secure address (Tailscale or custom HTTPS) belonging to [primary]. */
     fun key(primary: String): String = "tailscale_for:$primary"
 
     /**
@@ -102,12 +131,14 @@ object EndpointRules {
     const val TAILSCALE_GRACE_NO_VPN_MS = 250L
 
     /**
-     * The grace for this launch. The VPN reading is a hint that can only SHORTEN the wait (its failure reads as "present", the
+     * The grace for this launch. A custom slot needs no VPN and always gets the full second. For Tailscale, the VPN reading
+     * is a hint that can only SHORTEN the wait (its failure reads as "present", the
      * full grace): if it is wrong, the worst case is that a slower but valid Tailscale answer loses to the saved address, which
      * is the saved-first behaviour the app had before; the app never opens an unverified Tailscale address because of it
      * (Codex plan review of Tailscale first, 2026-11-09).
      */
-    fun tailscaleGraceMs(vpnPresent: Boolean): Long = if (vpnPresent) TAILSCALE_GRACE_MS else TAILSCALE_GRACE_NO_VPN_MS
+    fun tailscaleGraceMs(vpnPresent: Boolean, slotUrl: String? = null): Long =
+        if (vpnPresent || isCustomUrl(slotUrl)) TAILSCALE_GRACE_MS else TAILSCALE_GRACE_NO_VPN_MS
 
     /**
      * The raw-socket identity probe accepts only discovery's exact private IPv4 URL. Keep typed hostnames, HTTPS and
@@ -159,18 +190,18 @@ object EndpointRules {
     }
 
     /**
-     * Whether `save` may take a REMEMBERED server whose own address did not answer, because the Tailscale address saved for it
+     * Whether `save` may take a REMEMBERED server whose own address did not answer, because the secure address saved for it
      * did, and that address reported the id it was saved for. This is what lets "Change server" get back in from cellular
      * (owner, 2026-11-06): the setup page lists only the saved home address, which cannot answer there, so without this the only
      * way back was to type the Tailscale address by hand.
      *
      * Every condition must hold: the address is exactly a server this phone remembers (a typed address that merely resembles
-     * one is not), it has a Tailscale address of the one accepted shape and a stored id, and the live id is that same id. An id
+     * one is not), it has a validated secure address and a stored id, and the live id is that same id. An id
      * is public and proves nothing alone (see [checkIdentity]); what it adds here is that the address was learned from this
      * server earlier, and nothing is saved from it that was not already saved.
      */
     fun canReconnectViaTailscale(knownServers: List<String>, url: String?, tailscaleUrl: String?, wantedId: String?, liveId: String?): Boolean =
-        url != null && url in knownServers && isTailscaleUrl(tailscaleUrl) && wantedId != null && liveId != null && liveId == wantedId
+        url != null && url in knownServers && isSecureAddress(tailscaleUrl) && wantedId != null && liveId != null && liveId == wantedId
 
     /**
      * Whether a Tailscale address saved for [wantedId] still belongs to the server that now answers at the saved address
@@ -204,7 +235,8 @@ object EndpointRules {
     }
 
     /**
-     * The sentence addEndpoint rejects with. BYTE-IDENTICAL to iOS's EndpointRules.refusal, and pinned word for word by
+     * The sentence addEndpoint rejects with. The legacy text says Tailscale even for a custom slot because the web app
+     * classifies these exact words; changing them would change its refusal category. BYTE-IDENTICAL to iOS's EndpointRules.refusal, and pinned word for word by
      * EndpointRulesTest on Android and ios/Tests on iOS: the web app's About card reads the reason from these words
      * (nativeBridge.js classifyAddRefusal: "Couldn't reach" -> unreachable, "different server" -> different, anything else ->
      * refused, shown as "The app did not accept the address the server offered"), so a sentence reworded on one platform would
@@ -228,7 +260,7 @@ object EndpointRules {
      * ([page] null) and is refused, as is any other address.
      */
     fun checkPage(url: String?, primary: String?, savedTailscale: String?, page: String?): AddCheck {
-        if (!isTailscaleUrl(url)) return AddCheck.NOT_A_TAILSCALE_ADDRESS
+        if (!isSecureAddress(url)) return AddCheck.NOT_A_TAILSCALE_ADDRESS
         if (!isActivePage(primary, savedTailscale, page)) return AddCheck.NOT_THIS_PAGE
         return AddCheck.OK
     }

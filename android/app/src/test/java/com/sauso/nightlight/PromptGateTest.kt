@@ -152,5 +152,15 @@ class PromptGateTest {
         val body = PromptGate.promptBody("http://192.168.1.50:4000", "https://nightlight.example-tailnet.ts.net")
         assertTrue(body, body.contains("http://192.168.1.50:4000"))
         assertTrue("the full host, never shortened: $body", body.contains("nightlight.example-tailnet.ts.net"))
+        assertTrue(body, body.contains("Settings → Remote Access"))
+    }
+
+    @Test
+    fun `a custom prompt names the own host and asks for the person's own setup`() {
+        val body = PromptGate.promptBody("http://192.168.1.50:4000", "https://nightlight.example.com:8443")
+        assertTrue(body, body.contains("nightlight.example.com:8443"))
+        assertTrue(body, body.contains("your own address for this server"))
+        assertTrue(body, body.contains("only if you set up this address yourself"))
+        assertFalse(body, body.contains("Settings → Remote Access"))
     }
 }

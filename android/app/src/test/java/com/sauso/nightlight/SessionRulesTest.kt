@@ -17,6 +17,7 @@ class SessionRulesTest {
 
     private val saved = "http://192.168.1.50:4000"
     private val ts = "https://nightlight.example.ts.net"
+    private val custom = "https://nightlight.example.com"
     private val id = "4f1c2b9e-7a3d-4e21-9c5b-6d8e0f1a2b3c"
     private val token = "aaa.bbb.ccc"
 
@@ -35,6 +36,21 @@ class SessionRulesTest {
     @Test
     fun `the one good case is delivered`() {
         assertEquals(Delivery.OK, delivery())
+    }
+
+    @Test
+    fun `a custom slot permits bridge actions but never shared session delivery`() {
+        val customBindings = Bindings(saved, custom, id)
+        assertTrue(SessionRules.mayAct(customBindings, custom, "$custom/#/live"))
+        assertTrue(SessionRules.sameOrigin("$custom/#/live", custom))
+        assertFalse(SessionRules.isTailscalePage(customBindings, custom, "$custom/#/live"))
+        assertEquals(Delivery.NOT_THE_TAILSCALE_PAGE,
+            delivery(page = custom, now = customBindings, stored = Entry(token, customBindings)))
+        assertEquals(Bindings(saved, null, null), SessionRules.stampFor(customBindings, custom))
+        // A previously bound Tailscale token also stays unavailable after the slot changes.
+        assertEquals(Delivery.NOT_THE_TAILSCALE_PAGE, delivery(page = custom, now = customBindings))
+        // Sign-out on the active custom page may clear the vault, just as removeEndpoint and forget clear it.
+        assertTrue(SessionRules.mayClear(customBindings, custom, "$custom/#/live"))
     }
 
     @Test

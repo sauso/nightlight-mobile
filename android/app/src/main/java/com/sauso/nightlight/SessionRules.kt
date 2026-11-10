@@ -47,7 +47,9 @@ object SessionRules {
      */
     fun stampFor(current: Bindings, claimedTailscale: String?): Bindings {
         val claimed = claimedTailscale?.trim()?.trimEnd('/')
-        return if (claimed != null && claimed == current.tailscaleUrl) current else Bindings(current.savedUrl, null, null)
+        // A custom domain can change hands, so a matching custom slot is never a shared sign-in claim.
+        return if (claimed != null && claimed == current.tailscaleUrl && EndpointRules.isTailscaleUrl(claimed)) current
+            else Bindings(current.savedUrl, null, null)
     }
 
     /**
