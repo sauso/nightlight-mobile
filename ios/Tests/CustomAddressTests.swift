@@ -71,8 +71,7 @@ func runCustomAddressTests() {
                    "This is your own address for this server. Continue only if you set up this address yourself.")
         checkEqual(PromptGate.promptBody(savedAddress: home, candidate: tailscale),
                    "Your server at \(home) offered this secure address:\n\nnightlight.example.ts.net\n\n" +
-                   "Only use it if you have just turned on the secure address in your server's Settings → Remote Access " +
-                   "and the name matches the one shown there.")
+                   "Only use it if you just turned on the secure address in your server's Settings \u{2192} Remote Access and this name matches.")
         check(PromptGate.promptBody(savedAddress: home, candidate: "https://example.com:8443").contains("example.com:8443"),
               "the non-default port was hidden")
     }

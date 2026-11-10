@@ -523,8 +523,8 @@ enum PromptGate {
         if EndpointRules.isCustomUrl(candidate) {
             instruction = "This is your own address for this server. Continue only if you set up this address yourself."
         } else {
-            instruction = "Only use it if you have just turned on the secure address in your server's Settings → Remote Access " +
-                "and the name matches the one shown there."
+            // The wording this platform has always shown (kept byte-for-byte; Android's text differs slightly, on purpose).
+            instruction = "Only use it if you just turned on the secure address in your server's Settings \u{2192} Remote Access and this name matches."
         }
         return "Your server at \(savedAddress) offered this secure address:\n\n\(host)\n\n\(instruction)"
     }

@@ -102,7 +102,7 @@ launch only if the server there still reports it). Forgetting a server (the ✕ 
 
 **The app asks once before it saves a new secure address.** When the app learns a secure address for the first time, or a
 different one, while the page on screen is a plain `http` address, it asks "Use this secure address?" and shows the saved
-address the offer came from and the full secure name. Tap **Use it** only if you have just turned on the secure address in your
+address the offer came from and the full secure name. For a Tailscale address, tap **Use it** only if you have just turned on the secure address in your
 server's Settings → Remote Access and the name matches; the web app's own "saved" notice follows. Why: a saved secure address
 now opens ahead of the saved one, and the server id the app checks is public, so a device that answers at a plain `http` address
 (where the network can be faked) could otherwise offer its own address. The details (`EndpointRules.needsConfirmation`,
