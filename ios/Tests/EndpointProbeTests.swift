@@ -223,4 +223,103 @@ func runEndpointProbeTests() {
         check(EndpointProbe.sameEndpoint(URL(string: "http://192.168.1.50:4000/api/health"), home), "a home address")
         check(!EndpointProbe.sameEndpoint(URL(string: "http://192.168.1.50/api/health"), home), "the port dropped is another port")
     }
+
+    test("a tailscale address with no saved id never counts as answering") {
+        // Tailscale first opens this address before the saved one, so the id check must fail CLOSED: with no id saved the answer
+        // is false before any request is made. (A version that compared the live id with the missing one would read nil == nil
+        // as a match here, since this name never answers.)
+        let ts = "https://nightlight.example.ts.net"
+        check(!EndpointProbe.addressAnswers(ts, tailscale: ts, wantedId: nil, expectedId: nil, timeout: 2.0), "a tailscale address with no saved id counted as answering")
+    }
+
+    // ---- addressAnswers with the network reads passed in (Codex code review of PR #38) ----
+    // The replies go through acceptReply, so the real parsing decides what id (if any) a body carries; no network is used.
+
+    let tsAddress = "https://nightlight.example.ts.net"
+    let homeAddress = "http://192.168.1.50:4000"
+    let otherId = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+
+    // A health read that answers every address with what acceptReply makes of `body` (a 200 from the address asked).
+    func replying(_ body: String) -> (String) -> ServerHealth? {
+        return { (_: String) -> ServerHealth? in
+            return EndpointProbe.acceptReply(status: 200, sameAddress: true, body: Data(body.utf8))
+        }
+    }
+
+    test("addressAnswers: a tailscale address counts with the id it was saved for, and not with another one") {
+        check(EndpointProbe.addressAnswers(tsAddress, tailscale: tsAddress, wantedId: id, expectedId: otherId, readHealth: replying(validBody), reachable: { (_: String) -> Bool in false }),
+              "the right id was refused")
+        // `reachable` says yes here, so a version that let the tailscale address through the plain path would pass it.
+        check(!EndpointProbe.addressAnswers(tsAddress, tailscale: tsAddress, wantedId: id, expectedId: nil, readHealth: replying(healthJson(idValue: "\"\(otherId)\"")),
+                                            reachable: { (_: String) -> Bool in true }),
+              "a reply with another server's id counted")
+    }
+
+    test("addressAnswers: a tailscale reply with a null or unreadable id, or no reply, never counts") {
+        // `reachable` says yes throughout: only the id check may decide for the tailscale address.
+        let alwaysReachable: (String) -> Bool = { (_: String) -> Bool in true }
+        check(!EndpointProbe.addressAnswers(tsAddress, tailscale: tsAddress, wantedId: id, expectedId: nil, readHealth: replying(healthJson(idValue: "null")), reachable: alwaysReachable),
+              "a null id counted")
+        check(!EndpointProbe.addressAnswers(tsAddress, tailscale: tsAddress, wantedId: id, expectedId: nil, readHealth: replying("<html>router login</html>"), reachable: alwaysReachable),
+              "an unreadable reply counted")
+        check(!EndpointProbe.addressAnswers(tsAddress, tailscale: tsAddress, wantedId: id, expectedId: nil, readHealth: { (_: String) -> ServerHealth? in nil }, reachable: alwaysReachable),
+              "no reply counted")
+    }
+
+    test("addressAnswers: with no saved id the tailscale address never counts and is not even read") {
+        var read = false
+        let answered = EndpointProbe.addressAnswers(tsAddress, tailscale: tsAddress, wantedId: nil, expectedId: id,
+                                                    readHealth: { (_: String) -> ServerHealth? in
+                                                        read = true
+                                                        return ServerHealth(id: id, name: nil)
+                                                    },
+                                                    reachable: { (_: String) -> Bool in true })
+        check(!answered, "counted with no saved id")
+        check(!read, "the tailscale address was read with no saved id")
+    }
+
+    test("addressAnswers: without an expected id the saved address uses reachable without a strict read") {
+        var readCount = 0
+        let countingRead: (String) -> ServerHealth? = { (_: String) -> ServerHealth? in
+            readCount += 1
+            return nil
+        }
+        check(EndpointProbe.addressAnswers(homeAddress, tailscale: tsAddress, wantedId: id, expectedId: nil, readHealth: countingRead,
+                                           reachable: { (address: String) -> Bool in address == homeAddress }),
+              "a reachable saved address was refused")
+        check(!EndpointProbe.addressAnswers(homeAddress, tailscale: tsAddress, wantedId: id, expectedId: nil, readHealth: countingRead,
+                                            reachable: { (_: String) -> Bool in false }),
+              "an unreachable saved address counted")
+        check(EndpointProbe.addressAnswers(homeAddress, tailscale: tsAddress, wantedId: nil, expectedId: nil, readHealth: countingRead,
+                                           reachable: { (_: String) -> Bool in true }),
+              "the saved address needs no id: a missing one must not refuse it")
+        checkEqual(readCount, 0, "the saved address went through the id check")
+    }
+
+    test("addressAnswers: known saved id requires the same strict reply") {
+        let reachable: (String) -> Bool = { _ in true }
+        check(EndpointProbe.addressAnswers(homeAddress, tailscale: tsAddress, wantedId: nil, expectedId: id,
+                                           readHealth: replying(validBody), reachable: { _ in false }), "matching id refused")
+        check(!EndpointProbe.addressAnswers(homeAddress, tailscale: tsAddress, wantedId: nil, expectedId: id,
+                                            readHealth: replying(healthJson(idValue: "\"\(otherId)\"")), reachable: reachable),
+              "different id accepted")
+        check(!EndpointProbe.addressAnswers(homeAddress, tailscale: tsAddress, wantedId: nil, expectedId: id,
+                                            readHealth: replying(healthJson(idValue: "null")), reachable: reachable),
+              "reply without an id accepted")
+        check(!EndpointProbe.addressAnswers(homeAddress, tailscale: tsAddress, wantedId: nil, expectedId: id,
+                                            readHealth: { _ in nil }, reachable: reachable), "no reply accepted")
+    }
+
+    test("addressAnswers: a hostname with a pair id keeps legacy reachability") {
+        let hostname = "http://server.local:4000"
+        var readCount = 0
+        let readHealth: (String) -> ServerHealth? = { _ in
+            readCount += 1
+            return nil
+        }
+        check(EndpointProbe.addressAnswers(hostname, tailscale: tsAddress, wantedId: id, expectedId: id,
+                                           readHealth: readHealth, reachable: { $0 == hostname }),
+              "reachable hostname was refused because its pair had an id")
+        checkEqual(readCount, 0, "hostname used a strict health read")
+    }
 }

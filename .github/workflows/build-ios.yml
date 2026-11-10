@@ -36,10 +36,17 @@ jobs:
         uses: actions/checkout@v4
 
       # The pure rules behind the server's Tailscale address (ios/App/App/EndpointRules.swift, EndpointProbe.swift,
-      # EndpointChooser.swift), compiled ALONE with swiftc together with ios/Tests and run as a plain program: the project
-      # has no Xcode test target. Those three files import Foundation only, so this needs no npm, no Capacitor and no
-      # Simulator, and it runs first so a broken rule fails in seconds. The program prints each test, then each failed
-      # check with its file and line, and exits non-zero on any failure. It uses no network (the probes are fakes).
+      # EndpointChooser.swift), behind discovery (DiscoveryRules.swift, DiscoveryState.swift), behind the one sign-in
+      # across both addresses (SessionRules.swift, SessionVault.swift,
+      # KeychainLogic.swift), behind moving between the addresses when the network changes (RoamRules.swift), and behind
+      # finding a saved server at its new local address (MovedServerRules.swift), compiled
+      # ALONE with swiftc together with ios/Tests and run as a plain program: the project has no Xcode test target. Those
+      # ten files import Foundation only, so this needs no npm, no Capacitor and no Simulator, and it runs first so a
+      # broken rule fails in seconds. The program prints each test, then each failed check with its file and line, and
+      # exits non-zero on any failure. It uses no network and no Keychain (the probes and the Keychain calls are fakes).
+      # KeychainSessionStore.swift is deliberately NOT here: it imports Security and makes the real Keychain calls, so only
+      # the Simulator build below compiles it, and only an iPhone runs it. NetworkRoamWatcher.swift is not here either, for
+      # the same reason: it imports Network, UIKit and Capacitor (the path monitor, the web view and the rebuild).
       # -swift-version 5: the app's own language mode (SWIFT_VERSION in project.pbxproj). The macOS 13 target is only so the
       # Unicode and Thread APIs the rules use are available whatever the compiler's default deployment target is.
       - name: Run the iOS rules tests (swiftc, no Simulator)
@@ -47,7 +54,14 @@ jobs:
           swiftc -swift-version 5 -target "$(uname -m)-apple-macosx13.0" \
             ios/App/App/EndpointRules.swift \
             ios/App/App/EndpointProbe.swift \
+            ios/App/App/DiscoveryRules.swift \
+            ios/App/App/DiscoveryState.swift \
             ios/App/App/EndpointChooser.swift \
+            ios/App/App/SessionRules.swift \
+            ios/App/App/SessionVault.swift \
+            ios/App/App/KeychainLogic.swift \
+            ios/App/App/RoamRules.swift \
+            ios/App/App/MovedServerRules.swift \
             ios/Tests/*.swift \
             -o "$RUNNER_TEMP/rules-tests"
           "$RUNNER_TEMP/rules-tests"

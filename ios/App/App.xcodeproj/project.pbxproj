@@ -17,6 +17,17 @@
 		AA11AA11AA11AA11AA11AD02 /* EndpointRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11AD01 /* EndpointRules.swift */; };
 		AA11AA11AA11AA11AA11AE02 /* EndpointProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11AE01 /* EndpointProbe.swift */; };
 		AA11AA11AA11AA11AA11AF02 /* EndpointChooser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11AF01 /* EndpointChooser.swift */; };
+		AA11AA11AA11AA11AA11B002 /* SessionRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11B001 /* SessionRules.swift */; };
+		AA11AA11AA11AA11AA11B102 /* SessionVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11B101 /* SessionVault.swift */; };
+		AA11AA11AA11AA11AA11B202 /* KeychainLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11B201 /* KeychainLogic.swift */; };
+		AA11AA11AA11AA11AA11B302 /* KeychainSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11B301 /* KeychainSessionStore.swift */; };
+		AA11AA11AA11AA11AA11B402 /* RoamRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11B401 /* RoamRules.swift */; };
+		AA11AA11AA11AA11AA11B502 /* NetworkRoamWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11AA11AA11AA11AA11B501 /* NetworkRoamWatcher.swift */; };
+		BB22BB22BB22BB22BB22C102 /* DiscoveryRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22BB22BB22BB22BB22C101 /* DiscoveryRules.swift */; };
+		BB22BB22BB22BB22BB22C202 /* DiscoveryState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22BB22BB22BB22BB22C201 /* DiscoveryState.swift */; };
+		BB22BB22BB22BB22BB22C302 /* ServerDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB22BB22BB22BB22BB22C301 /* ServerDiscovery.swift */; };
+		CC33CC33CC33CC33CC33D402 /* MovedServerRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC33CC33CC33CC33CC33D401 /* MovedServerRules.swift */; };
+		CC33CC33CC33CC33CC33D502 /* MovedServerCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC33CC33CC33CC33CC33D501 /* MovedServerCheck.swift */; };
 		504EC30D1FED79650016851F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30B1FED79650016851F /* Main.storyboard */; };
 		504EC30F1FED79650016851F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30E1FED79650016851F /* Assets.xcassets */; };
 		504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC3101FED79650016851F /* LaunchScreen.storyboard */; };
@@ -34,6 +45,17 @@
 		AA11AA11AA11AA11AA11AD01 /* EndpointRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointRules.swift; sourceTree = "<group>"; };
 		AA11AA11AA11AA11AA11AE01 /* EndpointProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointProbe.swift; sourceTree = "<group>"; };
 		AA11AA11AA11AA11AA11AF01 /* EndpointChooser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointChooser.swift; sourceTree = "<group>"; };
+		AA11AA11AA11AA11AA11B001 /* SessionRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRules.swift; sourceTree = "<group>"; };
+		AA11AA11AA11AA11AA11B101 /* SessionVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionVault.swift; sourceTree = "<group>"; };
+		AA11AA11AA11AA11AA11B201 /* KeychainLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainLogic.swift; sourceTree = "<group>"; };
+		AA11AA11AA11AA11AA11B301 /* KeychainSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainSessionStore.swift; sourceTree = "<group>"; };
+		AA11AA11AA11AA11AA11B401 /* RoamRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoamRules.swift; sourceTree = "<group>"; };
+		AA11AA11AA11AA11AA11B501 /* NetworkRoamWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkRoamWatcher.swift; sourceTree = "<group>"; };
+		BB22BB22BB22BB22BB22C101 /* DiscoveryRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryRules.swift; sourceTree = "<group>"; };
+		BB22BB22BB22BB22BB22C201 /* DiscoveryState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryState.swift; sourceTree = "<group>"; };
+		BB22BB22BB22BB22BB22C301 /* ServerDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerDiscovery.swift; sourceTree = "<group>"; };
+		CC33CC33CC33CC33CC33D401 /* MovedServerRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovedServerRules.swift; sourceTree = "<group>"; };
+		CC33CC33CC33CC33CC33D501 /* MovedServerCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovedServerCheck.swift; sourceTree = "<group>"; };
 		504EC30C1FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		504EC30E1FED79650016851F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		504EC3111FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
@@ -82,6 +104,17 @@
 				AA11AA11AA11AA11AA11AD01 /* EndpointRules.swift */,
 				AA11AA11AA11AA11AA11AE01 /* EndpointProbe.swift */,
 				AA11AA11AA11AA11AA11AF01 /* EndpointChooser.swift */,
+				AA11AA11AA11AA11AA11B001 /* SessionRules.swift */,
+				AA11AA11AA11AA11AA11B101 /* SessionVault.swift */,
+				AA11AA11AA11AA11AA11B201 /* KeychainLogic.swift */,
+				AA11AA11AA11AA11AA11B301 /* KeychainSessionStore.swift */,
+				AA11AA11AA11AA11AA11B401 /* RoamRules.swift */,
+				AA11AA11AA11AA11AA11B501 /* NetworkRoamWatcher.swift */,
+				BB22BB22BB22BB22BB22C101 /* DiscoveryRules.swift */,
+				BB22BB22BB22BB22BB22C201 /* DiscoveryState.swift */,
+				BB22BB22BB22BB22BB22C301 /* ServerDiscovery.swift */,
+				CC33CC33CC33CC33CC33D401 /* MovedServerRules.swift */,
+				CC33CC33CC33CC33CC33D501 /* MovedServerCheck.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
@@ -180,6 +213,17 @@
 				AA11AA11AA11AA11AA11AD02 /* EndpointRules.swift in Sources */,
 				AA11AA11AA11AA11AA11AE02 /* EndpointProbe.swift in Sources */,
 				AA11AA11AA11AA11AA11AF02 /* EndpointChooser.swift in Sources */,
+				AA11AA11AA11AA11AA11B002 /* SessionRules.swift in Sources */,
+				AA11AA11AA11AA11AA11B102 /* SessionVault.swift in Sources */,
+				AA11AA11AA11AA11AA11B202 /* KeychainLogic.swift in Sources */,
+				AA11AA11AA11AA11AA11B302 /* KeychainSessionStore.swift in Sources */,
+				AA11AA11AA11AA11AA11B402 /* RoamRules.swift in Sources */,
+				AA11AA11AA11AA11AA11B502 /* NetworkRoamWatcher.swift in Sources */,
+				BB22BB22BB22BB22BB22C102 /* DiscoveryRules.swift in Sources */,
+				BB22BB22BB22BB22BB22C202 /* DiscoveryState.swift in Sources */,
+				BB22BB22BB22BB22BB22C302 /* ServerDiscovery.swift in Sources */,
+				CC33CC33CC33CC33CC33D402 /* MovedServerRules.swift in Sources */,
+				CC33CC33CC33CC33CC33D502 /* MovedServerCheck.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

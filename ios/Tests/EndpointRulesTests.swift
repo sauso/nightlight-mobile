@@ -3,7 +3,8 @@ import Foundation
 // EndpointRulesTests.swift: the iOS twin of android/app/src/test/java/com/sauso/nightlight/EndpointRulesTest.kt, case for
 // case: what may be saved as a server's Tailscale address (it arrives from the server the app has open, so the rule is strict:
 // exactly `https://<name>.ts.net`; each refusal is a near miss of the accepted shape), which page may save it, the Change-server
-// reconnect, the names, and the off-Wi-Fi wait. Added for iOS: the refusal sentences word for word (the web app's About card
+// reconnect, the names, and the Tailscale grace (Tailscale first, 2026-11-09; it replaced the off-Wi-Fi wait and its tests).
+// Added for iOS: the refusal sentences word for word (the web app's About card
 // matches on them), the trailing-line-break case NSRegularExpression would otherwise let through, the address trimming
 // addEndpoint does, and the IPv4 rules isLocalOnlyAddress needs (from DiscoveryRulesTest.kt).
 
@@ -14,6 +15,76 @@ func runEndpointRulesTests() {
     let sameId = "4f1c2b9e-7a3d-4e21-9c5b-6d8e0f1a2b3c"
     let otherId = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
     let known: [String] = [home, "https://nightlight.example.com"]
+
+    test("launchChoice opens only a strictly matching known server") {
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: sameId, liveId: sameId)), home)
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: sameId, liveId: otherId)), nil)
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: sameId, liveId: nil)), nil)
+        // With no expected id launchChoice can open immediately; no probe is needed to form this verdict.
+        checkEqual(EndpointRules.launchChoice(saved: home,
+            verdict: EndpointRules.launchVerdict(expectedId: nil, liveId: nil)), home)
+    }
+
+    test("a refused known private IPv4 server requests an immediate check") {
+        check(EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .differentServer,
+                                                       idCheckedAddress: true), "different server did not request search")
+        check(EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .noAnswer,
+                                                       idCheckedAddress: true), "dead saved address did not request search")
+    }
+
+    test("an answered or unchecked saved address does not request an immediate check") {
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .sameServer,
+                                                        idCheckedAddress: true), "same server requested search")
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .unchecked,
+                                                        idCheckedAddress: true), "unchecked verdict requested search")
+    }
+
+    test("setup without an expected id does not request an immediate check") {
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: false, verdict: .noAnswer,
+                                                        idCheckedAddress: true), "no known server requested search")
+    }
+
+    test("a refusal at a non-id-checked address does not request an immediate check") {
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .differentServer,
+                                                        idCheckedAddress: false), "unchecked address requested search")
+        check(!EndpointRules.launchRefusalRequestsCheck(expectedIdPresent: true, verdict: .noAnswer,
+                                                        idCheckedAddress: false), "unchecked dead address requested search")
+    }
+
+    test("expected id applies only to a canonical private IPv4 address with a port") {
+        let checked = "http://192.168.1.50:4000"
+        check(EndpointRules.idCheckedAddress(checked), "private IPv4 address was skipped")
+        checkEqual(EndpointRules.expectedId(for: checked, storedId: sameId, pairId: otherId), sameId)
+        checkEqual(EndpointRules.expectedId(for: checked, storedId: nil, pairId: sameId), sameId)
+        let unchecked = ["http://server.local:4000", "https://192.168.1.50:4000",
+                         "http://192.168.1.50", "http://8.8.8.8:4000",
+                         "http://user@192.168.1.50:4000", "http://192.168.1.50:4000/path"]
+        for address in unchecked {
+            check(!EndpointRules.idCheckedAddress(address), "checked " + address)
+            checkEqual(EndpointRules.expectedId(for: address, storedId: sameId, pairId: otherId), nil)
+            checkEqual(EndpointRules.expectedId(for: address, storedId: nil, pairId: sameId), nil)
+        }
+    }
+
+    test("forget clears only the active saved address") {
+        check(EndpointRules.forgetClearsActive(saved: home, forgotten: home), "active server remained selected")
+        check(!EndpointRules.forgetClearsActive(saved: home, forgotten: ts), "another server cleared the selection")
+        check(!EndpointRules.forgetClearsActive(saved: nil, forgotten: home), "empty selection was cleared")
+    }
+
+    test("identityVerdict refuses only a different answered id") {
+        check(EndpointRules.identityVerdict(expectedId: sameId, liveId: otherId) == .different,
+              "a different device must refuse the save")
+        check(EndpointRules.identityVerdict(expectedId: sameId, liveId: sameId) == .same,
+              "the same server should proceed")
+        check(EndpointRules.identityVerdict(expectedId: sameId, liveId: nil) == .unknown,
+              "no reply keeps the earlier save behavior")
+        check(EndpointRules.identityVerdict(expectedId: nil, liveId: otherId) == .unknown,
+              "no stored identity keeps the earlier save behavior")
+    }
 
     test("a plain https ts-net name is accepted, with or without extra labels") {
         check(EndpointRules.isTailscaleUrl("https://nightlight-1.example-tailnet.ts.net"), "two labels")
@@ -190,6 +261,48 @@ func runEndpointRulesTests() {
         check(!EndpointRules.isOnBundledOrigin("capacitor://localhost/", local: nil), "no bundled origin")
     }
 
+    test("discovery accepts a committed capacitor bundled page") {
+        let local = "capacitor://localhost"
+        check(EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost/index.html",
+                                                   committed: "capacitor://localhost/", isLoading: false, local: local),
+              "a committed bundled page must allow discovery")
+        check(!EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost/",
+                                                    committed: "capacitor://localhost/", isLoading: true, local: local),
+              "a pending navigation must refuse discovery")
+        check(!EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost/",
+                                                    committed: "http://192.168.1.50:4000/", isLoading: false, local: local),
+              "a server page is still committed")
+        check(!EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost:8080/",
+                                                    committed: "capacitor://localhost/", isLoading: false, local: local),
+              "a port is not the bundled origin")
+        check(!EndpointRules.isCommittedBundledPage(shown: "capacitor://user@localhost/",
+                                                    committed: "capacitor://localhost/", isLoading: false, local: local),
+              "user info is not the bundled origin")
+        check(EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost/",
+                                                   committed: nil, isLoading: false, local: local),
+              "the first bundled load may have no current item")
+        check(!EndpointRules.isCommittedBundledPage(shown: "capacitor://localhost/",
+                                                    committed: nil, isLoading: false, local: nil),
+              "an unreadable bundled origin refuses")
+        check(!EndpointRules.isCommittedBundledPage(shown: nil,
+                                                    committed: "capacitor://localhost/", isLoading: false, local: local),
+              "an unreadable shown page refuses")
+    }
+
+    test("isBundledPage: a bundled bridge showing the bundled origin, and nothing else (save's reconnect and forget)") {
+        // forget is allowed only here since the Codex code review of the PR #38 prompt delta: it clears a stored decline.
+        let local = "capacitor://localhost"
+        check(EndpointRules.isBundledPage(bridgeServerUrl: local, bridgeLocalUrl: local, shown: "capacitor://localhost/"), "the setup page")
+        check(EndpointRules.isBundledPage(bridgeServerUrl: local, bridgeLocalUrl: local, shown: "capacitor://localhost/index.html"), "with a path")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: "http://192.168.1.50:4000", bridgeLocalUrl: local, shown: "capacitor://localhost/"),
+              "a bridge built for a server, even showing the bundled origin")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: local, bridgeLocalUrl: local, shown: "http://192.168.1.50:4000/"), "a bundled bridge showing a server page")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: local, bridgeLocalUrl: local, shown: nil), "the page URL could not be read")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: nil, bridgeLocalUrl: local, shown: "capacitor://localhost/"), "no server URL read")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: local, bridgeLocalUrl: nil, shown: "capacitor://localhost/"), "no bundled URL read")
+        check(!EndpointRules.isBundledPage(bridgeServerUrl: nil, bridgeLocalUrl: nil, shown: nil), "nothing at all")
+    }
+
     test("isActivePage, the bridge half of isTrustedPage") {
         check(EndpointRules.isActivePage(primary: home, savedTailscale: nil, page: home), "the saved address")
         check(EndpointRules.isActivePage(primary: home, savedTailscale: ts, page: ts), "the saved Tailscale address")
@@ -251,21 +364,18 @@ func runEndpointRulesTests() {
         }
     }
 
-    test("the short wait applies only when a tailscale address is saved, the phone is off the local network and the address is local-only") {
-        let full = 3_000
-        let saved = "http://192.168.1.50:4000"
-        checkEqual(EndpointRules.localWaitMs(saved: saved, tailscale: ts, onLocalNetwork: false, fullMs: full), EndpointRules.offNetworkWaitMs)
-        checkEqual(EndpointRules.offNetworkWaitMs, 1_000, "the carried-over judgement")
-        checkEqual(EndpointRules.localWaitMs(saved: saved, tailscale: ts, onLocalNetwork: true, fullMs: full), full, "on Wi-Fi: the whole wait")
-        checkEqual(EndpointRules.localWaitMs(saved: saved, tailscale: nil, onLocalNetwork: false, fullMs: full), full,
-                   "no Tailscale address: nothing to switch to, so the saved address keeps its whole chance")
-        checkEqual(EndpointRules.localWaitMs(saved: "https://nightlight.example.com", tailscale: ts, onLocalNetwork: false, fullMs: full), full,
-                   "a public saved address answers on mobile data too")
-        checkEqual(EndpointRules.localWaitMs(saved: "nonsense", tailscale: ts, onLocalNetwork: false, fullMs: full), full, "an unparseable saved address")
+    // ---- The Tailscale grace (Tailscale first, owner decision 2026-11-09) ----
+
+    test("the tailscale grace is 1 second, or a quarter second when the phone positively has no VPN") {
+        checkEqual(EndpointRules.tailscaleGraceMs(vpnPresent: true), 1_000, "a VPN, or a reading that failed (fail open)")
+        checkEqual(EndpointRules.tailscaleGraceMs(vpnPresent: false), 250, "positively no VPN")
+        checkEqual(EndpointRules.defaultTailscaleGraceMs, 1_000, "the judgement for a phone with a VPN")
+        checkEqual(EndpointRules.noVpnTailscaleGraceMs, 250, "the judgement for a phone with none")
     }
 
-    test("the short wait is never longer than the full wait") {
-        checkEqual(EndpointRules.localWaitMs(saved: "http://192.168.1.50:4000", tailscale: ts, onLocalNetwork: false, fullMs: 500), 500)
+    test("the VPN hint can only shorten the grace, and the grace ends before the launch's deadline") {
+        check(EndpointRules.tailscaleGraceMs(vpnPresent: false) < EndpointRules.tailscaleGraceMs(vpnPresent: true), "no VPN must not wait longer than a VPN")
+        check(EndpointRules.defaultTailscaleGraceMs < EndpointChooser.defaultDeadlineMs, "a grace as long as the deadline would hold every launch with Tailscale off for the whole deadline")
     }
 
     // ---- Change server from the Tailscale address (owner, 2026-11-06) ----

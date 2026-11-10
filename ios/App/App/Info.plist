@@ -67,6 +67,13 @@
 	     iOS blocks entirely without this usage description string. -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Nightlight uses the microphone for two-way audio — hold to talk through a camera's speaker.</string>
+	<!-- Browsing is started only when the person taps Look for my Nightlight. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_nightlight._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Nightlight looks for your server on your Wi-Fi, so you do not have to type its address.</string>
 	<!-- Deep link: registers the nightlight:// URL scheme so a Pushover motion-alert notification
 	     can open the app when tapped. Mirrors the Android intent-filter. -->
 	<key>CFBundleURLTypes</key>

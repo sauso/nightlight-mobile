@@ -10,6 +10,72 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-10
+
+### Added
+- **Android: find your server after its local address changes.** When a saved private IPv4 address stops answering,
+  the app searches Wi-Fi for the same server id and asks before saving a new address. Existing saved servers learn
+  their id when they next answer. Accepting the move requires one sign-in at the new address.
+  Switching to another server now also stops background listening that was running for the old one.
+- **iOS: Your server moved.** If a saved local address stops answering on Wi-Fi, the app can find the same server at a new
+  private IPv4 address and ask before switching. It rechecks the server when you accept, carries a matching Tailscale pair,
+  and asks you to sign in once at the new address.
+- **iOS: Look for my Nightlight.** The setup screen can find a server on your Wi-Fi and check it again when you tap
+  Connect. Search needs Local Network access and finds private IPv4 addresses only. Networks that isolate devices or
+  block multicast may find nothing; you can still type the address, but a local address also needs Local Network
+  access. A Tailscale address outside the local network is unaffected.
+- **iOS: one sign-in for both of your server's addresses.** On an iPhone, the home address and the Tailscale address used to
+  ask for a sign-in each. The app now keeps your sign-in in the iPhone's Keychain and hands it to the Tailscale address (only
+  that address) the first time you open it there, so signing in once at home is enough, as on Android. It is kept for the
+  Tailscale address only if your own server has just offered that same address. Signing out, or a sign-in the server refuses,
+  removes it; a wrong password does not. It is never synced through iCloud Keychain and does not move to another phone through
+  a backup or a transfer, and the app also clears its saved sign-in on the first start of a new install (iOS keeps Keychain
+  items when an app is deleted). The home address never receives it
+  (it is usually plain `http`), so signing in on the Tailscale address first still asks once at home.
+  Like the Android version, it needs the Nightlight server release that goes with it; with an older server each address asks
+  you to sign in, as before.
+- **iOS: the app moves to your server's other address when you change network.** Leave home with the iPhone app open and,
+  when Wi-Fi turns to mobile data, it now switches to your server's Tailscale address by itself within a few seconds,
+  instead of staying on a home address that cannot answer until you close and reopen the app. Coming home, it stays on the
+  Tailscale address while that keeps working (see Changed below). A move it does not have to make, from a home address that
+  works up to the Tailscale address, waits for the next time you open the app or unlock the phone with the app in front (a few
+  seconds after it appears, so something typed in those first seconds can be lost), and never happens while a video is
+  already floating in Picture-in-Picture. Each switch reloads the app onto its home screen, so a video you were
+  watching starts again, and the screen can pause for up to about 3 seconds while it picks the address. If the network
+  keeps dropping in and out, the app switches at most 3 times in 5 minutes. It works while the app is on screen: with audio
+  playing in the background on a network that has stopped working, nothing is rescued until you next open the app. Needs
+  the Tailscale address the iPhone app learned in 0.9.0; with none saved, nothing changes.
+
+### Changed
+- **iOS: the app now opens your server's secure Tailscale address first when it has one, and your saved address if that does
+  not answer.** Nothing changes without a secure address. Before, the saved address won whenever it answered, which on a phone
+  hotspot with Tailscale on kept the app on the plain `http` address, where two-way talk cannot work. When the saved address
+  answers first, the app waits up to 1 second for the secure one (a quarter of a second when the phone has no VPN on). If the
+  secure address is slow to wake up, the app opens the saved address and moves up to the secure one the next time you open it.
+  When the network changes, the app now leaves whichever address has stopped answering, in either direction, and never moves
+  you off a secure address that still works. If you signed in before the app kept one sign-in for both addresses, the secure
+  address may ask you to sign in once.
+- **iOS: the app asks once before it uses a new secure address.** The first time it learns your server's secure address from
+  a plain `http` address, or when that address changes, it asks "Use this secure address?" and shows the name. Only accept it
+  if you just turned it on in your server's Settings → Remote Access. If you choose "Don't use it", nothing changes: the app
+  keeps the addresses it already had, and does not ask about that address again for 7 days. It asks at most once every 10
+  minutes while it is open, so a question can wait for the next time you open the app.
+- **Android: the app now opens your server's secure Tailscale address first when it has one, and your saved address if that
+  does not answer.** Nothing changes without a secure address. With Tailscale switched off on the phone, opening the saved
+  address waits at most about a quarter of a second longer (a second if another VPN is on). If Tailscale is slow to answer
+  when the app starts, the app opens the saved address and moves to the secure one the next time you open it. While you use
+  the app it only switches address when the page on screen stops answering. If you signed in before the app kept one sign-in
+  for both addresses, the secure address asks you to sign in once. The first time the app learns a secure address (or a
+  different one) from your server's plain `http` address, it asks you to confirm it and shows the full name: tap Use it only
+  if you have just turned on the secure address in your server's Settings → Remote Access and the name matches. Don't use it
+  keeps what you had before (your saved address, or the secure address already saved), and the app does not ask about that
+  address again for a week. It asks at most once every 10 minutes, so another question can wait up to that long. A server can
+  now be forgotten only from the setup screen.
+
+### Fixed
+- Android: the app no longer opens a saved local address that has been taken over by a different server (it shows the setup screen and looks for your server immediately, even after a recent check; see the README).
+- iOS: the app no longer opens a saved local address that has been taken over by a different server (it shows the setup screen and immediately looks for your server, even if its routine check ran recently; see the README)
+
 ## [0.9.0] - 2026-11-08
 
 ### Added
@@ -100,6 +166,7 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
   the launcher refreshes. The pictures are generated from one source image by `scripts/make-branding.py`.
 
 ### Fixed
+- Android: the app no longer opens a saved local address that has been taken over by a different server (it shows the setup screen and looks for the saved server immediately, even after a recent check; see the README).
 - Fullscreen camera views now hide the Android status and navigation bars so the on-screen buttons
   can be pressed. Swipe from an edge to show the bars temporarily. This needs the matching server/web
   update to call the native plugin; there is no iOS change.

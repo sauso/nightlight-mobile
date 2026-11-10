@@ -1,7 +1,8 @@
 import Foundation
 
-// EndpointRules.swift: the rules for a server's second address, the one the phone uses away from home (owner, 2026-11-06:
-// the phone tries the local address first and falls back to the server's Tailscale address, which the server tells it about).
+// EndpointRules.swift: the rules for a server's second address, its Tailscale address, which the server tells the phone about
+// (owner, 2026-11-06). Since the owner decision of 2026-11-09 ("Tailscale first") the app opens that secure address first when
+// it answers, and the address it was set up with when that address passes the launch identity check.
 //
 // The iOS twin of android/app/src/main/java/com/sauso/nightlight/EndpointRules.kt, ported rule for rule with the same names
 // and the same refusal sentences, plus the two pieces of DiscoveryRules.kt these rules need (parseIpv4, isPrivateIpv4).
@@ -22,6 +23,69 @@ struct ServerHealth: Equatable {
 }
 
 enum EndpointRules {
+
+    /// Launch opens a saved address with a known id only after its strict health reply matches.
+    /// Without a known id, preserve the old immediate launch (and its error page on failure).
+    enum LaunchVerdict {
+        case sameServer
+        case differentServer
+        case noAnswer
+        case unchecked
+    }
+
+    static func launchVerdict(expectedId: String?, liveId: String?) -> LaunchVerdict {
+        guard let expected = expectedId else { return .unchecked }
+        guard let live = liveId else { return .noAnswer }
+        return live == expected ? .sameServer : .differentServer
+    }
+
+    static func launchChoice(saved: String, verdict: LaunchVerdict) -> String? {
+        switch verdict {
+        case .sameServer, .unchecked: return saved
+        case .differentServer, .noAnswer: return nil
+        }
+    }
+
+    /// Only a refused, id-checked saved server warrants bypassing the routine search throttle. A first-run setup page or
+    /// an unchecked address does not establish that the person's server was refused.
+    static func launchRefusalRequestsCheck(expectedIdPresent: Bool, verdict: LaunchVerdict,
+                                           idCheckedAddress: Bool) -> Bool {
+        guard expectedIdPresent, idCheckedAddress else { return false }
+        switch verdict {
+        case .differentServer, .noAnswer: return true
+        case .sameServer, .unchecked: return false
+        }
+    }
+
+    /// Only the canonical private IPv4 address that local discovery can identify gets a launch identity check. Typed
+    /// hostnames, HTTPS and other URL forms keep their earlier reachability and save behaviour.
+    static func idCheckedAddress(_ url: String?) -> Bool {
+        guard let parsed = DiscoveryRules.parseFoundUrl(url) else { return false }
+        return isPrivateIpv4(parsed.host)
+    }
+
+    static func expectedId(for url: String, storedId: String?, pairId: String?) -> String? {
+        guard idCheckedAddress(url) else { return nil }
+        return storedId ?? pairId
+    }
+
+    /// Forgetting the selected server must also remove the launch choice; forgetting another remembered server must not.
+    static func forgetClearsActive(saved: String?, forgotten: String) -> Bool {
+        return saved == forgotten
+    }
+
+    /// A save may proceed on no reply as before, but a different strict id must not discard
+    /// this address's pair or sign-in and then reopen it without its expected identity.
+    enum IdentityVerdict {
+        case same
+        case different
+        case unknown
+    }
+
+    static func identityVerdict(expectedId: String?, liveId: String?) -> IdentityVerdict {
+        guard let expected = expectedId, let live = liveId else { return .unknown }
+        return expected == live ? .same : .different
+    }
 
     // `https://<name>.ts.net`, nothing else: no port, no path, no credentials, no IP literal. The server only ever offers its
     // Tailscale name (GET /api/remote-access/tailscale/address), and Serve answers on 443. Lower case only, the form the server
@@ -69,6 +133,31 @@ enum EndpointRules {
         return "tailscale_id:" + primary
     }
 
+    /// The keys of the secure address the person DECLINED for the saved server `primary` (an explicit "Don't use it"), and of
+    /// the wall-clock time they did, in milliseconds (PromptGate). Beside the Tailscale pair, removed with the server (forget).
+    static func declinedKey(_ primary: String) -> String {
+        return "tailscale_declined:" + primary
+    }
+
+    static func declinedAtKey(_ primary: String) -> String {
+        return "tailscale_declined_at:" + primary
+    }
+
+    /// Whether addEndpoint must ASK the person before saving `candidate` (addendum of 2026-11-09, the owner's "ask once"; Codex
+    /// code review of PR #38 rated the risk High). WHY: the id the identity check compares is PUBLIC, so a device that answers at a
+    /// plain-http saved address (a network can put one there) can offer its own `https://<x>.ts.net` with the right id; under
+    /// Tailscale first that address would then be opened FIRST, at home too, and could show a fake sign-in page. Asks when BOTH:
+    ///  - the candidate differs from the secure address already saved for this server (a first learn, or a change; the same
+    ///    address is offered again at every start and is never asked about), AND
+    ///  - the page actually SHOWN is not https (addendum review: the shown page, not the address the bridge was built with). A
+    ///    page on https, the page on the saved Tailscale address itself included, cannot be put there by the network, so it is
+    ///    not asked. A shown page that cannot be read or parsed counts as plain http: it asks (fail closed).
+    static func needsConfirmation(shownPageUrl: String?, savedTailscale: String?, candidate: String) -> Bool {
+        if let saved = savedTailscale, saved == candidate { return false }
+        guard let shown = origin(shownPageUrl) else { return true }
+        return shown.scheme != "https"
+    }
+
     /// `text` without any trailing slashes. Used for the address a page offers (addEndpoint) and for the address the bridge
     /// was built with, so `https://x.ts.net/` and `https://x.ts.net` are one address, as on Android (`trimEnd('/')`).
     static func withoutTrailingSlashes(_ text: String) -> String {
@@ -88,29 +177,33 @@ enum EndpointRules {
 
     /// True when `url`'s host can only be reached from a local network: a private IPv4 address (10/8, 172.16/12, 192.168/16)
     /// or a `.local` name. A public name or address (a domain with HTTPS, say) is NOT local-only: it answers on mobile data
-    /// too. Anything that does not parse is not local-only (so the ordinary wait applies).
+    /// too. Anything that does not parse is not local-only.
+    /// No caller since Tailscale first removed the launch's short off-Wi-Fi wait (localWaitMs, 2026-11-09); kept, with its IPv4
+    /// rules and their tests, for the planned iPhone port of Find server (Codex plan review of Tailscale first, 2026-11-09).
     static func isLocalOnlyAddress(_ url: String?) -> Bool {
         guard let value = url else { return false }
         guard let host = URLComponents(string: value)?.host, !host.isEmpty else { return false }
         return isPrivateIpv4(host) || host.lowercased().hasSuffix(".local")
     }
 
-    // How long a launch waits for a saved address that says nothing, when the phone cannot be on its network (below). A
-    // judgement carried over from Android (#26), not a measurement: a reachable home server answers in milliseconds and even a
-    // slow Wi-Fi in well under a second, so this is generous for a phone that merely just joined Wi-Fi, and short enough that
-    // the Tailscale fallback opens in about a second instead of three.
-    static let offNetworkWaitMs: Int = 1_000
+    // ---- The Tailscale grace (Tailscale first, owner decision 2026-11-09) ----
+    //
+    // How long a launch that already has an answer from the saved address still waits for the Tailscale address
+    // (EndpointChooser's grace, counted from the start of the choice). Both are JUDGEMENTS, not measurements: Tailscale on and
+    // healthy answers in well under a second, so one second lets it win when it is there; and when the phone positively has no
+    // VPN (so no Tailscale answer is expected), the saved address should not be held back by more than a quarter of a second.
+    // A Tailscale address that answers later than the grace loses that launch to the saved address, and the next foreground
+    // start moves the page over (RoamRules.target, the upgrade). Named differently from Android's TAILSCALE_GRACE_MS and
+    // TAILSCALE_GRACE_NO_VPN_MS only so the constant and the function below do not share a Swift name.
+    static let defaultTailscaleGraceMs: Int = 1_000
+    static let noVpnTailscaleGraceMs: Int = 250
 
-    /// How long the launch waits for the saved address before it uses the Tailscale one. The short wait applies only when ALL
-    /// of: a Tailscale address is saved (otherwise there is nothing to switch to, so the saved address keeps its whole chance),
-    /// the phone is not on Wi-Fi or Ethernet, and the saved address is one only a local network can answer. Every other case
-    /// waits the full `fullMs`. Away from home on mobile data, a home address cannot answer: waiting three seconds for it was
-    /// the pause the owner saw on the first Android phone test (2026-11-06).
-    static func localWaitMs(saved: String?, tailscale: String?, onLocalNetwork: Bool, fullMs: Int) -> Int {
-        if tailscale != nil && !onLocalNetwork && isLocalOnlyAddress(saved) {
-            return min(offNetworkWaitMs, fullMs)
-        }
-        return fullMs
+    /// The grace for this launch. The VPN reading (MainViewController's VpnSnapshot) is a HINT that can only SHORTEN the wait:
+    /// it is false only when the phone positively reports no VPN, and a reading that fails counts as a VPN (fail open = the
+    /// full grace). So a wrong hint can at worst let a slower but valid Tailscale answer lose to the saved address (the old
+    /// saved-first behaviour), never open an address that was not verified (the id check is the probe's, unchanged).
+    static func tailscaleGraceMs(vpnPresent: Bool) -> Int {
+        return vpnPresent ? defaultTailscaleGraceMs : noVpnTailscaleGraceMs
     }
 
     /// Whether `save` may take a REMEMBERED server whose own address did not answer, because the Tailscale address saved for
@@ -167,6 +260,7 @@ enum EndpointRules {
     }
 
     /// Why addEndpoint accepted or refused a request. Reported so a test (and the page) can tell the refusals apart.
+    /// `notAccepted` and `notConfirmed` are the "ask once" prompt's (PromptGate, addendum of 2026-11-09).
     enum AddCheck {
         case ok
         case notATailscaleAddress
@@ -174,6 +268,8 @@ enum EndpointRules {
         case unreadableServer
         case unreachableAddress
         case differentServer
+        case notAccepted
+        case notConfirmed
     }
 
     /// The sentence addEndpoint rejects with. BYTE-IDENTICAL to Android's ServerConfigPlugin.refusal: the web app's About page
@@ -191,6 +287,15 @@ enum EndpointRules {
             return "Couldn't reach that Tailscale address"
         case .differentServer:
             return "That address is a different server"
+        // The two "ask once" refusals (addendum of 2026-11-09). Worded so the web app's classifyAddRefusal (nativeBridge.js, which
+        // matches /couldn'?t reach/i and /different server/i) files them under its generic 'refused', the "did not accept" line:
+        // neither may contain those words (ios/Tests pins it). New sentences, so Android's must be made the same word for word.
+        case .notAccepted:
+            // The person tapped "Don't use it", now or within the last 7 days for this same address.
+            return "The secure address was not accepted on this phone"
+        case .notConfirmed:
+            // No answer: another prompt showing, a prompt shortly before, no screen to show it on, a timeout or a cancel.
+            return "The secure address was not confirmed on this phone"
         case .ok:
             return ""
         }
@@ -278,10 +383,21 @@ enum EndpointRules {
         return left == right
     }
 
+    /// Whether the page calling is the bundled setup page (public/index.html), from what the plugin can read: the bridge was
+    /// built with NO server URL (Capacitor then reports the bundled URL, `bridgeLocalUrl`, as its server URL too: a fact about
+    /// the whole bridge that nothing a page does can fake) AND the web view is really showing the bundled origin (`shown`, see
+    /// isOnBundledOrigin). Anything missing is "not the bundled page". The pure half of ServerConfigPlugin.callerIsBundledPage,
+    /// used by save's reconnect and, since the Codex code review of the PR #38 prompt delta, by forget.
+    static func isBundledPage(bridgeServerUrl: String?, bridgeLocalUrl: String?, shown: String?) -> Bool {
+        guard let server = bridgeServerUrl, let local = bridgeLocalUrl else { return false }
+        if server != local { return false }
+        return isOnBundledOrigin(shown, local: local)
+    }
+
     /// Whether `shown` (the web view's current URL) is on the bundled origin `local` (Capacitor's `capacitor://localhost` by
     /// default): the same scheme and host, no port, no user info. The second half of Android's DiscoveryRules.isBundledPage,
-    /// used for the one bundled-page-only path (save's reconnect through the Tailscale address), so a page the bundled bridge
-    /// might show anywhere else cannot use it either. nil or unparseable is "not the bundled page".
+    /// used for the bundled-page-only paths (save's reconnect through the Tailscale address, and forget), so a page the bundled
+    /// bridge might show anywhere else cannot use them either. nil or unparseable is "not the bundled page".
     static func isOnBundledOrigin(_ shown: String?, local: String?) -> Bool {
         guard let shownText = shown, let localText = local else { return false }
         guard let page = URLComponents(string: shownText), let bundled = URLComponents(string: localText) else { return false }
@@ -293,11 +409,24 @@ enum EndpointRules {
         return true
     }
 
+    /// Discovery may run only while the bundled page is committed. WKWebView.url can show a navigation's destination before
+    /// it commits (the earlier addEndpoint High finding); isLoading stays true while that navigation is pending, so this
+    /// guard does not depend on the back-forward list. Check its current item when WebKit gives one. The first bundled load
+    /// may have no item, so nil is allowed only with the isLoading guard; every other missing or non-bundled value refuses.
+    static func isCommittedBundledPage(shown: String?, committed: String?, isLoading: Bool, local: String?) -> Bool {
+        if isLoading || !isOnBundledOrigin(shown, local: local) { return false }
+        return committed == nil || isOnBundledOrigin(committed, local: local)
+    }
+
     /// The check that needs the network's answers: the server the page is on (`reference`) and the offered address
     /// (`candidate`) both reported an id, and it is the same one. This is an identity CLAIM, not proof: /api/health is public,
     /// so a page that is itself hostile can name an address that repeats the id. That page is the server the person chose to
-    /// use, so it could already show anything; what it cannot do is change the saved address, and the address is opened only
-    /// when the saved one is not answering.
+    /// use, so it could already show anything; what it cannot do is change the saved address. Since Tailscale first (owner
+    /// decision 2026-11-09) the address it names is opened BEFORE the saved one whenever it answers with that id, where it used
+    /// to be opened only when the saved one was not answering: still an address of the one accepted shape (`https://<name>.ts.net`),
+    /// offered by the server the person chose, and the saved sign-in still goes only to it (SessionRules), as before. Because a
+    /// plain-http page can be put there by the network, a NEW or CHANGED address offered from one is saved only after the person
+    /// confirms it (needsConfirmation and PromptGate in this file; addendum of 2026-11-09, Codex code reviews of PR #38).
     static func checkIdentity(reference: ServerHealth?, candidate: ServerHealth?) -> AddCheck {
         guard let ref = reference else { return .unreadableServer }
         guard let cand = candidate else { return .unreachableAddress }
@@ -343,5 +472,127 @@ enum EndpointRules {
         if o[0] == 172 && o[1] >= 16 && o[1] <= 31 { return true }
         if o[0] == 192 && o[1] == 168 { return true }
         return false
+    }
+}
+
+/// The gate in front of the "Use this secure address?" prompt (addendum of 2026-11-09 and its review). Pure: the glue
+/// (AddressPrompt, ServerConfigPlugin.swift) holds the state, reads the clocks and shows the alert; every rule it applies is here,
+/// so ios/Tests runs each row. Only reached when EndpointRules.needsConfirmation says to ask.
+enum PromptGate {
+
+    /// What to do with an offer that needs confirming.
+    ///  - ask: show the prompt (the glue reserves the one prompt slot in the same locked step as this decision);
+    ///  - rejectQuietly: refuse without asking, because the person declined this same address less than 7 days ago;
+    ///  - busy: refuse without asking, because a prompt is showing now, or one was shown less than 10 minutes ago.
+    /// Both refusals store nothing; the web app offers the address again at its next start.
+    enum Decision {
+        case ask
+        case rejectQuietly
+        case busy
+    }
+
+    /// How a prompt ended. ONLY `declined` is the person's explicit "Don't use it" tap. `notAnswered` is everything else: no
+    /// window or root controller to show it on, another screen already on top, the app not active, a rebuild replacing the root
+    /// under it (cancelPending), the 120 s timeout, or any other failure. A non-explicit outcome must never be remembered as a
+    /// decline (addendum review): otherwise a hostile page that made the prompt fail could silence the real address.
+    enum Outcome {
+        case accepted
+        case declined
+        case notAnswered
+    }
+
+    /// A stored decline: the secure address the person declined for one saved server, and when (wall clock, milliseconds).
+    struct DeclineRecord: Equatable {
+        let candidate: String
+        let atWallMs: Int64
+    }
+
+    /// What a prompt's outcome does to the stored decline: an accept clears it, an explicit decline stores (or replaces) it,
+    /// anything else leaves it as it was.
+    enum DeclineChange: Equatable {
+        case keep
+        case clear
+        case store(DeclineRecord)
+    }
+
+    // How long an explicit decline keeps the SAME address from being asked about again: 7 days, on the WALL clock because it is
+    // persisted and must survive restarts (a monotonic clock starts again at every boot). A judgement, not a measurement
+    // (addendum review): the web app offers the address at every start, so without a memory a "no" would be asked again every
+    // time; with a memory that never ended, a hostile page that got the REAL address declined first could silence it for good.
+    // Seven days bounds that to a week, after which the person is asked once more.
+    static let declineLifetimeMs: Int64 = 7 * 24 * 60 * 60 * 1_000
+
+    // At most one prompt per this long in one run of the app, counted from when a prompt was SHOWN, on the monotonic clock. A
+    // judgement, not a measurement (addendum): a hostile page that offers a new address every second must not be able to storm
+    // the person with prompts; a refused offer is only "not saved", and the next start offers it again.
+    static let cooldownMs: Int64 = 10 * 60 * 1_000
+
+    // How long a prompt waits for an answer before it is withdrawn as not answered (no decline stored). A judgement, not a
+    // measurement (addendum review): long enough to read it and check the server's Settings, short enough that the web app's
+    // call (and the About card that waits for it) does not wait for ever.
+    static let answerTimeoutMs: Int = 120_000
+
+    /// Whether `decline` is a decline of THIS candidate that is still in force at `nowWallMs`: at least 0 and less than
+    /// `declineLifetimeMs` old. A decline time in the future (the wall clock was set back) is not in force, so a clock change
+    /// can only end a decline early (the person is asked again), never stretch it past a week.
+    static func declineInForce(_ decline: DeclineRecord?, candidate: String, nowWallMs: Int64) -> Bool {
+        guard let record = decline, record.candidate == candidate else { return false }
+        let age: Int64 = nowWallMs - record.atWallMs
+        return age >= 0 && age < declineLifetimeMs
+    }
+
+    /// The gate, in this order: a prompt showing -> busy; this same address declined less than 7 days ago -> rejectQuietly; a
+    /// prompt shown less than 10 minutes ago (`lastPromptAtMs`, monotonic, nil = none yet in this run) -> busy; otherwise ask.
+    /// The cooldown counts as busy, not as a quiet "no": nothing was declined, the person simply is not asked twice in ten minutes.
+    static func decide(candidate: String, decline: DeclineRecord?, nowWallMs: Int64, lastPromptAtMs: Int64?, nowMs: Int64, showing: Bool) -> Decision {
+        if showing { return .busy }
+        if declineInForce(decline, candidate: candidate, nowWallMs: nowWallMs) { return .rejectQuietly }
+        if let last = lastPromptAtMs, nowMs - last < cooldownMs { return .busy }
+        return .ask
+    }
+
+    /// What `outcome` does to the stored decline for `candidate` (see DeclineChange). Only the explicit tap stores one.
+    static func declineChange(after outcome: Outcome, candidate: String, nowWallMs: Int64) -> DeclineChange {
+        switch outcome {
+        case .accepted:
+            return .clear
+        case .declined:
+            return .store(DeclineRecord(candidate: candidate, atWallMs: nowWallMs))
+        case .notAnswered:
+            return .keep
+        }
+    }
+
+    /// The decision REPEATED at the write, on the writes queue, against the committed page and the saved secure address as they
+    /// are then (Codex code review of the PR #38 prompt delta, High: the first decision could be made from a page the web view
+    /// had only started to load, and the write re-checked the page's origin but not whether the offer needed asking). The write
+    /// may go ahead when the person accepted it in a prompt, or when it does not need asking now. An offer that needs asking now
+    /// but went through no accepted prompt is refused (notConfirmed: nothing written, no decline stored).
+    static func mayWrite(acceptedInPrompt: Bool, needsConfirmationNow: Bool) -> Bool {
+        return acceptedInPrompt || !needsConfirmationNow
+    }
+
+    /// The refusal for a gate decision, or nil when the prompt is to be shown.
+    static func refusal(for decision: Decision) -> EndpointRules.AddCheck? {
+        switch decision {
+        case .ask:
+            return nil
+        case .rejectQuietly:
+            return .notAccepted
+        case .busy:
+            return .notConfirmed
+        }
+    }
+
+    /// The refusal for a prompt's outcome, or nil when the person accepted (the write then runs, as before the prompt existed).
+    static func refusal(after outcome: Outcome) -> EndpointRules.AddCheck? {
+        switch outcome {
+        case .accepted:
+            return nil
+        case .declined:
+            return .notAccepted
+        case .notAnswered:
+            return .notConfirmed
+        }
     }
 }

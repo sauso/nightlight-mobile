@@ -46,6 +46,51 @@ class HealthProbeTest {
     }
 
     @Test
+    fun `id learning reads health on a raw socket without cookies`() {
+        LocalHttpServer { out, _ -> reply(out, "200 OK", validBody) }.use { server ->
+            val oldCookies = CookieHandler.getDefault()
+            CookieHandler.setDefault(object : CookieHandler() {
+                override fun get(uri: URI, requestHeaders: Map<String, List<String>>): Map<String, List<String>> =
+                    mapOf("Cookie" to listOf("planted=1"))
+                override fun put(uri: URI, responseHeaders: Map<String, List<String>>) {}
+            })
+            try {
+                assertEquals(DiscoveryRules.Health(id, "Nursery"),
+                    localProbe().fetchUrl("http://$loopback:${server.port}"))
+                assertFalse(server.requests.single().contains("cookie", ignoreCase = true))
+            } finally {
+                CookieHandler.setDefault(oldCookies)
+            }
+        }
+    }
+
+    @Test
+    fun `id learning refuses a health reply without a usable id`() {
+        val noId = "{\"ok\":true,\"app\":\"nightlight\",\"name\":\"Demo\"}"
+        LocalHttpServer { out, _ -> reply(out, "200 OK", noId) }.use { server ->
+            assertNull(localProbe().fetchUrl("http://$loopback:${server.port}"))
+        }
+    }
+
+    @Test
+    fun `id learning dribble ends at the total deadline`() {
+        LocalHttpServer { out, _ ->
+            out.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 200\r\n\r\n"))
+            out.flush()
+            repeat(200) {
+                out.write(' '.code)
+                out.flush()
+                Thread.sleep(25)
+            }
+        }.use { server ->
+            val probe = HealthProbe(addressPolicy = { it == loopback }, totalDeadlineMs = 300)
+            val (health, ms) = timed { probe.fetchUrl("http://$loopback:${server.port}") }
+            assertNull(health)
+            assertTrue("took $ms ms", ms in 200L..1_500L)
+        }
+    }
+
+    @Test
     fun `the production policy refuses loopback and makes no connection`() {
         LocalHttpServer { out, _ -> reply(out, "200 OK", validBody) }.use { server ->
             val result = HealthProbe().check(loopback, server.port, id)

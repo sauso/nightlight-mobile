@@ -199,6 +199,7 @@
       <button id="look" type="button">Look for my Nightlight</button>
       <p id="find-status" class="find-status" role="status" aria-live="polite"></p>
       <div id="found-list" class="found-list"></div>
+      <p id="find-details" class="hint" hidden></p>
       <div id="find-help" class="find-help" hidden>
         <p>No Nightlight found yet.</p>
         <ul>
@@ -217,7 +218,7 @@
 
     <label for="server">Server address</label>
     <input id="server" type="url" inputmode="url" autocapitalize="none" autocorrect="off"
-           spellcheck="false" placeholder="nightlight.example.com" autofocus />
+           spellcheck="false" placeholder="nightlight.example.com" />
     <p class="hint">The same address you use in your browser — a domain or IP address, e.g. 192.168.1.50:4000.</p>
 
     <button id="connect">Connect</button>
@@ -336,6 +337,7 @@
   const lookButton = document.getElementById('look');
   const findStatus = document.getElementById('find-status');
   const foundList = document.getElementById('found-list');
+  const findDetails = document.getElementById('find-details');
   const findHelp = document.getElementById('find-help');
   const searchAgain = document.getElementById('search-again');
 
@@ -362,6 +364,13 @@
   let starting = false;
   let helpTimer = null;
   let stopTimer = null;
+  let discoveryStatus = '';
+
+  function showDiscoveryDetails() {
+    // Native provides counts and codes only; textContent keeps even an unexpected event plain text.
+    findDetails.textContent = discoveryStatus ? 'Details for support: ' + discoveryStatus : '';
+    findDetails.hidden = !discoveryStatus || found.size > 0;
+  }
 
   // Feature detection: on this bundled page Capacitor exposes exactly the plugin's native methods, so on iOS (no
   // startDiscovery yet) the section never appears. A rejected call also hides it (startLooking), which covers any
@@ -424,6 +433,7 @@
     found.set(e.id, { card, button: connectButton, savedTag, url: e.url });
 
     findHelp.hidden = true;
+    findDetails.hidden = true;
     setStatus(countText());
   }
 
@@ -433,7 +443,10 @@
     entry.card.remove();
     found.delete(id);
     if (found.size > 0) setStatus(countText());
-    else setStatus(looking ? 'Looking on your Wi-Fi…' : '');
+    else {
+      setStatus(looking ? 'Looking on your Wi-Fi…' : '');
+      if (!findHelp.hidden || !looking) showDiscoveryDetails();
+    }
   }
 
   async function connectFound(url, id) {
@@ -470,10 +483,12 @@
   // Native could not start looking (it can say so after startDiscovery has already answered { started: true }).
   // Code review of #20: say it at once instead of "Looking…" for two minutes. Stopping first leaves things as after
   // any other stop, so Search again simply starts over.
-  async function failLooking() {
+  async function failLooking(message) {
     await stopLooking();
     findHelp.hidden = false;
-    showStopped("Couldn't start looking on this phone. Type your server's address below.");
+    showDiscoveryDetails();
+    showStopped(typeof message === 'string' && message ? message :
+      "Couldn't start looking on this phone. Type your server's address below.");
   }
 
   async function startLooking() {
@@ -485,6 +500,9 @@
       await stopLooking();
       const thisRun = ++run;
       clearFound();
+      discoveryStatus = '';
+      findDetails.hidden = true;
+      findDetails.textContent = '';
       findHelp.hidden = true;
       searchAgain.hidden = true;
       const p = plugin();
@@ -500,7 +518,12 @@
       // within moments of starting.
       handles.push(await p.addListener('serverFound', (e) => { if (thisRun === run) addFound(e); }));
       handles.push(await p.addListener('serverLost', (e) => { if (thisRun === run) removeFound(e && e.id); }));
-      handles.push(await p.addListener('discoveryFailed', () => { if (thisRun === run) failLooking(); }));
+      handles.push(await p.addListener('discoveryFailed', (e) => { if (thisRun === run) failLooking(e && e.message); }));
+      handles.push(await p.addListener('discoveryStatus', (e) => {
+        if (thisRun !== run) return;
+        discoveryStatus = e && typeof e.text === 'string' ? e.text : '';
+        if (!findHelp.hidden && found.size === 0) showDiscoveryDetails();
+      }));
       if (await stale()) return;
       const result = await p.startDiscovery();
       if (await stale()) return;
@@ -520,6 +543,7 @@
         findHelp.hidden = false;
         searchAgain.hidden = false;
         setStatus('Still looking…');
+        showDiscoveryDetails();
       }, HELP_AFTER_MS);
       stopTimer = setTimeout(async () => {
         if (thisRun !== run) return;
@@ -528,6 +552,7 @@
           showStopped(countText() + '. Stopped looking.');
         } else {
           findHelp.hidden = false;
+          showDiscoveryDetails();
           showStopped("We couldn't find a Nightlight. You can search again or enter the address below.");
         }
       }, STOP_AFTER_MS);
@@ -556,6 +581,12 @@
     findSection.hidden = false;
     lookButton.addEventListener('click', startLooking);
     searchAgain.addEventListener('click', startLooking);
+  } else {
+    // The address box used to carry the `autofocus` attribute. On the owner's iPad (2026-11-09) that opened the keyboard
+    // over the "Look for my Nightlight" section on every launch, and a blur() after load did not undo it (the focus lands
+    // after the script runs). So the box is focused from here only when there is no search to show; where the search
+    // exists, the person sees it first and the address box is one tap away.
+    input.focus();
   }
 
   button.addEventListener('click', () => connect(input.value));

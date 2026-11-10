@@ -28,7 +28,8 @@ import java.util.concurrent.TimeUnit
  * From the web side (both the bundled setup/error pages and the remote app):
  *
  *   Capacitor.Plugins.ServerConfig.get()            -> { url: string | null, tailscale: string | null }
- *   Capacitor.Plugins.ServerConfig.addEndpoint({ url })   -> { added }; saves the server's Tailscale address (see below)
+ *   Capacitor.Plugins.ServerConfig.addEndpoint({ url })   -> { added }; saves the server's Tailscale address, asking the
+ *                                                            person first when it is new and the page is not https (see below)
  *   Capacitor.Plugins.ServerConfig.removeEndpoint()       -> { removed }
  *   Capacitor.Plugins.ServerConfig.save({ url })    -> validates + persists, rejects if unreachable
  *   Capacitor.Plugins.ServerConfig.save({ url, expectId })
@@ -79,6 +80,137 @@ class ServerConfigPlugin : Plugin() {
         fun getTailscaleId(context: Context, primary: String): String? =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(EndpointRules.idKey(primary), null)
 
+        private fun serverIdKey(url: String) = "server_id:$url"
+        private fun movedDeclinesKey(url: String) = "moved_declines:$url"
+
+        fun getServerId(context: Context, url: String): String? =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(serverIdKey(url), null)
+
+        // A pair's stored id still identifies a private IPv4 saved address before the first direct id learn. Other URL
+        // forms cannot be read by HealthProbe and must keep their legacy launch and save behaviour.
+        fun expectedId(context: Context, savedUrl: String): String? =
+            EndpointRules.expectedIdForAddress(savedUrl, getServerId(context, savedUrl), getTailscaleId(context, savedUrl))
+
+        // The compare and write stay together on the one executor. An answer from a different device at the old
+        // address must never replace the identity previously learned there.
+        fun setServerIdIfAbsent(context: Context, url: String, id: String) {
+            sessionExecutor.execute {
+                val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                if (getSavedUrl(context) == url && p.getString(serverIdKey(url), null) == null)
+                    p.edit().putString(serverIdKey(url), id).apply()
+            }
+        }
+
+        fun getStoredName(context: Context, url: String): String? = try {
+            JSONObject(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_NAMES, "{}"))
+                .optString(url).takeIf { it.isNotBlank() }
+        } catch (e: Exception) { null }
+
+        fun getMovedDeclines(context: Context, oldUrl: String): Map<String, Long> =
+            MovedServerRules.Declines.decode(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(movedDeclinesKey(oldUrl), null))
+
+        fun recordMovedDecline(context: Context, oldUrl: String, candidateUrl: String) {
+            sessionExecutor.execute {
+                if (getSavedUrl(context) != oldUrl) return@execute
+                val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                val old = MovedServerRules.Declines.decode(p.getString(movedDeclinesKey(oldUrl), null))
+                val updated = MovedServerRules.Declines.record(old, candidateUrl, System.currentTimeMillis())
+                p.edit().putString(movedDeclinesKey(oldUrl), MovedServerRules.Declines.encode(updated)).apply()
+            }
+        }
+
+        private fun removeAddressData(p: SharedPreferences, url: String) {
+            val list = knownServersOf(p)
+            list.remove(url)
+            val names = try { JSONObject(p.getString(KEY_NAMES, "{}")) } catch (e: Exception) { JSONObject() }
+            names.remove(url)
+            val edit = p.edit().putString(KEY_KNOWN, JSONArray(list).toString()).putString(KEY_NAMES, names.toString())
+                .remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url))
+                .remove(EndpointRules.declinedKey(url)).remove(EndpointRules.declinedAtKey(url))
+                .remove(serverIdKey(url)).remove(movedDeclinesKey(url))
+            // Forget and the saved choice belong in one preferences edit, so a later launch cannot see an active URL
+            // whose remembered id has already gone. Move cleanup sees the new active URL and leaves it alone.
+            if (EndpointRules.forgetClearsActive(p.getString(KEY_URL, null), url)) edit.remove(KEY_URL)
+            edit.apply()
+        }
+
+        private fun removeAddress(context: Context, url: String) {
+            removeAddressData(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE), url)
+            SessionVault(PrefsKeyValueStore(context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)),
+                KeystoreSessionCipher()).clear(url)
+        }
+
+        private fun hasMoveDestinationLeftovers(context: Context, p: SharedPreferences, url: String): Boolean {
+            val names = try { JSONObject(p.getString(KEY_NAMES, "{}")) } catch (e: Exception) { JSONObject() }
+            val session = context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)
+            return names.has(url) || session.contains("s:$url") ||
+                listOf(EndpointRules.key(url), EndpointRules.idKey(url), EndpointRules.declinedKey(url),
+                    EndpointRules.declinedAtKey(url), serverIdKey(url), movedDeclinesKey(url)).any { p.contains(it) }
+        }
+
+        private fun clearMoveDestination(context: Context, p: SharedPreferences, url: String): Boolean {
+            return try {
+                val session = context.getSharedPreferences(SessionVault.PREFS_FILE, Context.MODE_PRIVATE)
+                // A reused URL must not expose the previous server's encrypted login. Abort before the saved-URL flip
+                // if that slot exists but cannot be removed; SessionVault.clear returns false for an absent slot too.
+                if (session.contains("s:$url")) {
+                    val vault = SessionVault(PrefsKeyValueStore(session), KeystoreSessionCipher())
+                    if (!vault.clear(url) || session.contains("s:$url")) return false
+                }
+                removeAddressData(p, url)
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        // Called only after the new address answered with the wanted id. One executor task checks the current
+        // choice, writes every new-address field, flips the choice, and finally removes the old address's data.
+        fun moveServer(context: Context, oldUrl: String, newUrl: String, id: String, name: String?,
+            pairUrlAtCheck: String?, mayCommit: () -> Boolean, onMoved: (Boolean) -> Unit) {
+            sessionExecutor.execute {
+                val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                val stored = getServerId(context, oldUrl)
+                val pairUrl = getTailscaleUrl(context, oldUrl)
+                val pairId = getTailscaleId(context, oldUrl)
+                // The pair need not answer now; its stored id is the identity, provided the pair has not changed since the check.
+                val guardId = stored ?: if (pairUrl == pairUrlAtCheck) pairId else null
+                if (!mayCommit() || !MovedServerRules.MoveGuard.stillValid(getSavedUrl(context), guardId, oldUrl, id)) {
+                    onMoved(false)
+                    return@execute
+                }
+                val plan = MovedServerRules.movePlan(oldUrl, newUrl, id, name, knownServersOf(p),
+                    hasMoveDestinationLeftovers(context, p, newUrl), pairUrl, pairId)
+                for (step in plan) when (step) {
+                    is MovedServerRules.MoveStep.ClearNew -> {
+                        if (!clearMoveDestination(context, p, step.url)) {
+                            onMoved(false)
+                            return@execute
+                        }
+                    }
+                    is MovedServerRules.MoveStep.AddKnown -> {
+                        val list = knownServersOf(p)
+                        list.remove(step.url)
+                        list.add(0, step.url)
+                        p.edit().putString(KEY_KNOWN, JSONArray(list).toString()).apply()
+                    }
+                    is MovedServerRules.MoveStep.SetName -> {
+                        val names = try { JSONObject(p.getString(KEY_NAMES, "{}")) } catch (e: Exception) { JSONObject() }
+                        names.put(step.url, step.name)
+                        p.edit().putString(KEY_NAMES, names.toString()).apply()
+                    }
+                    is MovedServerRules.MoveStep.SetServerId -> p.edit().putString(serverIdKey(step.url), step.id).apply()
+                    is MovedServerRules.MoveStep.CarryPair -> p.edit()
+                        .putString(EndpointRules.key(step.url), step.pairUrl)
+                        .putString(EndpointRules.idKey(step.url), step.pairId).apply()
+                    is MovedServerRules.MoveStep.SetSavedUrl -> p.edit().putString(KEY_URL, step.url).apply()
+                    is MovedServerRules.MoveStep.RemoveOld -> removeAddress(context, step.url)
+                }
+                onMoved(true)
+            }
+        }
+
         private fun knownServersOf(prefs: SharedPreferences): MutableList<String> {
             val list = mutableListOf<String>()
             try {
@@ -127,9 +259,31 @@ class ServerConfigPlugin : Plugin() {
         // never overtake the clear that followed it). Process-wide so a recreated activity shares it. A daemon thread.
         private val sessionExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "nightlight-session").apply { isDaemon = true } }
 
+        // ---- "Ask once" before a secure address learned from a plain-http page is saved (Codex code review of PR #37, High;
+        // the owner chose a native prompt, 2026-11-09; the plan's addendum and its review) ----
+
+        // One prompt at a time and at most one per 10 minutes, for the whole process (PromptGate), so a recreated activity
+        // cannot reset either.
+        private val promptGate = PromptGate()
+
+        // The prompt on screen, if any, so cancelPending can end it. Set before it is shown, cleared when it ends.
+        @Volatile
+        private var pendingPrompt: SecureAddressPrompt? = null
+
+        /**
+         * Ends a prompt that is still showing as "not answered": the call is refused, the gate released, and NO decline is
+         * stored. MainActivity.onDestroy calls it (before the window goes), so a rebuild (a roam, Change server) cannot leave
+         * the web app waiting for an answer that will never come (the addendum review, 2026-11-09). Main thread.
+         */
+        fun cancelPending() {
+            pendingPrompt?.finish(PromptGate.Outcome.CANCELLED)
+        }
+
+
         // The plan's wording (#20, decision 3): plain, and it says what to do next.
         private const val NOT_THE_FOUND_SERVER = "That address is not the server we found. Search again."
         private const val NOT_ON_THIS_PAGE = "Looking for servers is only available on the setup screen."
+        private const val ADDRESS_TAKEN = "That address now belongs to a different server. Look for your Nightlight, or type its new address."
 
         // How long the plugin thread waits for the main thread to read the WebView's URL (callerIsBundledPage).
         // The main thread answers in microseconds unless it is busy; if it is busy for a whole second the call is
@@ -292,22 +446,24 @@ class ServerConfigPlugin : Plugin() {
         call.resolve(ret)
     }
 
-    // Drop a server from the remembered list (does not touch the active choice). Its Tailscale address goes with it:
-    // it was only ever meaningful for that server.
+    // Drop a server from the remembered list and clear the active choice when it is that server. Its Tailscale address
+    // goes with it: it was only ever meaningful for that server.
+    // ONLY from the bundled setup page (callerIsBundledPage, as startDiscovery and stopDiscovery): its ✕ is the one caller. Codex
+    // code review of the PR #37 prompt delta, 2026-11-09: forget clears the "ask once" decline, so a hostile page at the plain-http
+    // saved address could otherwise forget the active server and offer the same address again at once, defeating the 7-day quiet
+    // period. Refused with the existing "Not available on this page" (EndpointRules.refusal), no new sentence.
     @PluginMethod
     fun forget(call: PluginCall) {
+        if (!callerIsBundledPage()) {
+            call.reject(refusal(EndpointRules.AddCheck.NOT_THIS_PAGE))
+            return
+        }
         val url = call.getString("url")
         if (url != null) {
             // The saved login for that address goes too (it was only ever meaningful for that server). The list is read INSIDE the
             // executor, so a save() queued just before this one is not lost (Opus review).
             sessionExecutor.execute {
-                val list = knownServers()
-                list.remove(url)
-                val names = storedNames()
-                names.remove(url)
-                prefs().edit().putString(KEY_KNOWN, JSONArray(list).toString()).remove(EndpointRules.key(url)).remove(EndpointRules.idKey(url))
-                    .putString(KEY_NAMES, namesJson(names)).apply()
-                sessionVault.clear(url)
+                removeAddress(context, url)
                 call.resolve()
             }
             return
@@ -319,14 +475,8 @@ class ServerConfigPlugin : Plugin() {
     private fun forgetTailscale(edit: SharedPreferences.Editor, primary: String): SharedPreferences.Editor =
         edit.remove(EndpointRules.key(primary)).remove(EndpointRules.idKey(primary))
 
-    private fun refusal(check: EndpointRules.AddCheck): String = when (check) {
-        EndpointRules.AddCheck.NOT_A_TAILSCALE_ADDRESS -> "Not a Tailscale address"
-        EndpointRules.AddCheck.NOT_THIS_PAGE -> "Not available on this page"
-        EndpointRules.AddCheck.UNREADABLE_SERVER -> "Couldn't read this server's identity"
-        EndpointRules.AddCheck.UNREACHABLE_ADDRESS -> "Couldn't reach that Tailscale address"
-        EndpointRules.AddCheck.DIFFERENT_SERVER -> "That address is a different server"
-        EndpointRules.AddCheck.OK -> ""
-    }
+    // The sentences are EndpointRules.refusal (pure, pinned by a JVM test, byte-identical to iOS).
+    private fun refusal(check: EndpointRules.AddCheck): String = EndpointRules.refusal(check)
 
     // addEndpoint({ url }): the server on screen has said "you can also reach me at <url>" (the web app read it from
     // GET /api/remote-access/tailscale/address while signed in). Saved only when ALL of these hold, each fails closed
@@ -336,9 +486,15 @@ class ServerConfigPlugin : Plugin() {
     //     page and anything else are refused;
     //   - the page's server and the url answer /api/health with the SAME id (EndpointProbe): an address that merely looks
     //     right is not saved for a server that is not this one. The id is public, so this is a claim, not proof (see
-    //     checkIdentity); it is saved with the address and re-checked each time the address is opened.
+    //     checkIdentity); it is saved with the address and re-checked each time the address is opened;
+    //   - the page the WebView is really SHOWING has the origin the bridge was built for (SessionRules.sameOrigin, the twin of
+    //     iOS's isTrustedPage), read after the identity check and again just before the write;
+    //   - a NEW or CHANGED address offered while the shown page is not https is confirmed by the person first (the "ask once"
+    //     prompt: EndpointRules.needsConfirmation, PromptGate, SecureAddressPrompt; Codex code review of PR #37 rated the planted
+    //     address High twice, because under Tailscale first a saved secure address opens ahead of the saved one, at home too).
     // Resolves { added }: true when this is new or different, false when it was already saved (so the app tells the
-    // person once). Nothing is switched or restarted here: the address is used the next time the app starts.
+    // person once). Nothing is switched or restarted here: the address is used the next time the app starts. While the prompt
+    // shows, the call waits for the answer (at most PromptGate.ANSWER_TIMEOUT_MS).
     @PluginMethod
     fun addEndpoint(call: PluginCall) {
         val url = call.getString("url")?.trim()?.trimEnd('/')
@@ -357,18 +513,103 @@ class ServerConfigPlugin : Plugin() {
                 call.reject(refusal(if (second == EndpointRules.AddCheck.OK) EndpointRules.AddCheck.UNREACHABLE_ADDRESS else second))
                 return@Thread
             }
-            // On the session executor, like every write that changes what a saved session is bound to (the saved address, the
-            // Tailscale address and its id): getSession reads them there too, so a token cannot be delivered under bindings that
-            // change between its last check and its answer (Codex review of the code).
-            sessionExecutor.execute {
-                val previous = getTailscaleUrl(context, primary)
-                prefs().edit().putString(EndpointRules.key(primary), url).putString(EndpointRules.idKey(primary), candidate.id).apply()
-                // The saved server's name, learned for free here: this runs at every start while signed in, so servers saved before
-                // names were kept get theirs without any action (the page's server and the saved address are the same server).
-                rememberName(primary, reference?.name)
-                call.resolve(JSObject().put("added", previous != url))
+            // Whether to ask is decided on the page actually SHOWN, not on the bridge's configured address (the addendum review,
+            // 2026-11-09), and that page must have the bridge's origin: otherwise a hostile http page could call this and then
+            // send the WebView to an https page (the bundled https://localhost one, say) so that the call looked as if it came from
+            // https. A page that cannot be read fails this too (refused, fails closed).
+            val shown = webViewUrlOnMainThread()
+            if (!SessionRules.sameOrigin(shown, page)) {
+                call.reject(refusal(EndpointRules.AddCheck.NOT_THIS_PAGE))
+                return@Thread
+            }
+            if (!EndpointRules.needsConfirmation(shown, getTailscaleUrl(context, primary), url)) {
+                writeEndpoint(call, primary, url, candidate.id, reference?.name, page, accepted = false)
+                return@Thread
+            }
+            val (declinedCandidate, declinedAtWallMs) = storedDecline(primary)
+            val decision = promptGate.reserve(url, declinedCandidate, declinedAtWallMs, System.currentTimeMillis(), SystemClock.elapsedRealtime())
+            // Not asked: a decline still in force is NOT_ACCEPTED, a busy gate NOT_CONFIRMED (PromptGate.refusalWhenNotAsked, the
+            // same mapping and the same sentences as the iPhone app).
+            if (decision == PromptGate.Decision.ASK) {
+                askThenWrite(call, primary, url, candidate.id, reference?.name, page)
+            } else {
+                call.reject(refusal(PromptGate.refusalWhenNotAsked(decision)))
             }
         }.start()
+    }
+
+    // The decline stored for [primary]: the declined address and when it was declined (wall clock), or nulls. An entry that cannot
+    // be read counts as none, which ASKS: asking is the safe default.
+    private fun storedDecline(primary: String): Pair<String?, Long?> = try {
+        val p = prefs()
+        val at = p.getLong(EndpointRules.declinedAtKey(primary), -1L)
+        Pair(p.getString(EndpointRules.declinedKey(primary), null), if (at >= 0L) at else null)
+    } catch (e: Exception) {
+        Pair(null, null)
+    }
+
+    // The gate said ASK (and holds the one prompt slot): show the prompt and act on how it ends, exactly once (SecureAddressPrompt).
+    // Only "Use it" saves; only "Don't use it" stores a decline; every other ending refuses and stores nothing (PromptGate.effectOf).
+    private fun askThenWrite(call: PluginCall, primary: String, url: String, id: String, name: String?, page: String) {
+        // The cooldown starts when the prompt is actually SHOWN (as on the iPhone): one that could not be shown does not hold
+        // back the next start's question.
+        val prompt = SecureAddressPrompt(onShown = { promptGate.shown(SystemClock.elapsedRealtime()) }) { outcome ->
+            // Cleared before the slot is released, so it can never clear a LATER prompt (none can be reserved before release).
+            pendingPrompt = null
+            promptGate.release()
+            val effect = PromptGate.effectOf(outcome)
+            when (effect) {
+                PromptGate.Effect.SAVE -> writeEndpoint(call, primary, url, id, name, page, accepted = true)
+                PromptGate.Effect.REMEMBER_DECLINE_AND_REFUSE -> sessionExecutor.execute {
+                    // Replaces any earlier decline: one per saved server. Wall clock, so the 7 days survive a restart.
+                    prefs().edit()
+                        .putString(EndpointRules.declinedKey(primary), url)
+                        .putLong(EndpointRules.declinedAtKey(primary), System.currentTimeMillis())
+                        .apply()
+                    call.reject(refusal(PromptGate.refusalAfter(effect)))
+                }
+                PromptGate.Effect.REFUSE -> call.reject(refusal(PromptGate.refusalAfter(effect)))
+            }
+        }
+        try {
+            pendingPrompt = prompt
+            prompt.show(activity, PromptGate.promptBody(primary, url))
+        } catch (e: Exception) {
+            // Never leave the slot held or the web app waiting: refused, nothing stored.
+            prompt.finish(PromptGate.Outcome.FAILED)
+        }
+    }
+
+    // The write itself. On the session executor, like every write that changes what a saved session is bound to (the saved
+    // address, the Tailscale address and its id): getSession reads them there too, so a token cannot be delivered under bindings
+    // that change between its last check and its answer (Codex review of the code). Just before writing, the saved server must
+    // still be [primary] and the page on screen must still have the origin the offer came from ([page]): a page that moved, or a
+    // server changed, while the identity check or the prompt ran saves nothing (fails closed; the addendum review, 2026-11-09).
+    // [accepted]: the person tapped "Use it", which also clears any stored decline.
+    private fun writeEndpoint(call: PluginCall, primary: String, url: String, id: String, name: String?, page: String, accepted: Boolean) {
+        sessionExecutor.execute {
+            // ONE read of the page shown now (bounded: webViewUrlOnMainThread waits at most PAGE_CHECK_TIMEOUT_MS; unreadable is
+            // null, which fails both checks below), used for the origin check and for the confirmation decision.
+            val shownNow = webViewUrlOnMainThread()
+            if (getSavedUrl(context) != primary || !SessionRules.sameOrigin(shownNow, page)) {
+                call.reject(refusal(EndpointRules.AddCheck.NOT_THIS_PAGE))
+                return@execute
+            }
+            val previous = getTailscaleUrl(context, primary)
+            // The confirmation decision, made again here on the page shown NOW and the secure address saved NOW (Codex code review
+            // of the PR #37 prompt delta: the first decision was made seconds earlier, before the identity probes).
+            if (!EndpointRules.mayWriteAddress(accepted, EndpointRules.needsConfirmation(shownNow, previous, url))) {
+                call.reject(refusal(EndpointRules.AddCheck.NOT_CONFIRMED))
+                return@execute
+            }
+            val edit = prefs().edit().putString(EndpointRules.key(primary), url).putString(EndpointRules.idKey(primary), id)
+            if (accepted) edit.remove(EndpointRules.declinedKey(primary)).remove(EndpointRules.declinedAtKey(primary))
+            edit.apply()
+            // The saved server's name, learned for free here: this runs at every start while signed in, so servers saved before
+            // names were kept get theirs without any action (the page's server and the saved address are the same server).
+            rememberName(primary, name)
+            call.resolve(JSObject().put("added", previous != url))
+        }
     }
 
     // removeEndpoint(): the server has said it no longer offers a Tailscale address (Tailscale was turned off there).
@@ -527,8 +768,9 @@ class ServerConfigPlugin : Plugin() {
     // Set-Cookie the answer carried through Capacitor's process-wide cookie handler. HealthProbe follows no redirect
     // (the 200 must come from that address itself), sends and stores no cookies, uses no proxy, and accepts only the
     // exact `http://<private IPv4>:<port>` form discovery produces. Without expectId (a typed address, a saved-server
-    // tap) this behaves exactly as before. Present but not a string is refused, not ignored, so a caller that meant
-    // to ask for the check cannot silently skip it.
+    // tap) the old reachability path remains, but a private IPv4 URL with a stored id or pair id refuses a different
+    // strict id before saving. Other URL forms keep the old save flow. Present but not a string is refused, not ignored,
+    // so the found-server check cannot silently skip.
     @PluginMethod
     fun save(call: PluginCall) {
         val raw = call.getString("url")?.trim().orEmpty()
@@ -570,13 +812,21 @@ class ServerConfigPlugin : Plugin() {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
                     conn.disconnect()
                     if (code == 200 && body.contains("\"ok\"")) {
-                        // A Tailscale address saved for this address belongs to the server it was saved for. Read who answers here
-                        // now (only when there is one to check), so another machine that took this address over does not keep it.
-                        val liveId = if (getTailscaleId(context, url) != null) EndpointProbe.fetchHealth(url, 3000)?.id else null
+                        // A loose 200 can come from an address that changed hands. When we already know its id, check this exact
+                        // private LAN URL with the cookie-free, no-redirect socket before any save or pair drop.
+                        val expectedAtProbe = expectedId(context, url)
+                        val liveId = if (expectedAtProbe != null) HealthProbe(totalDeadlineMs = 3000).fetchUrl(url)?.id else null
                         // The name the server sent in the same reply (null when it sent none, or an older server with no id).
                         val name = DiscoveryRules.parseHealth(body)?.name
                         // On the session executor: the saved address is part of what a saved session is bound to (see addEndpoint).
                         sessionExecutor.execute {
+                            val expectedNow = expectedId(context, url)
+                            if (EndpointRules.identityVerdict(expectedNow, liveId) == EndpointRules.IdentityVerdict.DIFFERENT ||
+                                (expectedAtProbe == null && expectedNow != null)) {
+                                // The second case closes a concurrent first learn between the loose reply and this queued write.
+                                call.reject(ADDRESS_TAKEN)
+                                return@execute
+                            }
                             val edit = prefs().edit().putString(KEY_URL, url)
                             dropTailscaleIfAnotherServer(edit, url, liveId)
                             edit.apply()
@@ -592,7 +842,8 @@ class ServerConfigPlugin : Plugin() {
             }
             // None answered. A REMEMBERED server that has a Tailscale address can still be reached through it: this is how "Change
             // server" gets back in from cellular, where the home address cannot answer (owner, 2026-11-06). The saved address stays
-            // the one the person picked; the launch gate then opens the Tailscale address because the saved one is not answering.
+            // the one the person picked; the launch gate then opens the Tailscale address (it is tried first anyway since the owner
+            // decision of 2026-11-09, and here the saved one is not answering).
             // ONLY from the bundled setup page, where Change server lands: any page can call save, and this path lets a call switch the
             // active server to a remembered one it could not reach before, so a page on the current server must not have it (Codex
             // review). Such a page could already switch to a remembered server that answers; this does not widen that.
@@ -618,9 +869,9 @@ class ServerConfigPlugin : Plugin() {
         }.start()
     }
 
-    // When the saved address is confirmed, drop the Tailscale address saved for it if the server now answering there is not the one
-    // it was saved for (EndpointRules.pairStillValid: a readable different id only). Also clears that address's saved login, which was
-    // bound to it. Runs on the session executor with the editor the caller is about to apply.
+    // A legacy pair may still need dropping when the saved address answers with a different id. Callers first reject that
+    // case when an expected id exists; this remains as the pair cleanup for any save that can proceed. The bound login goes
+    // with the pair. Runs on the session executor with the editor the caller is about to apply.
     private fun dropTailscaleIfAnotherServer(edit: SharedPreferences.Editor, url: String, liveId: String?) {
         if (!EndpointRules.pairStillValid(getTailscaleId(context, url), liveId)) {
             forgetTailscale(edit, url)
@@ -633,15 +884,30 @@ class ServerConfigPlugin : Plugin() {
     // a redirect, not a Nightlight, not a found-server address at all) gets "not the server we found".
     private fun saveFoundServer(call: PluginCall, url: String, expectId: String) {
         Thread {
+            // A card can point at a remembered address. Check its saved identity before the card's own id check, so a
+            // different readable server gets the same refusal as a typed save, with no preference or list mutation.
+            val expectedAtProbe = expectedId(context, url)
+            if (expectedAtProbe != null && EndpointRules.identityVerdict(expectedAtProbe,
+                    HealthProbe().fetchUrl(url)?.id) == EndpointRules.IdentityVerdict.DIFFERENT) {
+                call.reject(ADDRESS_TAKEN)
+                return@Thread
+            }
             val result = HealthProbe().checkUrl(url, expectId)
             when (result.outcome) {
                 HealthProbe.Outcome.VERIFIED -> sessionExecutor.execute {
+                    // A found card may target a remembered URL. Its id must also agree with that URL's saved identity.
+                    if (EndpointRules.identityVerdict(expectedId(context, url), expectId) == EndpointRules.IdentityVerdict.DIFFERENT) {
+                        call.reject(ADDRESS_TAKEN)
+                        return@execute
+                    }
                     // expectId is the id the server at this address just proved to have, so it is the live id for the pair check.
                     val edit = prefs().edit().putString(KEY_URL, url)
                     dropTailscaleIfAnotherServer(edit, url, expectId)
                     edit.apply()
                     rememberServer(url)
                     rememberName(url, result.health?.name)
+                    // A found card uses the strict no-redirect probe and proves this exact address's id.
+                    if (getServerId(context, url) == null) prefs().edit().putString(serverIdKey(url), expectId).apply()
                     call.resolve(JSObject().put("url", url))
                 }
                 HealthProbe.Outcome.CONNECT_FAILED, HealthProbe.Outcome.TIMED_OUT ->
@@ -659,10 +925,8 @@ class ServerConfigPlugin : Plugin() {
         // The Tailscale address is KEPT (owner, 2026-11-06). It used to go with the server being left, so it could not wait around
         // for whatever was saved at that address next; but then Change server, used while on the Tailscale address (away from
         // home), threw away the only way back in: the setup page lists the saved HOME address, which cannot answer on cellular.
-        // The stale-address risk is closed where it arises instead: save() compares the id at the home address with the one the
-        // Tailscale address was saved for and drops the pair when another server answers there (EndpointRules.pairStillValid).
-        // Known limit: that runs on a save from the setup screen, not at every launch (the launch gate reads no id at the home address),
-        // so a home address that changed hands can still open the old server through Tailscale until it is next connected to there.
+        // The launch gate checks a known id before opening the home address. On save, a readable different id refuses the
+        // address before any pair can be dropped; a silent address keeps the pair so reconnect still works away from home.
         // forget(url), the explicit "forget this server", still removes it.
         sessionExecutor.execute {
             // Read inside the executor: a save() queued just before this one has landed by now, so the right address is cleared.
@@ -681,7 +945,10 @@ class ServerConfigPlugin : Plugin() {
     @PluginMethod
     fun restart(call: PluginCall) {
         call.resolve()
-        activity?.runOnUiThread { activity.recreate() }
+        activity?.runOnUiThread {
+            AudioService.stopForServerChange(activity)
+            activity.recreate()
+        }
     }
 
     // "Look for my Nightlight" (#20). Starts a search and resolves { started, onWifi } at once; found servers
