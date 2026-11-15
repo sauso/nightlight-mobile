@@ -112,8 +112,7 @@ object DiscoveryRules {
         } catch (e: Exception) {
             return null
         } catch (e: StackOverflowError) {
-            // org.json parses nested arrays recursively; a body is at most 4 KB (HealthProbe), but `save` reads
-            // a reply of any size, and a deep `[[[[…` must refuse, not crash the app.
+            // org.json parses nested arrays recursively; even a bounded health body must refuse a deep one.
             return null
         }
         if (obj.opt("ok") != true) return null
@@ -127,6 +126,14 @@ object DiscoveryRules {
             else -> return null
         }
         return Health(id, name)
+    }
+
+    /** Issue #22: a typed address has no announced id to compare yet, but must still answer as Nightlight. */
+    fun isTypedHealth(body: String?): Boolean {
+        if (body.isNullOrEmpty()) return false
+        val obj = try { JSONObject(body) } catch (e: Exception) { return false }
+            catch (e: StackOverflowError) { return false }
+        return obj.opt("ok") == true && obj.opt("app") == "nightlight"
     }
 
     /**
