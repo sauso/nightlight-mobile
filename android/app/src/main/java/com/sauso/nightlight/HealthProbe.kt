@@ -7,7 +7,13 @@ import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.net.URI
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 
 /**
  * The raw-socket health request for discovery and saved-address move checks: `GET
@@ -24,7 +30,8 @@ import java.nio.charset.StandardCharsets
  * at the app's own origin when the cookie names no domain (CapacitorCookieManager.put). A probe of an address that
  * any device on the LAN can announce must do neither, and must not go through a system proxy either. A socket
  * opened with Proxy.NO_PROXY, writing a fixed request, has no cookie, credential, cache, proxy or redirect code
- * path at all; the tests plant a cookie handler and a proxy selector to hold that.
+ * path at all; the tests plant a cookie handler and a proxy selector to hold that. Issue #22 also uses this
+ * transport for typed HTTP/HTTPS addresses and the saved-address launch check; those paths may name public hosts.
  *
  * Bounded work, because the other end may be hostile (design 7.5 step 2):
  *  - one TOTAL deadline ([totalDeadlineMs], 2 s) for connect, request, headers and body together. Each socket read
@@ -67,6 +74,12 @@ class HealthProbe(
 
         private const val READ_CHUNK = 1024
         private val HEADER_END = byteArrayOf('\r'.code.toByte(), '\n'.code.toByte(), '\r'.code.toByte(), '\n'.code.toByte())
+
+        // Issue #22: DNS for a typed hostname can itself stall. One daemon resolver bounds that wait and
+        // avoids creating unbounded threads if an unresponsive resolver ignores interruption.
+        private val resolver = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "nightlight-probe-dns").apply { isDaemon = true }
+        }
     }
 
     /** Why a probe ended. Reported so tests (and a debug log) can tell a timeout from a refusal. */
@@ -91,7 +104,7 @@ class HealthProbe(
     /**
      * The same check for a found server's URL, `http://<ip>:<port>` exactly as discovery reported it
      * (DiscoveryRules.parseFoundUrl). Used by `ServerConfig.save({ url, expectId })` when a card is tapped (code
-     * review of #20): HttpURLConnection, which `save` uses for a typed address, follows redirects by default, so a
+     * review of #20): HttpURLConnection, which typed `save` used before issue #22, follows redirects by default, so a
      * redirect to the real server could pass the id check while the ORIGINAL address was saved; and it would store a
      * Set-Cookie from whatever answers there (see the class comment). This check has neither problem. Anything that
      * is not that exact URL form is refused without a request.
@@ -110,6 +123,39 @@ class HealthProbe(
     /** Probe and say why it ended. Never throws. */
     fun check(host: String, port: Int, expectedId: String): Result = checkInternal(host, port, expectedId)
 
+    // Issue #22: typed and saved URLs may be HTTPS or named hosts, unlike discovery's private IPv4 URL.
+    // The same socket reader supplies the deadline, size limits, no-cookie and no-redirect rules to all three paths.
+    fun checkTypedUrl(url: String): String? {
+        val target = parseTarget(url) ?: return null
+        val reply = requestHost(target, readBody = true)
+        return reply.body?.takeIf { reply.outcome == Outcome.VERIFIED && DiscoveryRules.isTypedHealth(it) }
+    }
+
+    // The legacy launch gate asks only whether this address itself returned 200; it does not require a health body.
+    fun isReachableUrl(url: String): Boolean {
+        val target = parseTarget(url) ?: return false
+        return requestHost(target, readBody = false).outcome == Outcome.VERIFIED
+    }
+
+    private data class Target(val host: String, val port: Int, val secure: Boolean, val path: String,
+        val address: InetSocketAddress? = null)
+    private data class RawReply(val outcome: Outcome, val body: String? = null)
+
+    private fun parseTarget(url: String): Target? = try {
+        val uri = URI("$url/api/health")
+        val scheme = uri.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") null
+        else if (uri.host == null || uri.rawUserInfo != null || uri.rawFragment != null) null
+        else {
+            val port = if (uri.port == -1) (if (scheme == "https") 443 else 80) else uri.port
+            if (port !in 1..65535) null
+            else {
+                val path = uri.rawPath + (uri.rawQuery?.let { "?$it" } ?: "")
+                Target(uri.host, port, scheme == "https", path)
+            }
+        }
+    } catch (e: Exception) { null }
+
     private fun checkInternal(host: String, port: Int, expectedId: String?): Result {
         if (!addressPolicy(host)) return Result(Outcome.REFUSED_ADDRESS, null)
         if (port !in 1..65535) return Result(Outcome.BAD_PORT, null)
@@ -119,49 +165,76 @@ class HealthProbe(
         } catch (e: Exception) {
             return Result(Outcome.REFUSED_ADDRESS, null)
         }
+        val reply = requestHost(Target(host, port, false, "/api/health", InetSocketAddress(address, port)), readBody = true)
+        if (reply.outcome != Outcome.VERIFIED) return Result(reply.outcome, null)
+        val health = DiscoveryRules.parseHealth(reply.body) ?: return Result(Outcome.NOT_NIGHTLIGHT, null)
+        if (!DiscoveryRules.isPlausibleId(health.id) ||
+            (expectedId != null && !DiscoveryRules.matches(health, expectedId))) return Result(Outcome.ID_MISMATCH, null)
+        return Result(Outcome.VERIFIED, health)
+    }
+
+    private fun requestHost(target: Target, readBody: Boolean): RawReply {
         val deadline = System.nanoTime() + totalDeadlineMs * 1_000_000L
-        val socket = try {
-            newSocket()
-        } catch (e: Exception) {
-            return Result(Outcome.CONNECT_FAILED, null)
+        val address = if (target.address != null) target.address else {
+            val future = resolver.submit<InetAddress> { InetAddress.getByName(target.host) }
+            try {
+                val left = remainingMs(deadline)
+                if (left <= 0) return RawReply(Outcome.TIMED_OUT)
+                InetSocketAddress(future.get(left, TimeUnit.MILLISECONDS), target.port)
+            } catch (e: TimeoutException) {
+                return RawReply(Outcome.TIMED_OUT)
+            } catch (e: Exception) {
+                return RawReply(Outcome.CONNECT_FAILED)
+            } finally { future.cancel(true) }
         }
+        val socket = try { newSocket() } catch (e: Exception) { return RawReply(Outcome.CONNECT_FAILED) }
+        var ioSocket: Socket = socket
         try {
             val connectMs = minOf(connectTimeoutMs, remainingMs(deadline))
-            if (connectMs <= 0) return Result(Outcome.TIMED_OUT, null)
+            if (connectMs <= 0) return RawReply(Outcome.TIMED_OUT)
             try {
-                socket.connect(InetSocketAddress(address, port), connectMs.toInt())
+                socket.connect(address, connectMs.toInt())
             } catch (e: SocketTimeoutException) {
-                return Result(Outcome.TIMED_OUT, null)
+                return RawReply(Outcome.TIMED_OUT)
             } catch (e: IOException) {
-                return Result(Outcome.CONNECT_FAILED, null)
+                return RawReply(Outcome.CONNECT_FAILED)
             }
-            // Nothing but these lines is ever sent: no Cookie, no Authorization, no body.
-            val request = "GET /api/health HTTP/1.0\r\n" +
-                "Host: $host:$port\r\n" +
+            if (target.secure) {
+                // Issue #22: TLS needs hostname verification even though the transport bypasses URLConnection.
+                socket.soTimeout = remainingMs(deadline).coerceAtLeast(1).toInt()
+                val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory).createSocket(socket, target.host, target.port, true) as SSLSocket
+                val parameters = ssl.sslParameters
+                parameters.endpointIdentificationAlgorithm = "HTTPS"
+                ssl.sslParameters = parameters
+                ioSocket = ssl
+                ssl.soTimeout = remainingMs(deadline).coerceAtLeast(1).toInt()
+                ssl.startHandshake()
+            }
+            val hostHeader = if (target.host.contains(':')) "[${target.host}]" else target.host
+            // Issue #22: fixed headers never consult a CookieHandler or ProxySelector, including for typed URLs.
+            val request = "GET ${target.path} HTTP/1.0\r\n" +
+                "Host: $hostHeader:${target.port}\r\n" +
                 "Accept: application/json\r\n" +
                 "Accept-Encoding: identity\r\n" +
                 "Connection: close\r\n" +
                 "\r\n"
-            val out = socket.getOutputStream()
+            val out = ioSocket.getOutputStream()
             out.write(request.toByteArray(StandardCharsets.US_ASCII))
             out.flush()
-            return readReply(socket, deadline, expectedId)
+            return readReply(ioSocket, deadline, readBody)
         } catch (e: SocketTimeoutException) {
-            return Result(Outcome.TIMED_OUT, null)
+            return RawReply(Outcome.TIMED_OUT)
         } catch (e: Exception) {
-            return Result(Outcome.BAD_RESPONSE, null)
+            return RawReply(Outcome.BAD_RESPONSE)
         } finally {
-            try {
-                socket.close()
-            } catch (e: Exception) {
-                // Nothing to do: the probe's result is already decided.
-            }
+            try { ioSocket.close() } catch (e: Exception) { /* Result already decided. */ }
+            if (ioSocket !== socket) try { socket.close() } catch (e: Exception) { /* Result already decided. */ }
         }
     }
 
     private class Head(val status: Int, val contentLength: Long?, val chunked: Boolean)
 
-    private fun readReply(socket: Socket, deadline: Long, expectedId: String?): Result {
+    private fun readReply(socket: Socket, deadline: Long, readBody: Boolean): RawReply {
         val input = socket.getInputStream()
         val received = ByteArrayOutputStream()
         val chunk = ByteArray(READ_CHUNK)
@@ -171,7 +244,7 @@ class HealthProbe(
             // The TOTAL deadline: each read may wait only for the time that is left, and the loop ends when none
             // is left, however the bytes arrive.
             val left = remainingMs(deadline)
-            if (left <= 0) return Result(Outcome.TIMED_OUT, null)
+            if (left <= 0) return RawReply(Outcome.TIMED_OUT)
             socket.soTimeout = left.toInt()
             val n = input.read(chunk)
             if (n < 0) break
@@ -185,33 +258,31 @@ class HealthProbe(
                 // three bytes that could be the start of it, so a head of exactly MAX_HEADER_BYTES still passes
                 // however the bytes are split across reads.
                 val headLength = if (end >= 0) end else bytes.size - (HEADER_END.size - 1)
-                if (headLength > MAX_HEADER_BYTES) return Result(Outcome.TOO_LARGE, null)
+                if (headLength > MAX_HEADER_BYTES) return RawReply(Outcome.TOO_LARGE)
                 if (end < 0) continue
                 val head = parseHead(String(bytes, 0, end, StandardCharsets.ISO_8859_1))
-                    ?: return Result(Outcome.BAD_RESPONSE, null)
+                    ?: return RawReply(Outcome.BAD_RESPONSE)
                 // Decided on the status line alone: a redirect is a failure, never a new address to try.
-                if (head.status != 200) return Result(Outcome.NOT_OK_STATUS, null)
-                if (head.chunked) return Result(Outcome.BAD_RESPONSE, null)
+                if (head.status != 200) return RawReply(Outcome.NOT_OK_STATUS)
+                if (!readBody) return RawReply(Outcome.VERIFIED)
+                if (head.chunked) return RawReply(Outcome.BAD_RESPONSE)
                 // Refuse a declared oversize body at once, instead of waiting for bytes that would be refused.
-                if (head.contentLength != null && head.contentLength > maxBodyBytes) return Result(Outcome.TOO_LARGE, null)
+                if (head.contentLength != null && head.contentLength > maxBodyBytes) return RawReply(Outcome.TOO_LARGE)
                 bodyStart = end + HEADER_END.size
                 expectedTotal = head.contentLength?.let { bodyStart + it }
             }
             val bodyBytes = received.size() - bodyStart
-            if (bodyBytes > maxBodyBytes) return Result(Outcome.TOO_LARGE, null)
+            if (bodyBytes > maxBodyBytes) return RawReply(Outcome.TOO_LARGE)
             // With a Content-Length, stop as soon as the body is complete: a server that keeps the connection open
             // after a complete reply must not turn a good answer into a timeout.
             if (expectedTotal != null && received.size() >= expectedTotal) break
         }
-        if (bodyStart < 0) return Result(Outcome.BAD_RESPONSE, null)
+        if (bodyStart < 0) return RawReply(Outcome.BAD_RESPONSE)
         val all = received.toByteArray()
         val end = expectedTotal?.toInt() ?: all.size
-        if (end > all.size) return Result(Outcome.BAD_RESPONSE, null) // the connection closed before the body ended
+        if (end > all.size) return RawReply(Outcome.BAD_RESPONSE) // the connection closed before the body ended
         val body = String(all, bodyStart, end - bodyStart, StandardCharsets.UTF_8)
-        val health = DiscoveryRules.parseHealth(body) ?: return Result(Outcome.NOT_NIGHTLIGHT, null)
-        if (!DiscoveryRules.isPlausibleId(health.id) ||
-            (expectedId != null && !DiscoveryRules.matches(health, expectedId))) return Result(Outcome.ID_MISMATCH, null)
-        return Result(Outcome.VERIFIED, health)
+        return RawReply(Outcome.VERIFIED, body)
     }
 
     // Status line `HTTP/1.x NNN reason`, then `Name: value` lines. Only what the probe needs is read: the status,

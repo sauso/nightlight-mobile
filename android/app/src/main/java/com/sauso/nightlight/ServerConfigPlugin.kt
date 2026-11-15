@@ -14,8 +14,6 @@ import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
@@ -291,22 +289,11 @@ class ServerConfigPlugin : Plugin() {
         // refused (fails closed) and the page simply hides the search.
         private const val PAGE_CHECK_TIMEOUT_MS = 1_000L
 
-        // Quick liveness check used at launch (see MainActivity) to decide whether to point the
-        // app at the saved server or drop to the bundled setup screen. Must be called OFF the main
-        // thread — HttpURLConnection can sit the full timeout on an unreachable host.
-        fun isReachable(url: String, timeoutMs: Int): Boolean {
-            return try {
-                val conn = URL("$url/api/health").openConnection() as HttpURLConnection
-                conn.connectTimeout = timeoutMs
-                conn.readTimeout = timeoutMs
-                conn.requestMethod = "GET"
-                val ok = conn.responseCode == 200
-                conn.disconnect()
-                ok
-            } catch (e: Exception) {
-                false
-            }
-        }
+        // Issue #22: launch still asks only for a direct 200, but the raw socket avoids Capacitor's
+        // process-wide CookieHandler, redirects and proxies. Keep this off the main thread as before.
+        fun isReachable(url: String, timeoutMs: Int): Boolean =
+            HealthProbe(totalDeadlineMs = timeoutMs.coerceIn(1, HealthProbe.TOTAL_DEADLINE_MS.toInt()).toLong())
+                .isReachableUrl(url)
     }
 
     private fun prefs() = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -762,19 +749,10 @@ class ServerConfigPlugin : Plugin() {
     // proxy in front (e.g. 192.168.1.50:4000), and the wrong-scheme attempt fails
     // fast (TLS handshake against a plaintext port doesn't sit out the timeout).
     //
-    // expectId (optional, #20): set when the setup page connects to a server that "Look for my Nightlight" found.
-    // The server at that address must then answer as a Nightlight whose id is exactly that one, or nothing is saved.
-    // Why (plan review, High): the check below accepts any 200 reply containing "ok", and the address a card shows
-    // may have changed hands since it was verified (a DHCP lease moving to another device). Design 7.5 step 6:
-    // re-check at the moment of use. That check is HealthProbe.checkUrl, the same one discovery used, NOT the
-    // HttpURLConnection below (code review of #20): HttpURLConnection follows redirects by default, so a redirect to
-    // the real server could pass the id check while the ORIGINAL address was saved, and it would store any
-    // Set-Cookie the answer carried through Capacitor's process-wide cookie handler. HealthProbe follows no redirect
-    // (the 200 must come from that address itself), sends and stores no cookies, uses no proxy, and accepts only the
-    // exact `http://<private IPv4>:<port>` form discovery produces. Without expectId (a typed address, a saved-server
-    // tap) the old reachability path remains, but a private IPv4 URL with a stored id or pair id refuses a different
-    // strict id before saving. Other URL forms keep the old save flow. Present but not a string is refused, not ignored,
-    // so the found-server check cannot silently skip.
+    // expectId (optional, #20): a found card requires the exact announced id at its exact private URL.
+    // Issue #22: typed addresses instead use the same bounded socket transport with an ok/app check;
+    // they have no announced id yet. A remembered private URL still gets its separate stored-id check.
+    // Present but not a string is refused, not silently treated as a typed address.
     @PluginMethod
     fun save(call: PluginCall) {
         val raw = call.getString("url")?.trim().orEmpty()
@@ -792,57 +770,39 @@ class ServerConfigPlugin : Plugin() {
             saveFoundServer(call, raw, expectId)
             return
         }
-        val bare = raw.trimEnd('/')
-        val candidates = if (bare.contains("://")) {
-            if (!bare.startsWith("https://") && !bare.startsWith("http://")) {
-                call.reject("The address must start with https:// or http://")
-                return
-            }
-            listOf(bare)
-        } else {
-            listOf("https://$bare", "http://$bare")
+        val candidates = TypedAddressProbe.candidates(raw)
+        if (candidates == null) {
+            call.reject("The address must start with https:// or http://")
+            return
         }
 
-        // Plain thread rather than blocking a Capacitor thread: HttpURLConnection
-        // can sit the full timeout on an unreachable host.
+        // Issue #22: keep the asynchronous save and the candidate order, with one bounded raw-socket
+        // health check per candidate. The same probe transports HTTPS with hostname verification.
         Thread {
-            for (url in candidates) {
-                try {
-                    val conn = URL("$url/api/health").openConnection() as HttpURLConnection
-                    conn.connectTimeout = 5000
-                    conn.readTimeout = 5000
-                    conn.requestMethod = "GET"
-                    val code = conn.responseCode
-                    val body = conn.inputStream.bufferedReader().use { it.readText() }
-                    conn.disconnect()
-                    if (code == 200 && body.contains("\"ok\"")) {
-                        // A loose 200 can come from an address that changed hands. When we already know its id, check this exact
-                        // private LAN URL with the cookie-free, no-redirect socket before any save or pair drop.
-                        val expectedAtProbe = expectedId(context, url)
-                        val liveId = if (expectedAtProbe != null) HealthProbe(totalDeadlineMs = 3000).fetchUrl(url)?.id else null
-                        // The name the server sent in the same reply (null when it sent none, or an older server with no id).
-                        val name = DiscoveryRules.parseHealth(body)?.name
-                        // On the session executor: the saved address is part of what a saved session is bound to (see addEndpoint).
-                        sessionExecutor.execute {
-                            val expectedNow = expectedId(context, url)
-                            if (EndpointRules.identityVerdict(expectedNow, liveId) == EndpointRules.IdentityVerdict.DIFFERENT ||
-                                (expectedAtProbe == null && expectedNow != null)) {
-                                // The second case closes a concurrent first learn between the loose reply and this queued write.
-                                call.reject(ADDRESS_TAKEN)
-                                return@execute
-                            }
-                            val edit = prefs().edit().putString(KEY_URL, url)
-                            dropTailscaleIfAnotherServer(edit, url, liveId)
-                            edit.apply()
-                            rememberServer(url)
-                            rememberName(url, name)
-                            call.resolve(JSObject().put("url", url))
-                        }
-                        return@Thread
+            val accepted = TypedAddressProbe.firstAccepted(candidates, HealthProbe()::checkTypedUrl)
+            if (accepted != null) {
+                val (url, body) = accepted
+                // A stored id still needs the strict private-LAN check before any save or pair drop.
+                val expectedAtProbe = expectedId(context, url)
+                val liveId = if (expectedAtProbe != null) HealthProbe().fetchUrl(url)?.id else null
+                val name = DiscoveryRules.parseHealth(body)?.name
+                // On the session executor: the saved address is part of what a saved session is bound to (see addEndpoint).
+                sessionExecutor.execute {
+                    val expectedNow = expectedId(context, url)
+                    if (EndpointRules.identityVerdict(expectedNow, liveId) == EndpointRules.IdentityVerdict.DIFFERENT ||
+                        (expectedAtProbe == null && expectedNow != null)) {
+                        // Issue #22 retains the concurrent first-learn guard from the old save path.
+                        call.reject(ADDRESS_TAKEN)
+                        return@execute
                     }
-                } catch (e: Exception) {
-                    // Fall through to the next candidate scheme, if any.
+                    val edit = prefs().edit().putString(KEY_URL, url)
+                    dropTailscaleIfAnotherServer(edit, url, liveId)
+                    edit.apply()
+                    rememberServer(url)
+                    rememberName(url, name)
+                    call.resolve(JSObject().put("url", url))
                 }
+                return@Thread
             }
             // None answered. A REMEMBERED server that has a Tailscale address can still be reached through it: this is how "Change
             // server" gets back in from cellular, where the home address cannot answer (owner, 2026-11-06). The saved address stays
