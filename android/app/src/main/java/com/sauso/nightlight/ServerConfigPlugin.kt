@@ -292,7 +292,7 @@ class ServerConfigPlugin : Plugin() {
         // Issue #22: launch still asks only for a direct 200, but the raw socket avoids Capacitor's
         // process-wide CookieHandler, redirects and proxies. Keep this off the main thread as before.
         fun isReachable(url: String, timeoutMs: Int): Boolean =
-            HealthProbe(totalDeadlineMs = timeoutMs.coerceIn(1, HealthProbe.TOTAL_DEADLINE_MS.toInt()).toLong())
+            HealthProbe.forReachability(timeoutMs)
                 .isReachableUrl(url)
     }
 
@@ -776,10 +776,10 @@ class ServerConfigPlugin : Plugin() {
             return
         }
 
-        // Issue #22: keep the asynchronous save and the candidate order, with one bounded raw-socket
-        // health check per candidate. The same probe transports HTTPS with hostname verification.
+        // Issue #22 keeps the asynchronous save and candidate order; review of #50 gives a typed
+        // cellular/VPN candidate up to 5 s total, without changing discovery's 2 s default.
         Thread {
-            val accepted = TypedAddressProbe.firstAccepted(candidates, HealthProbe()::checkTypedUrl)
+            val accepted = TypedAddressProbe.firstAccepted(candidates, HealthProbe.forTypedAddress()::checkTypedUrl)
             if (accepted != null) {
                 val (url, body) = accepted
                 // A stored id still needs the strict private-LAN check before any save or pair drop.

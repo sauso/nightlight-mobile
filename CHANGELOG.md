@@ -11,7 +11,7 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 ## [Unreleased]
 
 ### Fixed
-- Android: typed server checks and the launch reachability check now use bounded, cookie-free requests that do not follow redirects.
+- Android: typed server checks and the launch reachability check use cookie-free requests that do not follow redirects, with more time for slow connections.
 
 ## [0.11.0] - 2026-11-10
 

@@ -115,4 +115,65 @@ class TypedAddressProbeTest {
             assertEquals(listOf(url(server)), TypedAddressProbe.candidates(url(server)))
         }
     }
+
+    @Test
+    fun `first accepted skips a throwing candidate and does not probe after success`() {
+        // Review of #50: a failed HTTPS check must still allow HTTP, and acceptance stops the loop.
+        val candidates = TypedAddressProbe.candidates("example.test:4000")!! + "http://unused.test"
+        val tried = mutableListOf<String>()
+        val accepted = TypedAddressProbe.firstAccepted(candidates) { candidate ->
+            tried.add(candidate)
+            if (candidate.startsWith("https://")) throw java.io.IOException("TLS failed")
+            "accepted"
+        }
+        assertEquals(listOf("https://example.test:4000", "http://example.test:4000"), tried)
+        assertEquals("http://example.test:4000" to "accepted", accepted)
+
+        tried.clear()
+        val secure = TypedAddressProbe.firstAccepted(candidates) { candidate ->
+            tried.add(candidate)
+            "secure"
+        }
+        assertEquals(listOf("https://example.test:4000"), tried)
+        assertEquals("https://example.test:4000" to "secure", secure)
+    }
+
+    @Test
+    fun `typed save accepts a health reply after two seconds`() {
+        // Review of #50: the old 2 s probe rejected a server that answers in roughly 2.5 s.
+        val body = "{\"ok\":true,\"app\":\"nightlight\"}"
+        LocalHttpServer { out, _ ->
+            Thread.sleep(2_300)
+            reply(out, "200 OK", body)
+        }.use { server ->
+            assertEquals(url(server) to body, TypedAddressProbe.firstAccepted(
+                listOf(url(server)), HealthProbe.forTypedAddress()::checkTypedUrl))
+        }
+    }
+
+    @Test
+    fun `launch reachability accepts a reply within the requested 2500 milliseconds`() {
+        // Review of #50: MainActivity asks for 2.5 s, which the old 2 s clamp discarded.
+        LocalHttpServer { out, _ ->
+            Thread.sleep(2_250)
+            reply(out, "200 OK", "{}")
+        }.use { server ->
+            assertTrue(HealthProbe.forReachability(2_500).isReachableUrl(url(server)))
+        }
+    }
+
+    @Test
+    fun `typed and launch silent servers end within their new bounds`() {
+        LocalHttpServer { _, _ -> Thread.sleep(6_000) }.use { server ->
+            val typedStart = System.nanoTime()
+            assertNull(HealthProbe.forTypedAddress().checkTypedUrl(url(server)))
+            val typedMs = (System.nanoTime() - typedStart) / 1_000_000L
+            assertTrue("typed took $typedMs ms", typedMs in 4_500L..6_000L)
+
+            val launchStart = System.nanoTime()
+            assertFalse(HealthProbe.forReachability(2_500).isReachableUrl(url(server)))
+            val launchMs = (System.nanoTime() - launchStart) / 1_000_000L
+            assertTrue("launch took $launchMs ms", launchMs in 2_200L..3_500L)
+        }
+    }
 }

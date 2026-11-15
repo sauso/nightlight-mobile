@@ -14,7 +14,8 @@ object TypedAddressProbe {
 
     fun firstAccepted(candidates: List<String>, check: (String) -> String?): Pair<String, String>? {
         for (url in candidates) {
-            val body = check(url)
+            // Review of #50: one malformed or failed TLS candidate must not prevent the HTTP fallback.
+            val body = try { check(url) } catch (e: Exception) { null }
             if (body != null) return url to body
         }
         return null

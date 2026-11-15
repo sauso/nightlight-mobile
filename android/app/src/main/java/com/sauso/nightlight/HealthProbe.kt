@@ -10,8 +10,10 @@ import java.net.SocketTimeoutException
 import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
@@ -34,9 +36,9 @@ import javax.net.ssl.SSLSocketFactory
  * transport for typed HTTP/HTTPS addresses and the saved-address launch check; those paths may name public hosts.
  *
  * Bounded work, because the other end may be hostile (design 7.5 step 2):
- *  - one TOTAL deadline ([totalDeadlineMs], 2 s) for connect, request, headers and body together. Each socket read
- *    waits at most the time left, and the deadline is checked after every read, so a server that dribbles one
- *    byte at a time cannot hold the probe past it (a per-read timeout alone would be reset by every byte);
+ *  - one TOTAL deadline ([totalDeadlineMs], 2 s by default) for connect, TLS handshake, request, headers and body.
+ *    Each socket read waits at most the time left, and a deadline closer interrupts a slow TLS handshake or write;
+ *    a server that dribbles one byte at a time cannot hold the probe past the deadline;
  *  - at most [maxBodyBytes] (4 KB) of body and [MAX_HEADER_BYTES] of headers. A real reply is about 100 bytes;
  *  - no redirects: any status but 200 is a failure, decided as soon as the status line arrives;
  *  - HTTP/1.0, so a well-behaved server never answers chunked (Node, which serves the real reply, does not);
@@ -66,6 +68,21 @@ class HealthProbe(
         // Never 0: Socket.connect reads 0 as "no timeout". A judgement, not a measurement.
         const val CONNECT_TIMEOUT_MS = 1_500L
 
+        // Review of #50: typed addresses can be on cellular or a VPN; give each candidate close to the former
+        // 5 s connect/5 s read allowance without making discovery or the network watcher wait longer.
+        const val TYPED_TOTAL_DEADLINE_MS = 5_000L
+        const val TYPED_CONNECT_TIMEOUT_MS = 3_000L
+
+        fun forTypedAddress() = HealthProbe(totalDeadlineMs = TYPED_TOTAL_DEADLINE_MS,
+            connectTimeoutMs = TYPED_CONNECT_TIMEOUT_MS)
+
+        // Review of #50: launch asked for 2.5 s, while the watcher asks for 1.5 s. Respect either caller's
+        // requested total and connect allowance, with a 5 s ceiling and no zero (zero means infinite connect).
+        fun forReachability(timeoutMs: Int): HealthProbe {
+            val boundedMs = timeoutMs.coerceIn(1, TYPED_TOTAL_DEADLINE_MS.toInt()).toLong()
+            return HealthProbe(totalDeadlineMs = boundedMs, connectTimeoutMs = boundedMs)
+        }
+
         // Design 7.5: "a small maximum body size (e.g. 4 KB)". The real reply is `{ ok, app, id, name }`.
         const val MAX_BODY_BYTES = 4 * 1024
 
@@ -80,6 +97,12 @@ class HealthProbe(
         private val resolver = Executors.newSingleThreadExecutor { task ->
             Thread(task, "nightlight-probe-dns").apply { isDaemon = true }
         }
+
+        // Review of #50: SO_TIMEOUT resets on every TLS read. Closing the socket at the total deadline
+        // also bounds a peer that advances the handshake one byte at a time.
+        private val deadlineCloser = ScheduledThreadPoolExecutor(1) { task ->
+            Thread(task, "nightlight-probe-deadline").apply { isDaemon = true }
+        }.apply { removeOnCancelPolicy = true }
     }
 
     /** Why a probe ended. Reported so tests (and a debug log) can tell a timeout from a refusal. */
@@ -189,6 +212,12 @@ class HealthProbe(
         }
         val socket = try { newSocket() } catch (e: Exception) { return RawReply(Outcome.CONNECT_FAILED) }
         var ioSocket: Socket = socket
+        val timedOut = AtomicBoolean(false)
+        val closer = deadlineCloser.schedule({
+            timedOut.set(true)
+            // The TLS wrapper shares this TCP socket, so closing it interrupts either a handshake or a plain read.
+            try { socket.close() } catch (e: Exception) { /* The probe decides the result. */ }
+        }, (deadline - System.nanoTime()).coerceAtLeast(0), TimeUnit.NANOSECONDS)
         try {
             val connectMs = minOf(connectTimeoutMs, remainingMs(deadline))
             if (connectMs <= 0) return RawReply(Outcome.TIMED_OUT)
@@ -197,8 +226,9 @@ class HealthProbe(
             } catch (e: SocketTimeoutException) {
                 return RawReply(Outcome.TIMED_OUT)
             } catch (e: IOException) {
-                return RawReply(Outcome.CONNECT_FAILED)
+                return RawReply(if (timedOut.get()) Outcome.TIMED_OUT else Outcome.CONNECT_FAILED)
             }
+            if (timedOut.get()) return RawReply(Outcome.TIMED_OUT)
             if (target.secure) {
                 // Issue #22: TLS needs hostname verification even though the transport bypasses URLConnection.
                 socket.soTimeout = remainingMs(deadline).coerceAtLeast(1).toInt()
@@ -210,10 +240,11 @@ class HealthProbe(
                 ssl.soTimeout = remainingMs(deadline).coerceAtLeast(1).toInt()
                 ssl.startHandshake()
             }
-            val hostHeader = if (target.host.contains(':')) "[${target.host}]" else target.host
+            if (timedOut.get()) return RawReply(Outcome.TIMED_OUT)
+            val hostHeader = hostHeader(target.host, target.port)
             // Issue #22: fixed headers never consult a CookieHandler or ProxySelector, including for typed URLs.
             val request = "GET ${target.path} HTTP/1.0\r\n" +
-                "Host: $hostHeader:${target.port}\r\n" +
+                "Host: $hostHeader\r\n" +
                 "Accept: application/json\r\n" +
                 "Accept-Encoding: identity\r\n" +
                 "Connection: close\r\n" +
@@ -225,11 +256,18 @@ class HealthProbe(
         } catch (e: SocketTimeoutException) {
             return RawReply(Outcome.TIMED_OUT)
         } catch (e: Exception) {
-            return RawReply(Outcome.BAD_RESPONSE)
+            return RawReply(if (timedOut.get()) Outcome.TIMED_OUT else Outcome.BAD_RESPONSE)
         } finally {
+            closer.cancel(false)
             try { ioSocket.close() } catch (e: Exception) { /* Result already decided. */ }
             if (ioSocket !== socket) try { socket.close() } catch (e: Exception) { /* Result already decided. */ }
         }
+    }
+
+    // Review of #50: URI.host retains IPv6 brackets on the JVM, so adding another pair made an invalid Host header.
+    internal fun hostHeader(host: String, port: Int): String {
+        val bareHost = host.removeSurrounding("[", "]")
+        return if (bareHost.contains(':')) "[$bareHost]:$port" else "$bareHost:$port"
     }
 
     private class Head(val status: Int, val contentLength: Long?, val chunked: Boolean)
