@@ -11,7 +11,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * A tiny HTTP server on 127.0.0.1 for HealthProbeTest, written on java.net.ServerSocket so a test controls every
+ * A tiny HTTP server on loopback for HealthProbeTest, written on java.net.ServerSocket so a test controls every
  * byte (a reply that dribbles, never ends, redirects, or closes early).
  *
  * Not com.sun.net.httpserver, which the plan named: Android unit tests are compiled against android.jar, which has
@@ -20,8 +20,9 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * [handler] gets the accepted socket's output and the request text (headers, up to the blank line).
  */
-class LocalHttpServer(private val handler: (OutputStream, String) -> Unit) : AutoCloseable {
-    private val server = ServerSocket(0, 50, InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)))
+class LocalHttpServer(bindAddress: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)),
+    private val handler: (OutputStream, String) -> Unit) : AutoCloseable {
+    private val server = ServerSocket(0, 50, bindAddress)
 
     /** Connections accepted. A probe that was refused before connecting leaves this at 0. */
     val hits = AtomicInteger()

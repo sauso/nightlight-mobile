@@ -512,6 +512,50 @@ class HealthProbeTest {
     }
 
     @Test
+    fun `IPv6 Host header has exactly one pair of brackets`() {
+        // Review of #50: URI.host includes the brackets on the JVM. This pure assertion still runs on
+        // machines without an IPv6 loopback interface; the wire assertion runs where one is available.
+        assertEquals("[::1]:4000", HealthProbe().hostHeader("[::1]", 4000))
+        assertEquals("[::1]:4000", HealthProbe().hostHeader("::1", 4000))
+        val server = try {
+            LocalHttpServer(InetAddress.getByName("::1")) { out, _ -> reply(out, "200 OK", validBody) }
+        } catch (e: IOException) { return }
+        server.use {
+            assertEquals(validBody, HealthProbe().checkTypedUrl("http://[::1]:${server.port}"))
+            val request = server.requests.single()
+            assertTrue(request, request.startsWith("GET /api/health HTTP/1.0\r\n"))
+            assertTrue(request, request.contains("\r\nHost: [::1]:${server.port}\r\n"))
+        }
+    }
+
+    @Test
+    fun `TLS handshake dribble ends at the total deadline`() {
+        // Review of #50: SO_TIMEOUT alone is reset by each byte of a TLS record. A plaintext peer
+        // sends a valid record header and then too few bytes to finish the record.
+        ServerSocket(0, 50, InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))).use { server ->
+            Thread {
+                try {
+                    server.accept().use { socket ->
+                        socket.getInputStream().read() // Wait for the ClientHello before sending a TLS record.
+                        val out = socket.getOutputStream()
+                        out.write(byteArrayOf(22, 3, 3, 64, 0)) // Handshake record, 16 KB payload.
+                        out.flush()
+                        repeat(30) {
+                            Thread.sleep(100)
+                            out.write(0)
+                            out.flush()
+                        }
+                    }
+                } catch (e: IOException) { /* Deadline closer hung up. */ }
+            }.apply { isDaemon = true; start() }
+            val probe = HealthProbe(totalDeadlineMs = 350)
+            val (body, ms) = timed { probe.checkTypedUrl("https://127.0.0.1:${server.localPort}") }
+            assertNull(body)
+            assertTrue("TLS handshake took $ms ms", ms in 250L..1_200L)
+        }
+    }
+
+    @Test
     fun `a socket that cannot be made is a connect failure, not a crash`() {
         val probe = HealthProbe(addressPolicy = { it == loopback }, newSocket = { throw java.io.IOException("no sockets") })
         assertEquals(Outcome.CONNECT_FAILED, probe.check(loopback, 4000, id).outcome)
