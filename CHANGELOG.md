@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-16
+
 ### Fixed
 - Android: typed server checks and the launch reachability check use cookie-free requests that do not follow redirects, with more time for slow connections.
 
