@@ -1,0 +1,44 @@
+version: 2
+updates:
+  # target-branch "dev" on every entry: updates land on dev and are built and tried on a phone before a release,
+  # like every other change (main is release-only). Without it Dependabot targets the default branch (main).
+  #
+  # WHY this file exists (2026-11-26): the repo had none, so Dependabot never raised the Capacitor bump for
+  # GHSA-rvm3-566m-v7fv (critical, fixed in 8.4.3, published 2026-10-05) and the app stayed on 8.4.2 for weeks.
+  # `npm audit` found it by hand. Nothing here replaces the manual check before a release; it is the early warning.
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+    groups:
+      # @capacitor/android, ios, core and cli must be the same version, and ios is also pinned by
+      # capacitor-swift-pm in Package.swift, so they move in one PR, never one at a time.
+      capacitor:
+        patterns:
+          - "@capacitor/*"
+    ignore:
+      # WHY: a Capacitor major changes the native projects (Gradle, minSdk, Swift packages) and needs a build and a
+      # phone check; it is a planned change, not a Dependabot PR. Minor and patch updates still come through.
+      - dependency-name: "@capacitor/*"
+        update-types: ["version-update:semver-major"]
+
+  # UNVERIFIED until the first run: android/variables.gradle keeps the androidx versions as `ext` variables, and
+  # Dependabot's Gradle support may not resolve those. If this opens no PRs for them, say so in the issue; do not
+  # assume the Android side is being watched.
+  - package-ecosystem: "gradle"
+    directory: "/android"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+    ignore:
+      # WHY: AGP 9 needs Gradle 9 and a build migration; planned, not a bump. Patch and minor still come through.
+      - dependency-name: "com.android.tools.build:gradle"
+        update-types: ["version-update:semver-major"]
