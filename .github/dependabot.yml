@@ -1,7 +1,10 @@
 version: 2
 updates:
-  # target-branch "dev" on every entry: updates land on dev and are built and tried on a phone before a release,
-  # like every other change (main is release-only). Without it Dependabot targets the default branch (main).
+  # target-branch "dev" on every entry: version updates land on dev and are built and tried on a phone before a
+  # release, like every other change (main is release-only). Without it Dependabot targets the default branch (main).
+  # TWO LIMITS (found in review, PR #55): (1) Dependabot reads this file from the DEFAULT branch (main) only, so it
+  # does nothing until the release that carries it is merged; (2) GitHub sends SECURITY updates to the default branch
+  # whatever target-branch says, so a security PR can target main directly: do not merge one without a phone check.
   #
   # WHY this file exists (2026-11-26): the repo had none, so Dependabot never raised the Capacitor bump for
   # GHSA-rvm3-566m-v7fv (critical, fixed in 8.4.3, published 2026-10-05) and the app stayed on 8.4.2 for weeks.
@@ -19,8 +22,11 @@ updates:
     schedule:
       interval: "weekly"
     groups:
-      # @capacitor/android, ios, core and cli must be the same version, and ios is also pinned by
-      # capacitor-swift-pm in Package.swift, so they move in one PR, never one at a time.
+      # @capacitor/android, ios, core and cli must be the same version, so they move in one PR, never one at a time.
+      # A Dependabot PR changes the npm files only. The exact capacitor-swift-pm pin in ios/App/CapApp-SPM/Package.swift
+      # and the pin in Package.resolved are NOT touched by it: run `npx cap sync ios` on the PR branch (and look at
+      # Package.resolved) before merging a Capacitor bump. The iOS CI build runs cap sync itself, so a stale pin
+      # does not break a build, but it should not sit in the repo disagreeing with package.json.
       capacitor:
         patterns:
           - "@capacitor/*"
