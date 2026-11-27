@@ -58,7 +58,7 @@ jobs:
       # The HTML report says which test failed and why; kept for a week so a failed run can be read.
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unit-test-reports
           path: android/app/build/reports/tests/
