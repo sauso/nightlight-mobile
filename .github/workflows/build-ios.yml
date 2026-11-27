@@ -33,7 +33,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The pure rules behind the server's Tailscale address (ios/App/App/EndpointRules.swift, EndpointProbe.swift,
       # EndpointChooser.swift), behind discovery (DiscoveryRules.swift, DiscoveryState.swift), behind the one sign-in

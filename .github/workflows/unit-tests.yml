@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Same setup as build-apk.yml, which builds this project; see that file for why each step is as it is.
       - name: Set up Node
