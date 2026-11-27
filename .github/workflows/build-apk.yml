@@ -95,7 +95,7 @@ jobs:
       # Always available (both tag and manual runs) - lets a manual run be download-tested
       # from the Actions run page without publishing anything.
       - name: Upload APK as a build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nightlight-apk
           path: ${{ steps.apk.outputs.path }}
