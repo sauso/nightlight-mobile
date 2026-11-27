@@ -30,7 +30,7 @@ jobs:
           cache: npm
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           # Capacitor 8's capacitor-android module compiles with source release 21.
