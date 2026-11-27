@@ -23,7 +23,7 @@ jobs:
 
       # Same setup as build-apk.yml, which builds this project; see that file for why each step is as it is.
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           # Capacitor 8's CLI requires Node >= 22.
           node-version: 22
