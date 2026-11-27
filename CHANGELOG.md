@@ -10,6 +10,8 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-27
+
 ### Changed
 - A Dependabot config for the npm packages, the Gradle build and the GitHub Actions workflows. The repo had none, which is why the Capacitor advisory above went unnoticed for weeks. Dependabot reads it from `main` only, so it starts working with the release that carries it.
 
