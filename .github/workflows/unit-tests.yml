@@ -37,7 +37,7 @@ jobs:
           java-version: '21'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           # Not the action's default 'tools platform-tools': the obsolete `tools` package is gone from the SDK
           # repository and `sdkmanager tools` fails (build-apk.yml, seen 2026-10-24).
