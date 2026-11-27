@@ -10,6 +10,14 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-27
+
+### Changed
+- A Dependabot config for the npm packages, the Gradle build and the GitHub Actions workflows. The repo had none, which is why the Capacitor advisory above went unnoticed for weeks. Dependabot reads it from `main` only, so it starts working with the release that carries it.
+
+### Security
+- **Capacitor 8.4.2 → 8.6.3, which fixes a critical upstream advisory (GHSA-rvm3-566m-v7fv).** Before 8.4.3, a link tapped inside the app's WebView could load remote content at the app's own origin with access to the app's native plugins, on Android and iOS. Nightlight shows its own server's pages, so we think the real exposure was low, but the fix needs a new app build to reach phones (the web UI updating from the server does not change the native shell). The four plugins (App, Filesystem, Push Notifications, Share) moved to their latest patch releases too, and `npm audit` is now clean (five build-tool-only findings cleared).
+
 ## [0.11.1] - 2026-11-16
 
 ### Fixed
