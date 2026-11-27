@@ -73,7 +73,7 @@ dependencies {
     // @capacitor/push-notifications plugin pulls firebase-messaging too, but as `implementation`,
     // so those classes aren't on this module's compile classpath — declare the same version here.
     // Keep in sync with node_modules/@capacitor/push-notifications/android/build.gradle.
-    implementation "com.google.firebase:firebase-messaging:25.0.1"
+    implementation "com.google.firebase:firebase-messaging:26.0.2"
 }
 
 apply from: 'capacitor.build.gradle'
