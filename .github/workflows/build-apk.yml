@@ -85,6 +85,9 @@ jobs:
         id: apk
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # A branch like "deps/capacitor-8-6-3" has a slash, which made the cp below look for a folder that does not
+          # exist (the manual run for PR #55 failed here after a good build). Tags never have one; a branch can.
+          VERSION="${VERSION//\//-}"
           cp android/app/build/outputs/apk/release/app-release.apk "nightlight-${VERSION}.apk"
           echo "path=nightlight-${VERSION}.apk" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
