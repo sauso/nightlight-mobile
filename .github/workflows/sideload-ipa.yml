@@ -85,7 +85,7 @@ jobs:
       # name/body the APK workflow provides - it just adds the IPA asset.
       - name: Attach the IPA to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ steps.ipa.outputs.path }}
           fail_on_unmatched_files: true
