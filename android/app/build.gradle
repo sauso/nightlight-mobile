@@ -64,7 +64,7 @@ dependencies {
     // org.json call quietly return null/false and the parser would refuse everything, valid replies included,
     // with every "refused" test still passing. Pinned, not a range, so a new release cannot change test results
     // on its own.
-    testImplementation "org.json:json:20250517"
+    testImplementation "org.json:json:20260814"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
