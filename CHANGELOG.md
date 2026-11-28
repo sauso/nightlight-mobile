@@ -10,6 +10,9 @@ only as git history — 0.1.0 is the first tracked release, not the first releas
 
 ## [Unreleased]
 
+### Added
+- **Android TV: the app now installs and opens on an Android TV, Google TV or Fire TV** (the same APK as the phone, no separate download). It appears in the TV launcher with a banner, the setup and "can't reach your server" screens work with a remote (the first server found, or the search button, is selected for you; a thick white ring shows what is selected), and the app tells the Nightlight web page that it is a TV through a new `ServerConfig.isTelevision()` call. The TV viewing screen itself arrives with the matching server release; before then a TV shows the normal web app. The app no longer asks a TV for the notification permission or for the battery exemption (a TV has no notification shade or battery). Not tried on a real TV yet: remote behaviour, the on-screen keyboard and the banner crop need a TV check.
+
 ## [0.11.2] - 2026-11-27
 
 ### Changed

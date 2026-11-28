@@ -417,6 +417,12 @@ Those pages use the web app's typefaces, Inter (400, 600) and Nunito (800), as l
 ## Platforms
 
 - **Android** — signed APK, built in CI and attached to each GitHub release.
+- **Android TV / Google TV / Fire TV** — the same APK. It shows in the TV launcher (`LEANBACK_LAUNCHER` and a banner) and
+  asks for no touchscreen or microphone. The app reports whether it is on a TV through `ServerConfig.isTelevision()`
+  (`TvDetect`: the television UI mode or the leanback feature), and skips the notification and battery prompts there.
+  The setup and error pages work with a remote: the first found server (else **Look for my Nightlight**) takes focus, and
+  the focused button has a thick white ring. The TV viewing screen is part of the web app, served by the server. Sideload
+  it with `adb install`. Untried on a real TV so far (remote keys, the on-screen keyboard, the banner crop).
 - **iOS** — Capacitor `ios/` project. Builds for the iOS Simulator in CI; an unsigned
   device IPA can also be produced for sideloading with a free Apple ID. App
   Store / TestFlight distribution requires an Apple Developer account.

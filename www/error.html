@@ -59,6 +59,10 @@
     margin-bottom: 12px;
   }
   button:disabled { opacity: 0.6; }
+  /* A TV remote's D-pad moves focus like Tab, so a focused button shows a thick ring (see www/index.html: :focus-visible,
+     so a touch tap on a phone shows nothing new; white, 4px and set off from the button so it reads on the accent-coloured
+     one too, and the thickness and gap carry it, not the colour alone). */
+  button:focus-visible { outline: 4px solid #ffffff; outline-offset: 3px; }
   .primary { background: var(--accent); color: #14142a; }
   .secondary {
     background: transparent;
@@ -119,6 +123,19 @@
 
   // If the bridge never shows up shortly after load, reveal the manual fallback.
   setTimeout(() => { if (!plugin()) requireBridge(); }, 1500);
+
+  // Android TV: put focus on "Try again" so the remote's OK press works at once. Only on a TV (ServerConfig.isTelevision,
+  // answered by the app): a phone gets no automatic focus, so it looks and behaves exactly as before. The two buttons are
+  // real buttons, so the D-pad reaches "Use a different server" with Down. A page without the method (an older app build)
+  // never focuses anything.
+  (async () => {
+    try {
+      const p = plugin();
+      if (!p || typeof p.isTelevision !== 'function') return;
+      const r = await p.isTelevision();
+      if (r && r.tv === true) retryBtn.focus();
+    } catch { /* not available here: behave as on a phone */ }
+  })();
 </script>
 </body>
 </html>
