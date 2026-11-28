@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Android TV launcher banner (android:banner on <application>): 320x180dp, the brand's dark background with the
+     app's moon-and-baby artwork centred. Made only from what the launcher icon already uses (ic_launcher_background's
+     colour, ic_launcher_foreground's artwork): no separate artwork to keep in step. The foreground bitmap has the
+     adaptive-icon safe margin (its drawing is about 55% of its height), so it is drawn at the full banner height, which
+     leaves the moon about 100dp tall. The TV launcher draws the app label itself under or beside the banner, so none is
+     painted here. Check on a real TV launcher before relying on the crop (the launcher scales banners). -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/ic_launcher_background" />
+            <size android:width="320dp" android:height="180dp" />
+        </shape>
+    </item>
+    <item
+        android:width="180dp"
+        android:height="180dp"
+        android:gravity="center"
+        android:drawable="@drawable/ic_launcher_foreground" />
+</layer-list>

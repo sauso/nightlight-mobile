@@ -73,6 +73,15 @@
     font-size: 15px;
   }
   input:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* A remote's D-pad (Android TV) moves focus the way a keyboard's Tab does, so every button shows a thick ring while it
+     has focus. :focus-visible, so a touch tap on a phone shows nothing new. White on this dark page, 4px wide and set off
+     from the button: visible on the accent-coloured buttons too, and the thickness and gap carry it, not the colour alone
+     (the 10-foot viewing distance). The two list buttons sit inside overflow:hidden rows, which would clip an outer ring,
+     so theirs is drawn inside. */
+  button:focus-visible { outline: 4px solid #ffffff; outline-offset: 3px; }
+  .saved-row .addr:focus-visible, .saved-row .forget:focus-visible { outline-offset: -4px; }
+  /* On a TV the address box gets the same ring (set by the script once it knows this is a TV). */
+  html.tv input:focus { outline: 4px solid #ffffff; outline-offset: 3px; }
   .hint { text-align: left; font-size: 12px; color: var(--text-secondary); margin: 8px 0 22px; }
   button {
     width: 100%;
@@ -217,7 +226,7 @@
     </section>
 
     <label for="server">Server address</label>
-    <input id="server" type="url" inputmode="url" autocapitalize="none" autocorrect="off"
+    <input id="server" type="url" inputmode="url" autocapitalize="none" autocomplete="off" autocorrect="off"
            spellcheck="false" placeholder="nightlight.example.com" />
     <p class="hint">The same address you use in your browser — a domain or IP address, e.g. 192.168.1.50:4000.</p>
 
@@ -238,6 +247,38 @@
   const savedList = document.getElementById('saved-list');
 
   const plugin = () => window.Capacitor?.Plugins?.ServerConfig;
+
+  // ---- Android TV: a remote's D-pad ----
+  // A TV has no touch, so the person moves focus with the D-pad and presses OK. Focus is put on the first useful button
+  // when the page appears. Only on a TV (ServerConfig.isTelevision, answered by the app): a phone gets no automatic focus,
+  // for the reason given at the bottom of this script (the keyboard opening over the search on an iPad). A page without
+  // the method (iOS, an older app build) simply never becomes "tv" and behaves exactly as before.
+  let tv = false;
+  const tvFocus = (el) => { if (tv && el && !el.disabled && !el.hidden) el.focus(); };
+  // Focus the first found server's Connect button, else the search button (the page's first action), else Connect. Never
+  // takes focus from something the person has already moved to (the address box, a saved server): only from "nothing" (the
+  // body) or the search buttons, which lose focus while they are disabled during a search.
+  function tvFocusStart() {
+    if (!tv) return;
+    const a = document.activeElement;
+    if (a && a !== document.body && a !== lookButton && a !== searchAgain) return;
+    const card = foundList.querySelector('button:not(:disabled)');
+    if (card) { card.focus(); return; }
+    if (!findSection.hidden && !lookButton.disabled) lookButton.focus();
+    else if (a !== lookButton) button.focus();
+  }
+  (async () => {
+    try {
+      const p = plugin();
+      if (!p || typeof p.isTelevision !== 'function') return;
+      const r = await p.isTelevision();
+      if (r && r.tv === true) {
+        tv = true;
+        document.documentElement.classList.add('tv');
+        tvFocusStart();
+      }
+    } catch { /* not available here: behave as on a phone */ }
+  })();
 
   function showError(message) {
     errorBox.textContent = message;
@@ -269,6 +310,8 @@
       showError(err?.message || 'Could not connect to that address.');
       button.disabled = false;
       button.textContent = 'Connect';
+      // A disabled button loses focus; give it back so the D-pad is not left on nothing.
+      tvFocus(button);
       return false;
     }
   }
@@ -435,6 +478,9 @@
     findHelp.hidden = true;
     findDetails.hidden = true;
     setStatus(countText());
+    // The first server found is what a TV's remote should reach next (only the first: later ones must not take focus
+    // from wherever the person has moved to).
+    if (found.size === 1) tvFocusStart();
   }
 
   function removeFound(id) {
@@ -454,6 +500,8 @@
     const ok = await connect(url, id);
     if (ok) return; // the app is restarting onto that server
     for (const entry of found.values()) entry.button.disabled = false;
+    // The pressed button lost focus when it was disabled; return it there on a TV.
+    for (const entry of found.values()) if (entry.url === url) tvFocus(entry.button);
     // The error is shown under the address box, which may be below the cards.
     errorBox.scrollIntoView({ block: 'nearest' });
   }
@@ -565,6 +613,8 @@
       starting = false;
       lookButton.disabled = false;
       searchAgain.disabled = false;
+      // The disabled search button lost focus while the search started; on a TV put it back (or on a server already found).
+      tvFocusStart();
     }
   }
 

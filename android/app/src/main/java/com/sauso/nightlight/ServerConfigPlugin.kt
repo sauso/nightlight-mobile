@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit
  *   Capacitor.Plugins.ServerConfig.clear()
  *   Capacitor.Plugins.ServerConfig.restart()        -> rebuilds the activity/bridge so the
  *                                                      current saved choice takes effect
+ *   Capacitor.Plugins.ServerConfig.isTelevision()   -> { tv: boolean }; true on Android TV / Google TV / Fire TV
  *
  * From the bundled setup page ONLY (www/index.html; any other page is refused, see callerIsBundledPage):
  *
@@ -408,6 +409,16 @@ class ServerConfigPlugin : Plugin() {
         ret.put("supportsCustomUrl", true)
         ret.put("kind", EndpointRules.addressKind(slot))
         call.resolve(ret)
+    }
+
+    // Is this device a television? Resolves { tv: boolean } (TvDetect: UI mode OR the leanback feature). The web app asks it
+    // to choose its TV screen; the bundled setup pages ask it to put D-pad focus on a button.
+    // Deliberately NOT restricted to the bundled page (unlike startDiscovery and forget): the web UI that needs the answer is
+    // the page loaded live from the server, and the answer is one boolean about the device's own form factor, which any web
+    // page can already guess from its user agent and screen. It reads and changes nothing, so there is nothing to protect.
+    @PluginMethod
+    fun isTelevision(call: PluginCall) {
+        call.resolve(JSObject().put("tv", TvDetect.isTelevision(context)))
     }
 
     // The server a tapped link asked for, if any (#559): { server: "<origin>" | null }. Returns it once and

@@ -8,6 +8,7 @@
          config can't be pre-declared. The setup flow still prefers https first. -->
     <application
         android:allowBackup="true"
+        android:banner="@drawable/tv_banner"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
@@ -32,6 +33,8 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <!-- Android TV launcher (one APK serves phone and TV; phones ignore this category). -->
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
 
             <!-- Deep link: nightlight:// URLs open the app (used by Pushover motion-alert
@@ -81,6 +84,14 @@
             tools:node="remove" />
 
     </application>
+
+    <!-- Android TV (one APK for phone and TV). Declaring a permission such as RECORD_AUDIO implies the matching hardware
+         feature is REQUIRED, which would hide the app from the Play-style device filters and from a TV that has no
+         touchscreen or microphone. Each of these is therefore stated as optional. The microphone is only for talk-back,
+         which the TV screen does not offer; RECORD_AUDIO stays for phones. -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <!-- Permissions -->
 

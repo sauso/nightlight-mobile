@@ -68,7 +68,9 @@ class BackgroundAudioPlugin : Plugin() {
         // notification. The service starts either way (denying just hides the
         // notification into the FGS task manager), but asking once is polite
         // and gives the person the Stop button.
-        if (Build.VERSION.SDK_INT >= 33 &&
+        // Not on a TV: it has no notification shade to show a Stop button in, and a permission dialog is a surprise to
+        // someone holding a remote (the TV screen asks for nothing). The service still starts.
+        if (Build.VERSION.SDK_INT >= 33 && !TvDetect.isTelevision(context) &&
             getPermissionState("notifications") != com.getcapacitor.PermissionState.GRANTED &&
             !call.getBoolean("skipPermissionPrompt", false)!!
         ) {
@@ -103,6 +105,9 @@ class BackgroundAudioPlugin : Plugin() {
     // never re-prompted (it can still be granted later in Settings > Apps >
     // Nightlight > Battery > Unrestricted).
     private fun maybeRequestBatteryExemption() {
+        // Not on a TV: a TV runs from the mains and has no battery to optimise, and many TV builds ship no such settings
+        // screen at all. Skipped before the "asked once" flag is set, so nothing is recorded as asked.
+        if (TvDetect.isTelevision(context)) return
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         if (pm.isIgnoringBatteryOptimizations(context.packageName)) return
         val prefs = context.getSharedPreferences("nightlight_battery", Context.MODE_PRIVATE)
